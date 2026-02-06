@@ -114,6 +114,9 @@ def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=81
     cls_tokens = zs[::num_tokens]
     _make_emb_viz(cls_tokens, epoch, title='CLS Tokens'+title)
     patch_only = zs[torch.arange(len(zs)) % num_tokens != 0] # non-cls tokens 
+    if pmask is not None:
+        patch_pmask = pmask[:, 1:].flatten()  # exclude CLS column
+        patch_only = patch_only[patch_pmask.bool()]
     rnd_subsample = patch_only[torch.randperm(len(patch_only))[:max_points]]
     _make_emb_viz(rnd_subsample, epoch, title='RND Patches'+title)
     model.to(device)
