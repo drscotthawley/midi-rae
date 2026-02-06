@@ -48,7 +48,7 @@ def compute_batch_loss(batch, model, cfg, global_step):
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
     loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
-    return loss_dict, z1, z2, num_tokens
+    return loss_dict, z1, z2, pmask1, pmask2, num_tokens
 
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
@@ -92,7 +92,7 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad()
             with torch.autocast('cuda'):
-                loss, z1, z2, num_tokens = compute_batch_loss(batch, model, cfg, global_step)
+                loss, z1, z2, pmask1, pmask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step)
             scaler.scale(loss['loss']).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -103,7 +103,7 @@ def train(cfg: DictConfig):
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
-                val_loss_dict, z1, z2, num_tokens = compute_batch_loss(batch, model, cfg, global_step)
+                val_loss_dict, z1, z2, pmask1, pmask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step)
                 val_loss += val_loss_dict['loss'].item()
 
         train_loss /= len(train_dl)
