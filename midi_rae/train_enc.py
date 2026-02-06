@@ -75,7 +75,7 @@ def train(cfg: DictConfig):
     model = torch.compile(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler(device)
     wandb.init(project=cfg.wandb.project, config=dict(cfg))
 
     # Training loop
