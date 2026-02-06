@@ -1,0 +1,29 @@
+data:
+  path: /home/shawley/datasets/POP909_images  # adjust path as needed
+  image_size: 128
+  in_channels: 1
+
+model:
+  patch_size: 16
+  dim: 768
+  depth: 4
+  heads: 8
+  dec_depth: 6   # decoder vit 
+  dec_heads: 8
+
+training:
+  batch_size: 440
+  lr: 1e-3
+  epochs: 1000
+  lambd: 0.3
+  max_shift_x: 2   # will increase w/epoch via curriculum
+  max_shift_y: 2
+
+preencode:
+  output_dir: /home/shawley/datasets/POP909_encoded
+  chunk_size: 1000  # images per .pt file
+
+wandb:
+  project: vit-midi-rae
+
+

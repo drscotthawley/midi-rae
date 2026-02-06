@@ -1,0 +1,20 @@
+data:
+  path: /home/shawley/datasets/imagenette2-320  # adjust path as needed
+  image_size: 256
+  in_channels: 3
+
+model:
+  patch_size: 16
+  dim: 768
+  depth: 4
+  heads: 8
+
+training:
+  batch_size: 32
+  lr: 1e-4
+  epochs: 20
+
+wandb:
+  project: vit-imagenette
+
+device: cuda
