@@ -92,15 +92,20 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idxs=None, title='Embeddin
     return fig
 
 # %% ../nbs/05_viz.ipynb #f1feb8ca
-def _make_emb_viz(zs, epoch, title='Embeddings'):
+def _make_emb_viz(zs, epoch, title='Embeddings', do_umap=True):
     "visualize embeddings, projected"
-    coords = umap_project(zs)
-    fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}')
+    fig = None
+    if do_umap:
+        coords = umap_project(zs)
+        fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}')
     torch.cuda.synchronize() # cleanup before PCA or else you get CUDA errors
     gc.collect()
     coords = pca_project(zs)
     fig2 = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}')
-    wandb.log({f"{title} UMAP": wandb.Html(fig.to_html()), f"{title} PCA": wandb.Html(fig2.to_html())}, step=epoch)
+    if do_umap:
+        wandb.log({f"{title} UMAP": wandb.Html(fig.to_html()), f"{title} PCA": wandb.Html(fig2.to_html())}, step=epoch)
+    else:
+        wandb.log({f"{title} PCA": wandb.Html(fig2.to_html())}, step=epoch)
     torch.cuda.synchronize() # cleanup again
     gc.collect()
 
@@ -114,9 +119,16 @@ def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=81
     cls_tokens = zs[::num_tokens]
     _make_emb_viz(cls_tokens, epoch, title='CLS Tokens'+title)
     patch_only = zs[torch.arange(len(zs)) % num_tokens != 0] # non-cls tokens 
+
     if pmask is not None:
         patch_pmask = pmask[:, 1:].flatten()  # exclude CLS column
+        print(f"Non-empty patches: {patch_pmask.sum()}/{len(patch_pmask)} ({patch_pmask.float().mean()*100:.1f}%)")
         patch_only = patch_only[patch_pmask.bool()]
-    rnd_subsample = patch_only[torch.randperm(len(patch_only))[:max_points]]
-    _make_emb_viz(rnd_subsample, epoch, title='RND Patches'+title)
+        rnd_subsample = patch_only[torch.randperm(len(patch_only))[:max_points]]
+        _make_emb_viz(rnd_subsample, epoch, title='RND Patches'+title)
+
+        patch_all = zs[torch.arange(len(zs)) % num_tokens != 0]
+        empty_patches = patch_all[~patch_pmask.bool()]
+        rnd_subsample = empty_patches[torch.randperm(len(empty_patches))[:max_points]]
+        _make_emb_viz(rnd_subsample, epoch, title='RND Empty Patches'+title, do_umap=False)
     model.to(device)
