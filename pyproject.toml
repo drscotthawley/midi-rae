@@ -15,7 +15,16 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = []
+dependencies = [
+    "torch",
+    "numpy",
+    "pillow",
+    "wandb",
+    "hydra-core",
+    "tqdm",
+    "plotly",
+    "lpips",
+]
 
 [project.urls]
 Repository = "https://github.com/drscotthawley/midi-rae"
