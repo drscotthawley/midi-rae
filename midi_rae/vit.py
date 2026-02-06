@@ -97,7 +97,13 @@ class PatchEmbedding(nn.Module):
     def forward(self, x):  # x: (batch, channels, height, width)
         assert all(s % self.conv.kernel_size[0] == 0 for s in x.shape[-2:]), \
             f"Image size {x.shape[-2:]} must be divisible by patch_size {self.conv.kernel_size[0]}"
-        return self.conv(x).flatten(2).permute(0,2,1)         # (B, num_patches, dim) 
+        conv_patches = self.conv(x).flatten(2).permute(0,2,1)
+        # Check if each patch region in the image is empty
+        k = self.conv.kernel_size[0]
+        patches = x.unfold(2, k, k).unfold(3, k, k)  # extract patches
+        not_empty = (patches.amax(dim=(-1,-2)) > 0.5).squeeze(1).flatten(1)  # (B, num_patches), 0=empty, 1=not
+        return conv_patches, not_empty  # return pmask: 1=non-empty, 0=empty
+
 
 # %% ../nbs/02_vit.ipynb #32916a79
 class ViTEncoder(nn.Module):
@@ -115,11 +121,12 @@ class ViTEncoder(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         
     def forward(self, x, return_cls_only=True):
-        x = self.patch_embed(x)                 # x is now patches
-        cls = self.cls_token.expand(x.shape[0], -1, -1)
+        x, pmask = self.patch_embed(x)                 # x is now patches
+        cls = self.cls_token.expand(x.shape[0], -1, -1) # add cls token 
         x = torch.cat([cls, x], dim=1)
+        pmask = torch.cat([pmask.new_ones(pmask.shape[0], 1), pmask], dim=1)  # (B, 65)
         for block in self.blocks:  x = block(x) 
-        return x[:,0] if return_cls_only else x
+        return (x[:, 0] if return_cls_only else x), pmask
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba
 class Unpatchify(nn.Module):
