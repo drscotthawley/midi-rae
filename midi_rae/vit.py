@@ -121,11 +121,13 @@ class ViTEncoder(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         
     def forward(self, x, return_cls_only=True):
-        x, pmask = self.patch_embed(x)                 # x is now patches
+        x, pmask = self.patch_embed(x)                 # x is now patches, pmask is 1 for non-empty patches, 0 for empty
         cls = self.cls_token.expand(x.shape[0], -1, -1) # add cls token 
         x = torch.cat([cls, x], dim=1)
         pmask = torch.cat([pmask.new_ones(pmask.shape[0], 1), pmask], dim=1)  # (B, 65)
-        for block in self.blocks:  x = block(x) 
+        for block in self.blocks:  
+            x = block(x) 
+            x = torch.where(pmask.unsqueeze(-1), x, x * 1e-5)  # empty patches go to small but nonzero #s
         return (x[:, 0] if return_cls_only else x), pmask
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba
