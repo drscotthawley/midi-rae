@@ -106,7 +106,7 @@ def _make_emb_viz(zs, epoch, title='Embeddings'):
 
 
 # %% ../nbs/05_viz.ipynb #b618d453
-def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=8192):
+def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=8192, pmask=None):
     "this is the main routine, showing different groups of embeddings"
     device = zs.device
     model.to('cpu')

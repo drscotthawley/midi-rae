@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 import hydra
 from .vit import ViTEncoder
 from .data import PRPairDataset
-from .losses import LeJEPA
+from .losses import calc_enc_loss
 from .utils import save_checkpoint
 from .viz import make_emb_viz
 from tqdm.auto import tqdm
@@ -30,8 +30,8 @@ def curr_learn(shared_ct_dict, epoch, interval=15, verbose=False):
     "curriculum learning: increase difficulty with epoch"
     if epoch < interval: return shared_ct_dict['training']
     training = shared_ct_dict['training']
-    training['max_shift_x'] = min(12, 1 + epoch // interval)
-    training['max_shift_y'] = min(12, 1 + epoch // interval)
+    training['max_shift_x'] = min(12, 2 + epoch // interval)
+    training['max_shift_y'] = min(12, 2 + epoch // interval)
     if verbose: 
         print(f"curr_learn: max_shift_x = {training['max_shift_x']}, max_shift_y = {training['max_shift_y']}")
     return training
@@ -41,13 +41,13 @@ def compute_batch_loss(batch, model, cfg, global_step):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(model.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
-    z1 = model(img1, return_cls_only=False) 
-    z2 = model(img2, return_cls_only=False) 
+    z1, pmask1 = model(img1, return_cls_only=False) 
+    z2, pmask2 = model(img2, return_cls_only=False) 
     z1 = z1.reshape(-1, z1.shape[-1])
     z2 = z2.reshape(-1, z2.shape[-1])
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
-    loss_dict = LeJEPA(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd)
+    loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
     return loss_dict, z1, z2, num_tokens
 
 
@@ -117,7 +117,7 @@ def train(cfg: DictConfig):
            "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
 
         if epoch % viz_every == 0: 
-            make_emb_viz(torch.cat((z1, z2), dim=0), model, num_tokens, epoch)
+            make_emb_viz(torch.cat((z1, z2), dim=0), model, num_tokens, epoch, pmask=torch.cat([pmask1, pmask2], dim=0))
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step(val_loss)
