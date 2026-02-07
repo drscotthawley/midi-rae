@@ -26,12 +26,12 @@ torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
 
 # %% ../nbs/06_train_enc.ipynb #e6d4f354
-def curr_learn(shared_ct_dict, epoch, interval=15, verbose=False): 
-    "curriculum learning: increase difficulty with epoch"
+def curr_learn(shared_ct_dict, epoch, interval=100, verbose=False): 
+    "UNUSED/UNNECESSARY: curriculum learning: increase difficulty with epoch"
     if epoch < interval: return shared_ct_dict['training']
     training = shared_ct_dict['training']
-    training['max_shift_x'] = min(12, 2 + epoch // interval)
-    training['max_shift_y'] = min(12, 2 + epoch // interval)
+    training['max_shift_x'] = min(12, 6 + epoch // interval)
+    training['max_shift_y'] = min(12, 6 + epoch // interval)
     if verbose: 
         print(f"curr_learn: max_shift_x = {training['max_shift_x']}, max_shift_y = {training['max_shift_y']}")
     return training
@@ -74,17 +74,18 @@ def train(cfg: DictConfig):
               cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
     model = torch.compile(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)
     scaler = torch.amp.GradScaler(device)
-    wandb.init(project=cfg.wandb.project, config=dict(cfg))
+    wandb.init(project=cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
 
     # Training loop
     global_step = 0
-    viz_every = 2
+    viz_every = 10
     for epoch in range(1, cfg.training.epochs+1):
         model.train()
         train_loss = 0
-        if True and epoch > 1: # curriculum learning, easily turned off by setting this to False. DL's re-defined each epoch to init workers
+        if False and epoch > 1: # curriculum learning, easily turned off by setting this to False. DL's re-defined each epoch to init workers
             shared_ct_dict['training'] = curr_learn(shared_ct_dict, epoch)
             train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, worker_init_fn=worker_init_fn, pin_memory=True)
             val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, worker_init_fn=worker_init_fn, pin_memory=True)
@@ -120,7 +121,7 @@ def train(cfg: DictConfig):
             make_emb_viz(torch.cat((z1, z2), dim=0), model, num_tokens, epoch, pmask=torch.cat([pmask1, pmask2], dim=0))
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
-        scheduler.step(val_loss)
+        scheduler.step()# val_loss)
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3
 #| eval: false

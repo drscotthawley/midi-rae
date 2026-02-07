@@ -127,7 +127,7 @@ class ViTEncoder(nn.Module):
         pmask = torch.cat([pmask.new_ones(pmask.shape[0], 1), pmask], dim=1)  # (B, 65)
         for block in self.blocks:  
             x = block(x) 
-            x = torch.where(pmask.unsqueeze(-1), x, x * 1e-5)  # empty patches go to small but nonzero #s
+            x = torch.where(pmask.unsqueeze(-1), x, x * 1e-3)  # empty patches go to small but nonzero #s
         return (x[:, 0] if return_cls_only else x), pmask
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba
