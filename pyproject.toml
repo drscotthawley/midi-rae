@@ -23,6 +23,7 @@ dependencies = [
     "hydra-core",
     "tqdm",
     "plotly",
+    "matplotlib",
     "lpips",
 ]
 
