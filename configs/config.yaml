@@ -13,11 +13,11 @@ model:
 
 training:
   batch_size: 440
-  lr: 1e-3
+  lr: 1e-4
   epochs: 1000
   lambd: 0.3
-  max_shift_x: 2   # will increase w/epoch via curriculum
-  max_shift_y: 2
+  max_shift_x: 12   # will increase w/epoch via curriculum
+  max_shift_y: 12
 
 preencode:
   output_dir: /home/shawley/datasets/POP909_encoded
@@ -25,5 +25,4 @@ preencode:
 
 wandb:
   project: vit-midi-rae
-
-
+  
