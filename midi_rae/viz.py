@@ -116,8 +116,10 @@ def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, fi
 
 # %% ../nbs/05_viz.ipynb #b618d453
 def _subsample(data, indices, max_points):
-    "Subsample data and indices together"
-    perm = torch.randperm(len(data))[:max_points]
+    "Subsample data and indices together, in pairs"
+    perm1 = torch.randperm(len(data)//2)[:max_points//2]
+    perm2 = perm1 + len(data)//2
+    perm = torch.cat([perm1,perm2])
     return data[perm], indices[perm] if indices is not None else None
 
 # %% ../nbs/05_viz.ipynb #2818edfa
