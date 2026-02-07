@@ -118,7 +118,7 @@ def train(cfg: DictConfig):
            "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
 
         if epoch % viz_every == 0: 
-            make_emb_viz(torch.cat((z1, z2), dim=0), model, num_tokens, epoch, pmask=torch.cat([pmask1, pmask2], dim=0))
+            make_emb_viz(torch.cat((z1, z2), dim=0), model, num_tokens, epoch, pmask=torch.cat([pmask1, pmask2], dim=0), file_idx=batch['file_idx'])
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)

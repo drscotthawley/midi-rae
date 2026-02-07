@@ -66,42 +66,45 @@ def pca_project(embeddings, **kwargs):
         return cpu_pca_project(embeddings, **kwargs)
 
 # %% ../nbs/05_viz.ipynb #1c5d9cc8
-def plot_embeddings_3d(coords, color_by='pairs', file_idxs=None, title='Embeddings', debug=False):
+def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, title='Embeddings', debug=False):
     "3D scatter plot of embeddings. color_by: 'none', 'file', or 'pair'"
     import plotly.graph_objects as go
     n = len(coords)
     if debug: print(" plot_embeddings_3d: n =",n)
+    
     if color_by == 'none':     colors = ['blue'] * n
-    elif color_by == 'file':   colors = file_idxs
+    elif color_by == 'file':   colors = file_idx.tolist() if file_idx is not None else ['blue'] * n
     elif color_by == 'pairs':
         n_pairs = n // 2
         pair_colors = [f'rgb({np.random.randint(0,256)},{np.random.randint(0,256)},{np.random.randint(0,256)})' for _ in range(n_pairs)]
-        if debug: 
-            print(pair_colors[:100])
-            print("len(set(pair_colors)) =",len(set(pair_colors)))
         colors = [pair_colors[i % n_pairs] for i in range(n)]
-
     else: raise ValueError(f"Unknown color_by: {color_by}")
+
+    hover_text = [f"fileid: {int(fid)}" for fid in file_idx] if file_idx is not None else None
     
     fig = go.Figure(data=[go.Scatter3d(
         x=coords[:,0], y=coords[:,1], z=coords[:,2],
-        mode='markers', marker=dict(size=4, color=colors, colorscale='Viridis' if color_by != 'pairs' else None, opacity=0.8)
+        mode='markers', 
+        marker=dict(size=4, color=colors, colorscale='Viridis' if color_by != 'pairs' else None, opacity=0.8),
+        hovertext=hover_text,
+        hoverinfo='text' if hover_text else 'x+y+z'
     )])
     title = title + f', n={n}'
     fig.update_layout(title=title, margin=dict(l=0, r=0, b=0, t=30))
     return fig
 
+
 # %% ../nbs/05_viz.ipynb #f1feb8ca
-def _make_emb_viz(zs, epoch, title='Embeddings', do_umap=True):
+def _make_emb_viz(zs, epoch, title='Embeddings', do_umap=True, file_idx=None):
     "visualize embeddings, projected"
     fig = None
     if do_umap:
         coords = umap_project(zs)
-        fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}')
+        fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx)
     torch.cuda.synchronize() # cleanup before PCA or else you get CUDA errors
     gc.collect()
     coords = pca_project(zs)
-    fig2 = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}')
+    fig2 = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx)
     if do_umap:
         wandb.log({f"{title} UMAP": wandb.Html(fig.to_html()), f"{title} PCA": wandb.Html(fig2.to_html())}, step=epoch)
     else:
@@ -111,24 +114,40 @@ def _make_emb_viz(zs, epoch, title='Embeddings', do_umap=True):
 
 
 # %% ../nbs/05_viz.ipynb #b618d453
-def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=8192, pmask=None):
+def _subsample(data, indices, max_points):
+    "Subsample data and indices together"
+    perm = torch.randperm(len(data))[:max_points]
+    return data[perm], indices[perm] if indices is not None else None
+
+# %% ../nbs/05_viz.ipynb #2818edfa
+def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=8192, pmask=None, file_idx=None):
     "this is the main routine, showing different groups of embeddings"
     device = zs.device
     model.to('cpu')
     torch.cuda.empty_cache()
+    
+    # CLS tokens
     cls_tokens = zs[::num_tokens]
-    _make_emb_viz(cls_tokens, epoch, title='CLS Tokens'+title)
-    patch_only = zs[torch.arange(len(zs)) % num_tokens != 0] # non-cls tokens 
-
+    cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
+    _make_emb_viz(cls_tokens, num_tokens, epoch, title='CLS Tokens'+title, file_idx=cls_file_idx)
+    
+    # Patches (non-CLS)
+    patch_mask = torch.arange(len(zs)) % num_tokens != 0
+    patch_only = zs[patch_mask]
+    patch_file_idx = file_idx[patch_mask] if file_idx is not None else None
+    
     if pmask is not None:
-        patch_pmask = pmask[:, 1:].flatten()  # exclude CLS column
+        patch_pmask = pmask[:, 1:].flatten().bool()
         print(f"Non-empty patches: {patch_pmask.sum()}/{len(patch_pmask)} ({patch_pmask.float().mean()*100:.1f}%)")
-        patch_only = patch_only[patch_pmask.bool()]
-        rnd_subsample = patch_only[torch.randperm(len(patch_only))[:max_points]]
-        _make_emb_viz(rnd_subsample, epoch, title='RND Patches'+title)
-
-        patch_all = zs[torch.arange(len(zs)) % num_tokens != 0]
-        empty_patches = patch_all[~patch_pmask.bool()]
-        rnd_subsample = empty_patches[torch.randperm(len(empty_patches))[:max_points]]
-        _make_emb_viz(rnd_subsample, epoch, title='RND Empty Patches'+title, do_umap=False)
+        
+        # Non-empty patches
+        valid_patches, valid_file_idx = patch_only[patch_pmask], (patch_file_idx[patch_pmask] if patch_file_idx is not None else None)
+        rnd_patches, rnd_file_idx = _subsample(valid_patches, valid_file_idx, max_points)
+        _make_emb_viz(rnd_patches, num_tokens, epoch, title='RND Patches'+title, file_idx=rnd_file_idx)
+        
+        # Empty patches
+        empty_patches, empty_file_idx = patch_only[~patch_pmask], (patch_file_idx[~patch_pmask] if patch_file_idx is not None else None)
+        rnd_empty, rnd_empty_idx = _subsample(empty_patches, empty_file_idx, max_points)
+        _make_emb_viz(rnd_empty, num_tokens, epoch, title='RND Empty Patches'+title, do_umap=False, file_idx=rnd_empty_idx)
+    
     model.to(device)
