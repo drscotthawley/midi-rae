@@ -16,7 +16,7 @@ def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=10, n_kee
         save_checkpoint.best_val_loss = float('inf')
 
     os.makedirs('checkpoints', exist_ok=True)
-    ckpt = {'epoch': epoch, 'model_state_dict': model.state_dict(),
+    ckpt = {'epoch': epoch, 'model_state_dict': model._orig_mod.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
 
     if epoch % save_every == 0:
