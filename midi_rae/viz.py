@@ -96,7 +96,7 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
 # %% ../nbs/05_viz.ipynb #f1feb8ca
 def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, file_idx=None):
     "visualize embeddings, projected"
-    fig = None
+    umap_fig = None
     if do_umap:
         coords = umap_project(zs)
         umap_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx)
@@ -111,7 +111,7 @@ def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, fi
             wandb.log({f"{title} PCA": wandb.Html(pca_fig.to_html())}, step=epoch)
     if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup again
     gc.collect()
-    return pca_fig 
+    return pca_fig, umap_fig
 
 
 # %% ../nbs/05_viz.ipynb #b618d453
@@ -132,7 +132,7 @@ def make_emb_viz(zs,  num_tokens, epoch=-1, model=None, title='Embeddings', max_
     # CLS tokens
     cls_tokens = zs[::num_tokens]
     cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
-    _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
+    cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
     
     # Patches (non-CLS)
     patch_mask = torch.arange(len(zs)) % num_tokens != 0
@@ -146,12 +146,13 @@ def make_emb_viz(zs,  num_tokens, epoch=-1, model=None, title='Embeddings', max_
         # Non-empty patches
         valid_patches, valid_file_idx = patch_only[patch_pmask], (patch_file_idx[patch_pmask] if patch_file_idx is not None else None)
         rnd_patches, rnd_file_idx = _subsample(valid_patches, valid_file_idx, max_points)
-        pca_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, do_umap=do_umap)
+        patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, do_umap=do_umap)
         
         # Empty patches
         empty_patches, empty_file_idx = patch_only[~patch_pmask], (patch_file_idx[~patch_pmask] if patch_file_idx is not None else None)
         rnd_empty, rnd_empty_idx = _subsample(empty_patches, empty_file_idx, max_points)
-        pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx)
+        empty_pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx)
     
     if model is not None: model.to(device)
-    return pca_fig
+    figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
+    return figs
