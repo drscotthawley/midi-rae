@@ -80,14 +80,13 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
         colors = [pair_colors[i % n_pairs] for i in range(n)]
     else: raise ValueError(f"Unknown color_by: {color_by}")
 
-    hover_text = [f"fileid: {int(fid)}" for fid in file_idx] if file_idx is not None else None
+    hover_text = [f"file_id: {int(fid)}" for fid in file_idx] if file_idx is not None else None
     
     fig = go.Figure(data=[go.Scatter3d(
         x=coords[:,0], y=coords[:,1], z=coords[:,2],
         mode='markers', 
         marker=dict(size=4, color=colors, colorscale='Viridis' if color_by != 'pairs' else None, opacity=0.8),
-        hovertext=hover_text,
-        hoverinfo='text' if hover_text else 'x+y+z'
+        hovertext=hover_text, hoverinfo='x+y+z+text' if hover_text else 'x+y+z'
     )])
     title = title + f', n={n}'
     fig.update_layout(title=title, margin=dict(l=0, r=0, b=0, t=30))
@@ -95,22 +94,24 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
 
 
 # %% ../nbs/05_viz.ipynb #f1feb8ca
-def _make_emb_viz(zs, epoch, title='Embeddings', do_umap=True, file_idx=None):
+def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, file_idx=None):
     "visualize embeddings, projected"
     fig = None
     if do_umap:
         coords = umap_project(zs)
-        fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx)
-    torch.cuda.synchronize() # cleanup before PCA or else you get CUDA errors
+        umap_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx)
+    if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup before PCA or else you get CUDA errors
     gc.collect()
     coords = pca_project(zs)
-    fig2 = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx)
-    if do_umap:
-        wandb.log({f"{title} UMAP": wandb.Html(fig.to_html()), f"{title} PCA": wandb.Html(fig2.to_html())}, step=epoch)
-    else:
-        wandb.log({f"{title} PCA": wandb.Html(fig2.to_html())}, step=epoch)
-    torch.cuda.synchronize() # cleanup again
+    pca_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx)
+    if wandb.run is not None: 
+        if do_umap:
+            wandb.log({f"{title} UMAP": wandb.Html(umap_fig.to_html()), f"{title} PCA": wandb.Html(pca_fig.to_html())}, step=epoch)
+        else:
+            wandb.log({f"{title} PCA": wandb.Html(pca_fig.to_html())}, step=epoch)
+    if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup again
     gc.collect()
+    return pca_fig 
 
 
 # %% ../nbs/05_viz.ipynb #b618d453
@@ -120,16 +121,16 @@ def _subsample(data, indices, max_points):
     return data[perm], indices[perm] if indices is not None else None
 
 # %% ../nbs/05_viz.ipynb #2818edfa
-def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=8192, pmask=None, file_idx=None):
+def make_emb_viz(zs,  num_tokens, epoch=-1, model=None, title='Embeddings', max_points=8192, pmask=None, file_idx=None, do_umap=True):
     "this is the main routine, showing different groups of embeddings"
     device = zs.device
-    model.to('cpu')
+    if model is not None: model.to('cpu')
     torch.cuda.empty_cache()
     
     # CLS tokens
     cls_tokens = zs[::num_tokens]
     cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
-    _make_emb_viz(cls_tokens, num_tokens, epoch, title='CLS Tokens'+title, file_idx=cls_file_idx)
+    _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens'+title, file_idx=cls_file_idx, do_umap=do_umap)
     
     # Patches (non-CLS)
     patch_mask = torch.arange(len(zs)) % num_tokens != 0
@@ -143,11 +144,12 @@ def make_emb_viz(zs, model, num_tokens, epoch, title='Embeddings', max_points=81
         # Non-empty patches
         valid_patches, valid_file_idx = patch_only[patch_pmask], (patch_file_idx[patch_pmask] if patch_file_idx is not None else None)
         rnd_patches, rnd_file_idx = _subsample(valid_patches, valid_file_idx, max_points)
-        _make_emb_viz(rnd_patches, num_tokens, epoch, title='RND Patches'+title, file_idx=rnd_file_idx)
+        pca_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches'+title, file_idx=rnd_file_idx, do_umap=do_umap)
         
         # Empty patches
         empty_patches, empty_file_idx = patch_only[~patch_pmask], (patch_file_idx[~patch_pmask] if patch_file_idx is not None else None)
         rnd_empty, rnd_empty_idx = _subsample(empty_patches, empty_file_idx, max_points)
-        _make_emb_viz(rnd_empty, num_tokens, epoch, title='RND Empty Patches'+title, do_umap=False, file_idx=rnd_empty_idx)
+        pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches'+title, do_umap=False, file_idx=rnd_empty_idx)
     
-    model.to(device)
+    if model is not None: model.to(device)
+    return pca_fig
