@@ -36,8 +36,9 @@ def preencode(cfg: DictConfig):
         cfg.model.heads
     ).to(device)
     
-    ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt['model_state_dict'])
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state_dict = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
     
     # Output directory
@@ -47,7 +48,7 @@ def preencode(cfg: DictConfig):
     
     for split in ['train', 'val']:
         print(f"\nProcessing {split} split...")
-        ds = PRPairDataset(split=split, max_shift_x=0, max_shift_y=0)
+        ds = PRPairDataset(split=split, max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y)
         dl = DataLoader(ds, batch_size=cfg.training.batch_size, num_workers=4, shuffle=False)
         
         num_chunks = cfg.preencode.num_passes # chunk = 1 pass thru ds
