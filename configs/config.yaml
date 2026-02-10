@@ -21,7 +21,7 @@ training:
 
 preencode:
   output_dir: /home/shawley/datasets/POP909_encoded
-  chunk_size: 1000  # images per .pt file
+  num_passes: 1000  # number of passes through the dataset
 
 wandb:
   project: vit-midi-rae
