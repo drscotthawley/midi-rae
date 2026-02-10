@@ -18,7 +18,7 @@ import lpips
 
 from .vit import ViTEncoder, ViTDecoder
 from .losses import PatchGANDiscriminator
-from .data import PRPairDataset  # TODO: may need a simpler single-image dataset
+from .data import PRPairDataset  # note, we'll only use img2 and ignore img1
 from .utils import save_checkpoint
 
 # %% ../nbs/09_train_dec.ipynb #f87c9456

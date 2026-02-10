@@ -15,7 +15,7 @@ from tqdm.auto import tqdm
 from pathlib import Path
 
 from .vit import ViTEncoder
-from .data import PRPairDataset  # or a simpler single-image dataset?
+from .data import PRPairDataset  # we'll use use img2 and ignore img1
 
 # %% ../nbs/08_preencode.ipynb #8e40339b
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -45,35 +45,35 @@ def preencode(cfg: DictConfig):
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving embeddings to {output_dir}")
     
-    # TODO: May want want a single-image dataset here instead of PRPairDataset
-    # For now, using PRPairDataset but only encoding img1
     for split in ['train', 'val']:
         print(f"\nProcessing {split} split...")
         ds = PRPairDataset(split=split, max_shift_x=0, max_shift_y=0)
         dl = DataLoader(ds, batch_size=cfg.training.batch_size, num_workers=4, shuffle=False)
         
-        all_embeddings = []
-        all_images = []  # optionally save original images too for reconstruction comparison
-        
-        with torch.no_grad():
-            for batch in tqdm(dl, desc=f"Encoding {split}"):
-                img = batch['img1'].to(device)
-                z = model(img, return_cls_only=False)  # (B, 65, 768)
-                all_embeddings.append(z.cpu())
-                all_images.append(img.cpu())
-        
-        # Concatenate and save
-        embeddings = torch.cat(all_embeddings, dim=0)
-        images = torch.cat(all_images, dim=0)
-        
-        save_path = output_dir / f"{split}_embeddings.pt"
-        torch.save({
-            'embeddings': embeddings,
-            'images': images,  # for reconstruction loss computation
-        }, save_path)
-        print(f"Saved {len(embeddings)} embeddings to {save_path}")
-        print(f"  embeddings shape: {embeddings.shape}")
-        print(f"  images shape: {images.shape}")
+        num_chunks = cfg.preencode.num_passes # chunk = 1 pass thru ds
+        for chunk in range(1,num_chunks+1):
+            chunk_embeddings = []
+            chunk_images = []  # optionally save original images too for reconstruction comparison
+            with torch.no_grad():
+                for batch in tqdm(dl, desc=f"Encoding {split}, Chunk {chunk}/{num_chunks}"):
+                    img = batch['img2'].to(device)  # img2 come from wider distribution than img1, ignore img1
+                    z = model(img, return_cls_only=False)  # (B, 65, 768)
+                    chunk_embeddings.append(z.cpu())
+                    chunk_images.append(img.cpu())
+            
+            # Concatenate and save
+            embeddings = torch.cat(chunk_embeddings, dim=0)
+            images = torch.cat(chunk_images, dim=0)
+            
+            save_path = output_dir / f"{split}_embeddings_{chunk}.pt"
+            torch.save({
+                'embeddings': embeddings,
+                'images': images,  # for reconstruction loss computation
+            }, save_path)
+            print(f"Saved {len(embeddings)} embeddings to {save_path}")
+            print(f"  embeddings shape: {embeddings.shape}")
+            print(f"  images shape: {images.shape}")
+
 
 # %% ../nbs/08_preencode.ipynb #c159f875
 #| eval: false
