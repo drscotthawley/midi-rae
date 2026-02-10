@@ -24,7 +24,7 @@ def preencode(cfg: DictConfig):
     print(f"device = {device}")
     
     # Load encoder from checkpoint
-    ckpt_path = cfg.get('encoder_ckpt', 'checkpoints/best.pt')
+    ckpt_path = cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt')
     print(f"Loading encoder from {ckpt_path}")
     
     model = ViTEncoder(
