@@ -140,7 +140,6 @@ def make_emb_viz(zs,
     torch.cuda.empty_cache()
     
     if file_idx is not None and file_idx.shape[0] < zs.shape[0]:
-        #file_idx = file_idx.repeat(2).repeat_interleave(num_tokens).to(device)
         file_idx = file_idx.repeat_interleave(zs.shape[0]//file_idx.shape[0]).to(device)
 
     # CLS tokens
