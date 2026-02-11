@@ -77,12 +77,12 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
     elif color_by == 'pairs':
         n_pairs = n // 2
         pair_colors = [f'rgb({np.random.randint(0,256)},{np.random.randint(0,256)},{np.random.randint(0,256)})' for _ in range(n_pairs)]
-        colors = [pair_colors[i // 2] for i in range(n)]  # pairs are adjacent in index-space 
+        colors = [pair_colors[i % n_pairs] for i in range(n)]  # pairs separated by num_tokens 
     else: raise ValueError(f"Unknown color_by: {color_by}")
 
     hover_text = [f"file_id: {int(fid)}" for fid in file_idx] if file_idx is not None else None
     if color_by == 'pairs':
-        hover_text = [f"pair {i//2}" for i in range(n)] if hover_text is None else [f"{s}, pair {i//2}" for i, s in enumerate(hover_text)]
+        hover_text = [f"pair {i%n_pairs}" for i in range(n)] if hover_text is None else [f"{s}, pair {i%n_pairs}" for i, s in enumerate(hover_text)]
 
     
     fig = go.Figure(data=[go.Scatter3d(
@@ -119,15 +119,10 @@ def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, fi
 
 # %% ../nbs/05_viz.ipynb #b618d453
 def _subsample(data, indices, max_points, debug=False):
-    "Subsample data and indices together, in pairs. pairs are adjacent"
-    perm1 = torch.randperm(len(data)//2)[:max_points//2]*2  # even numbers
-    perm2 = perm1 + 1
-    #perm = torch.stack([perm1, perm2], dim=1).reshape(-1, perm1.shape[-1])
-    perm = torch.stack([perm1, perm2], dim=1).flatten(0, 1)
-    if debug: 
-        print("perm1 = ",perm1) 
-        print("perm2 = ",perm2)
-        print("perm.shape = ",perm.shape,", perm = ",perm)
+    "Subsample data and indices together, in pairs"
+    perm1 = torch.randperm(len(data)//2)[:max_points//2]
+    perm2 = perm1 + len(data)//2
+    perm = torch.cat([perm1,perm2])
     return data[perm], indices[perm] if indices is not None else None
 
 # %% ../nbs/05_viz.ipynb #2818edfa
@@ -145,11 +140,12 @@ def make_emb_viz(zs,
     torch.cuda.empty_cache()
     
     if file_idx is not None and file_idx.shape[0] < zs.shape[0]:
-        file_idx = file_idx.repeat_interleave(zs.shape[0]//file_idx.shape[0]).to(device)
+        file_idx = file_idx.repeat(2).repeat_interleave(num_tokens).to(device)
 
     # CLS tokens
     cls_tokens = zs[::num_tokens]
     cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
+
     cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
     
     # Patches (non-CLS)
