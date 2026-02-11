@@ -26,6 +26,7 @@ def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=10, n_kee
         torch.save(ckpt, f'checkpoints/{tag}best.pt')
         save_checkpoint.best_val_loss = val_loss
 
+    # delete any checkpoints older than the n_keep-th one
     ckpts = sorted([f for f in os.listdir('checkpoints') if f.startswith(f'{tag}ckpt_epoch')],
-                   key=lambda x: int(x.split('epoch')[1].split('.')[0]))
+               key=lambda x: os.path.getmtime(f'checkpoints/{x}'))
     for old in ckpts[:-n_keep]: os.remove(f'checkpoints/{old}')

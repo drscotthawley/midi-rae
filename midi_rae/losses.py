@@ -25,7 +25,7 @@ def SIGReg(x, global_step, num_slices=256):
     ecf = (torch.exp(1j * x_t).mean(dim=0)).abs()  # empirical CF
     diff = (ecf - exp_f).abs().square().mul(exp_f)  # weighted L2 distance
     #N = x.size(0)  # With respect to Yann: Don't scale by N because then if you change the batch size you have to retune lambd by hand ugh
-    T = torch.trapz(diff, t, dim=1).sum() #* N
+    T = torch.trapz(diff, t, dim=1).sum() #* N  # sum here is over num slices, not data points
     return T
 
 # %% ../nbs/03_losses.ipynb #cf61d695
@@ -43,7 +43,7 @@ def attraction_loss(z1, z2,  # embeddings of two "views" of the same thing (in b
 def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None): 
     "Main LeJEPA loss function"
     sim = attraction_loss(z1, z2, deltas=deltas)
-    sigreg = SIGReg( torch.cat((z1, z2), dim=0), global_step ) * 2 # normalize to similar scale as sim
+    sigreg = SIGReg( torch.cat((z1, z2), dim=0), global_step ) * 1 # normalize to similar scale as sim
     return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.item(), 'sigreg':sigreg.item()}
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2

@@ -5,14 +5,14 @@ data:
 
 model:
   patch_size: 16
-  dim: 768
+  dim: 256
   depth: 4
   heads: 8
   dec_depth: 6   # decoder vit 
   dec_heads: 8
 
 training:
-  batch_size: 440
+  batch_size: 768
   lr: 1e-4
   epochs: 1000
   lambd: 0.3
@@ -21,7 +21,7 @@ training:
 
 preencode:
   output_dir: /home/shawley/datasets/POP909_encoded
-  num_passes: 1000  # number of passes through the dataset
+  num_passes: 10  # number of passes through the dataset
 
 wandb:
   project: vit-midi-rae

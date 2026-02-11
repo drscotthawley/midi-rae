@@ -77,10 +77,13 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
     elif color_by == 'pairs':
         n_pairs = n // 2
         pair_colors = [f'rgb({np.random.randint(0,256)},{np.random.randint(0,256)},{np.random.randint(0,256)})' for _ in range(n_pairs)]
-        colors = [pair_colors[i % n_pairs] for i in range(n)]
+        colors = [pair_colors[i // 2] for i in range(n)]  # pairs are adjacent in index-space 
     else: raise ValueError(f"Unknown color_by: {color_by}")
 
     hover_text = [f"file_id: {int(fid)}" for fid in file_idx] if file_idx is not None else None
+    if color_by == 'pairs':
+        hover_text = [f"pair {i//2}" for i in range(n)] if hover_text is None else [f"{s}, pair {i//2}" for i, s in enumerate(hover_text)]
+
     
     fig = go.Figure(data=[go.Scatter3d(
         x=coords[:,0], y=coords[:,1], z=coords[:,2],
@@ -123,12 +126,23 @@ def _subsample(data, indices, max_points):
     return data[perm], indices[perm] if indices is not None else None
 
 # %% ../nbs/05_viz.ipynb #2818edfa
-def make_emb_viz(zs,  num_tokens, epoch=-1, model=None, title='Embeddings', max_points=8192, pmask=None, file_idx=None, do_umap=True):
+def make_emb_viz(zs,  
+                num_tokens, epoch=-1, 
+                model=None, 
+                title='Embeddings', 
+                max_points=5000, 
+                pmask=None, 
+                file_idx=None, 
+                do_umap=True):
     "this is the main routine, showing different groups of embeddings"
     device = zs.device
     if model is not None: model.to('cpu')
     torch.cuda.empty_cache()
     
+    if file_idx is not None and file_idx.shape[0] < zs.shape[0]:
+        #file_idx = file_idx.repeat(2).repeat_interleave(num_tokens).to(device)
+        file_idx = file_idx.repeat_interleave(zs.shape[0]//file_idx.shape[0]).to(device)
+
     # CLS tokens
     cls_tokens = zs[::num_tokens]
     cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None

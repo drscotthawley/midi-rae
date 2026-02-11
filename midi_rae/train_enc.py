@@ -118,7 +118,9 @@ def train(cfg: DictConfig):
            "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
 
         if epoch % viz_every == 0: 
-            make_emb_viz(torch.cat((z1, z2), dim=0),  num_tokens, epoch, model=model, pmask=torch.cat([pmask1, pmask2], dim=0), file_idx=batch['file_idx'])
+            # zs_stacked = torch.cat((z1, z2), dim=0)
+            zs_interleaved = torch.stack([z1, z2], dim=1).reshape(-1, z1.shape[-1])
+            make_emb_viz(zs_interleaved, num_tokens, epoch, model=model, pmask=torch.cat([pmask1, pmask2], dim=0), file_idx=batch['file_idx'])
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)
