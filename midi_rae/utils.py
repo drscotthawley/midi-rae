@@ -32,9 +32,10 @@ def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=10, n_kee
     for old in ckpts[:-n_keep]: os.remove(f'checkpoints/{old}')
 
 # %% ../nbs/04_utils.ipynb #55fb9d50
-def load_checkpoint(ckpt_path:str, device, return_all=False, weights_only=False):
+def load_checkpoint(model, ckpt_path:str, return_all=False, weights_only=False, strict=False):
     "loads a model (and maybe other things) from a checkpoint file"
+    device = next(model.parameters()).device
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=weights_only)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}
-    model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=strict)
     return (model, state_dict) if return_all else model 
