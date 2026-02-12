@@ -150,6 +150,7 @@ def make_emb_viz(zs,
     cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
     
     # Patches (non-CLS)
+    dim = zs.shape[-1]
     patches = zs.view(-1, num_tokens, dim)[:, 1:]   # 1: strips off cls
     patches = patches.reshape(-1, dim)  
     pmask1, pmask2 = pmasks
