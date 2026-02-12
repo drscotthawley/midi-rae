@@ -21,6 +21,9 @@ from .losses import PatchGANDiscriminator
 from .data import PRPairDataset  # note, we'll only use img2 and ignore img1
 from .utils import save_checkpoint
 
+torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision('high')
+
 # %% ../nbs/09_train_dec.ipynb #f87c9456
 class PreEncodedDataset(Dataset):
     """Load pre-encoded embeddings + images from .pt files"""
@@ -66,8 +69,8 @@ def train(cfg: DictConfig):
         train_ds = PRPairDataset(cfg.data.path, split='train', image_size=cfg.data.image_size)
         val_ds = PRPairDataset(cfg.data.path, split='val', image_size=cfg.data.image_size)
     
-    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, shuffle=True, num_workers=4)
-    val_dl = DataLoader(val_ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=4)
+    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=4, pin_memory=True, drop_last=True)
     
     # --- Models ---
     encoder = None
@@ -82,8 +85,10 @@ def train(cfg: DictConfig):
     decoder = ViTDecoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size),
                          cfg.model.patch_size, cfg.model.dim, 
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
+    decoder = torch.compile(decoder)
     
     discriminator = PatchGANDiscriminator(in_ch=cfg.data.in_channels).to(device)
+    discriminator = torch.compile(discriminator)
     
     # --- Losses ---
     l1_loss = nn.L1Loss()
@@ -92,7 +97,13 @@ def train(cfg: DictConfig):
     # --- Optimizers ---
     opt_dec = torch.optim.AdamW(decoder.parameters(), lr=cfg.training.lr)
     opt_disc = torch.optim.AdamW(discriminator.parameters(), lr=cfg.training.lr)
-    
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)
+    schedulerD = torch.optim.lr_scheduler.OneCycleLR(opt_disc, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)   
+
+    # --- AMP scalers ---
+    scaler_dec = torch.amp.GradScaler()
+    scaler_disc = torch.amp.GradScaler()
+
     # --- Wandb ---
     wandb.init(project=cfg.wandb.project, config=dict(cfg))
     
@@ -105,27 +116,30 @@ def train(cfg: DictConfig):
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.epochs}'):
             z, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
             
-            # --- Decode ---
-            img_recon = decoder(z)
-            
             # --- Discriminator step ---
             opt_disc.zero_grad()
-            d_real = discriminator(img_real)
-            d_fake = discriminator(img_recon.detach())
-            loss_disc = (torch.relu(1 - d_real).mean() + torch.relu(1 + d_fake).mean()) / 2  # hinge loss
-            loss_disc.backward()
-            opt_disc.step()
+            with torch.autocast('cuda'):
+                img_recon = decoder(z)
+                d_real = discriminator(img_real)
+                d_fake = discriminator(img_recon.detach())
+                loss_disc = (torch.relu(1 - d_real).mean() + torch.relu(1 + d_fake).mean()) / 2
+            scaler_disc.scale(loss_disc).backward()
+            scaler_disc.step(opt_disc)
+            scaler_disc.update()
             
             # --- Decoder step ---
             opt_dec.zero_grad()
-            loss_l1 = l1_loss(img_recon, img_real)
-            loss_lpips = lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
-            loss_gan = -discriminator(img_recon).mean()  # generator wants discriminator to say "real"
-            
-            # TODO: adaptive weighting as in RAE paper
-            loss_dec = loss_l1 + 0.1 * loss_lpips + 0.01 * loss_gan
-            loss_dec.backward()
-            opt_dec.step()
+            with torch.autocast('cuda'):
+                # img_recon = decoder(z)  # Don't need to recompute this.
+                loss_l1 = l1_loss(img_recon, img_real)
+                loss_lpips = lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
+                loss_gan = -discriminator(img_recon).mean()  # generator wants discriminator to say "real"
+                
+                # TODO: adaptive weighting as in RAE paper (??)
+                loss_dec = loss_l1 + 0.1 * loss_lpips + 0.01 * loss_gan
+            scaler_dec.scale(loss_dec).backward()
+            scaler_dec.step(opt_dec)
+            scaler_dec.update()
             
             train_loss += loss_dec.item()
         
@@ -135,7 +149,9 @@ def train(cfg: DictConfig):
                    'loss_lpips': loss_lpips.item(), 'loss_gan': loss_gan.item(),
                    'loss_disc': loss_disc.item(), 'epoch': epoch})
         
-        # TODO: validation, checkpointing, visualization
+        # TODO: validation, checkpointing, visualization e.g. reconstruction comparison
+        scheduler.step()
+        schedulerD.step()
     
     wandb.finish()
 

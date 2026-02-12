@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz']
+           'plot_embeddings_3d', 'make_emb_viz_old']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -126,12 +126,12 @@ def _subsample(data, indices, max_points, debug=False):
     return data[perm], indices[perm] if indices is not None else None
 
 # %% ../nbs/05_viz.ipynb #2818edfa
-def make_emb_viz(zs,  
+def make_emb_viz_old(zs,  
                 num_tokens, epoch=-1, 
                 model=None, 
                 title='Embeddings', 
                 max_points=5000, 
-                pmask=None, 
+                pmasks=None, 
                 file_idx=None, 
                 do_umap=True):
     "this is the main routine, showing different groups of embeddings"
@@ -149,6 +149,10 @@ def make_emb_viz(zs,
     cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
     
     # Patches (non-CLS)
+    pmask1, pmask2 = pmasks
+    pmask = pmask1 & pmask2  # both non-empty
+    valid = pmask.view(-1).bool()  # non-empty patches.  TODO: check if this includes CLS or not.
+
     patch_mask = torch.arange(len(zs)) % num_tokens != 0
     patch_only = zs[patch_mask]
     patch_file_idx = file_idx[patch_mask] if file_idx is not None else None
