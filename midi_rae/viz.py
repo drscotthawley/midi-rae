@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz_old']
+           'plot_embeddings_3d', 'make_emb_viz']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -125,8 +125,8 @@ def _subsample(data, indices, max_points, debug=False):
     perm = torch.cat([perm1,perm2])
     return data[perm], indices[perm] if indices is not None else None
 
-# %% ../nbs/05_viz.ipynb #2818edfa
-def make_emb_viz_old(zs,  
+# %% ../nbs/05_viz.ipynb #a64048f1
+def make_emb_viz(zs,  
                 num_tokens, epoch=-1, 
                 model=None, 
                 title='Embeddings', 
@@ -144,32 +144,28 @@ def make_emb_viz_old(zs,
 
     # CLS tokens
     cls_tokens = zs[::num_tokens]
+    print("cls_tokens.shape =",cls_tokens.shape)
     cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
 
     cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
     
     # Patches (non-CLS)
+    patches = zs.view(-1, num_tokens, dim)[:, 1:]   # 1: strips off cls
+    patches = patches.reshape(-1, dim)  
     pmask1, pmask2 = pmasks
-    pmask = pmask1 & pmask2  # both non-empty
-    valid = pmask.view(-1).bool()  # non-empty patches.  TODO: check if this includes CLS or not.
+    pmask = (pmask1 & pmask2)[:,1:] # both non-empty
+    valid = pmask.flatten().repeat(2)  
+    patch_file_idx = file_idx.view(-1, num_tokens)[:, 1:].reshape(-1)
 
-    patch_mask = torch.arange(len(zs)) % num_tokens != 0
-    patch_only = zs[patch_mask]
-    patch_file_idx = file_idx[patch_mask] if file_idx is not None else None
-    
-    if pmask is not None:
-        patch_pmask = pmask[:, 1:].flatten().bool()
-        print(f"Non-empty patches: {patch_pmask.sum()}/{len(patch_pmask)} ({patch_pmask.float().mean()*100:.1f}%)")
+    # Non-empty patches
+    valid_patches, valid_file_idx = patches[valid], patch_file_idx[valid] 
+    rnd_patches, rnd_file_idx = _subsample(valid_patches, valid_file_idx, max_points)
+    patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, do_umap=do_umap)
         
-        # Non-empty patches
-        valid_patches, valid_file_idx = patch_only[patch_pmask], (patch_file_idx[patch_pmask] if patch_file_idx is not None else None)
-        rnd_patches, rnd_file_idx = _subsample(valid_patches, valid_file_idx, max_points)
-        patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, do_umap=do_umap)
-        
-        # Empty patches
-        empty_patches, empty_file_idx = patch_only[~patch_pmask], (patch_file_idx[~patch_pmask] if patch_file_idx is not None else None)
-        rnd_empty, rnd_empty_idx = _subsample(empty_patches, empty_file_idx, max_points)
-        empty_pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx)
+    # Empty patches
+    empty_patches, empty_file_idx = patches[~valid], patch_file_idx[~valid]  
+    rnd_empty, rnd_empty_idx = _subsample(empty_patches, empty_file_idx, max_points)
+    empty_pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx)
     
     if model is not None: model.to(device)
     figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
