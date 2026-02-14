@@ -49,7 +49,7 @@ def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
         z, img = batch
         return z.to(device), img.to(device)
     else:
-        img = batch['img'].to(device)  # adjust key based on your dataset
+        img = batch['img2'].to(device)  # adjust key based on your dataset
         with torch.no_grad():
             z = encoder(img, return_cls_only=False)
         return z, img
@@ -65,9 +65,8 @@ def train(cfg: DictConfig):
         train_ds = PreEncodedDataset(cfg.preencode.output_dir + '/train')
         val_ds = PreEncodedDataset(cfg.preencode.output_dir + '/val')
     else:
-        # TODO: use a single-image dataset (not pairs)
-        train_ds = PRPairDataset(cfg.data.path, split='train', image_size=cfg.data.image_size)
-        val_ds = PRPairDataset(cfg.data.path, split='val', image_size=cfg.data.image_size)
+        train_ds = PRPairDataset(split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
+        val_ds   = PRPairDataset(split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
     
     train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
     val_dl = DataLoader(val_ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=4, pin_memory=True, drop_last=True)
@@ -77,8 +76,7 @@ def train(cfg: DictConfig):
     if not preencoded:
         encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
                              cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
-        ckpt = torch.load(cfg.encoder_ckpt)
-        encoder.load_state_dict(ckpt['model_state_dict'])
+        encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
         encoder.eval()  # frozen
         for p in encoder.parameters(): p.requires_grad = False
     
@@ -105,7 +103,7 @@ def train(cfg: DictConfig):
     scaler_disc = torch.amp.GradScaler()
 
     # --- Wandb ---
-    wandb.init(project=cfg.wandb.project, config=dict(cfg))
+    wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
     
     # --- Training loop ---
     for epoch in range(1, cfg.training.epochs + 1):
