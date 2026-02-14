@@ -71,7 +71,7 @@ def setup_dataloaders(cfg, preencoded=False):
     return train_dl, val_dl 
 
 # %% ../nbs/09_train_dec.ipynb #b221cde1
-def setup_models(cfg, preencoded): 
+def setup_models(cfg, device, preencoded): 
     encoder = None
     if not preencoded:
         encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
@@ -142,7 +142,7 @@ def train(cfg: DictConfig):
     preencoded = cfg.get('preencoded', False)
     
     train_dl, val_dl = setup_dataloaders(cfg, preencoded)
-    encoder, decoder, discriminator = setup_models(cfg, preencoded) 
+    encoder, decoder, discriminator = setup_models(cfg, device, preencoded) 
     tstate = setup_tstate(cfg, device)
     wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
     
