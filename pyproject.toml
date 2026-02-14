@@ -22,8 +22,9 @@ dependencies = [
     "wandb",
     "hydra-core",
     "tqdm",
-    "plotly",
     "matplotlib",
+    "plotly",
+    "scikit-learn",
     "lpips",
 ]
 

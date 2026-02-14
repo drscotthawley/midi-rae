@@ -66,7 +66,7 @@ def pca_project(embeddings, **kwargs):
         return cpu_pca_project(embeddings, **kwargs)
 
 # %% ../nbs/05_viz.ipynb #1c5d9cc8
-def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, title='Embeddings', debug=False):
+def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, deltas=None, title='Embeddings', debug=False):
     "3D scatter plot of embeddings. color_by: 'none', 'file', or 'pair'"
     import plotly.graph_objects as go
     n = len(coords)
@@ -80,7 +80,7 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
         colors = [pair_colors[i % n_pairs] for i in range(n)]  # pairs separated by num_tokens 
     else: raise ValueError(f"Unknown color_by: {color_by}")
 
-    hover_text = [f"file_id: {int(fid)}" for fid in file_idx] if file_idx is not None else None
+    hover_text = [f"file_id: {int(fid)}, deltas: {ds.cpu().numpy()}" for fid, ds in zip(file_idx,deltas)] if (file_idx is not None) and (deltas is not None) else None
     if color_by == 'pairs':
         hover_text = [f"pair {i%n_pairs}" for i in range(n)] if hover_text is None else [f"{s}, pair {i%n_pairs}" for i, s in enumerate(hover_text)]
 
@@ -97,16 +97,16 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, titl
 
 
 # %% ../nbs/05_viz.ipynb #f1feb8ca
-def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, file_idx=None):
+def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, file_idx=None, deltas=None):
     "visualize embeddings, projected"
     umap_fig = None
     if do_umap:
         coords = umap_project(zs)
-        umap_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx)
+        umap_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx, deltas=deltas)
     if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup before PCA or else you get CUDA errors
     gc.collect()
     coords = pca_project(zs)
-    pca_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx)
+    pca_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx, deltas=deltas)
     if wandb.run is not None: 
         if do_umap:
             wandb.log({f"{title} UMAP": wandb.Html(umap_fig.to_html()), f"{title} PCA": wandb.Html(pca_fig.to_html())}, step=epoch)
@@ -118,12 +118,12 @@ def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, fi
 
 
 # %% ../nbs/05_viz.ipynb #b618d453
-def _subsample(data, indices, max_points, debug=False):
+def _subsample(data, indices, deltas, max_points, debug=False):
     "Subsample data and indices together, in pairs"
     perm1 = torch.randperm(len(data)//2)[:max_points//2]
     perm2 = perm1 + len(data)//2
     perm = torch.cat([perm1,perm2])
-    return data[perm], indices[perm] if indices is not None else None
+    return data[perm], indices[perm], deltas[perm]
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 def make_emb_viz(zs,  
@@ -132,8 +132,10 @@ def make_emb_viz(zs,
                 title='Embeddings', 
                 max_points=5000, 
                 pmasks=None, 
-                file_idx=None, 
-                do_umap=True):
+                file_idx=None,
+                deltas=None,
+                do_umap=True,
+                debug=False):
     "this is the main routine, showing different groups of embeddings"
     device = zs.device
     if model is not None: model.to('cpu')
@@ -141,13 +143,15 @@ def make_emb_viz(zs,
     
     if file_idx is not None and file_idx.shape[0] < zs.shape[0]:
         file_idx = file_idx.repeat(2).repeat_interleave(num_tokens).to(device)
+    if deltas is not None and deltas.shape[0] < zs.shape[0]:
+        deltas = deltas.repeat(2, 1).repeat_interleave(num_tokens, dim=0).to(device)
 
     # CLS tokens
     cls_tokens = zs[::num_tokens]
-    print("cls_tokens.shape =",cls_tokens.shape)
+    if debug: print("cls_tokens.shape =",cls_tokens.shape)
     cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
-
-    cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, do_umap=do_umap)
+    cls_deltas = deltas[::num_tokens] if deltas is not None else None
+    cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, deltas=cls_deltas, do_umap=do_umap)
     
     # Patches (non-CLS)
     dim = zs.shape[-1]
@@ -156,17 +160,20 @@ def make_emb_viz(zs,
     pmask1, pmask2 = pmasks
     pmask = (pmask1 & pmask2)[:,1:] # both non-empty
     valid = pmask.flatten().repeat(2)  
+    if debug: print("file_idx.shape, deltas.shape =",file_idx.shape, deltas.shape)
     patch_file_idx = file_idx.view(-1, num_tokens)[:, 1:].reshape(-1)
+    patch_deltas = deltas.view(-1, num_tokens)[:, 1:].reshape(-1,2)
+    if debug: print("patch_file_idx.shape, patch_deltas.shape =",patch_file_idx.shape, patch_deltas.shape)
 
     # Non-empty patches
-    valid_patches, valid_file_idx = patches[valid], patch_file_idx[valid] 
-    rnd_patches, rnd_file_idx = _subsample(valid_patches, valid_file_idx, max_points)
-    patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, do_umap=do_umap)
+    valid_patches, valid_file_idx, valid_deltas = patches[valid], patch_file_idx[valid], patch_deltas[valid]
+    rnd_patches, rnd_file_idx, rnd_deltas = _subsample(valid_patches, valid_file_idx, valid_deltas, max_points)
+    patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, deltas=rnd_deltas, do_umap=do_umap)
         
     # Empty patches
-    empty_patches, empty_file_idx = patches[~valid], patch_file_idx[~valid]  
-    rnd_empty, rnd_empty_idx = _subsample(empty_patches, empty_file_idx, max_points)
-    empty_pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx)
+    empty_patches, empty_file_idx, emtpy_deltas = patches[~valid], patch_file_idx[~valid], patch_deltas[~valid]
+    rnd_empty, rnd_empty_idx, rnd_empty_deltas = _subsample(empty_patches, empty_file_idx, emtpy_deltas, max_points)
+    empty_pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx, deltas=rnd_empty_deltas)
     
     if model is not None: model.to(device)
     figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}

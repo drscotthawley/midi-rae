@@ -29,7 +29,7 @@ class PRPairDataset(Dataset):
         self.crop_size, self.max_shift_x, self.max_shift_y = crop_size, max_shift_x, max_shift_y
         
         # Load and split filenames
-        all_filenames = glob(os.path.expanduser(image_dataset_dir)+'*.png')
+        all_filenames = glob(os.path.join(os.path.expanduser(image_dataset_dir), '**/*.png'), recursive=True)
         rng = random.Random(seed)
         shuffled = all_filenames.copy()
         rng.shuffle(shuffled)
