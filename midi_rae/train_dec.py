@@ -21,7 +21,7 @@ from collections import namedtuple
 from .vit import ViTEncoder, ViTDecoder
 from .losses import PatchGANDiscriminator
 from .data import PRPairDataset  # note, we'll only use img2 and ignore img1
-from .utils import save_checkpoint
+from .utils import save_checkpoint, load_checkpoint
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
@@ -90,7 +90,7 @@ def setup_models(cfg, device, preencoded):
     return encoder, decoder, discriminator
 
 # %% ../nbs/09_train_dec.ipynb #61dd1ef1
-def setup_tstate(cfg, device):
+def setup_tstate(cfg, device, decoder, discriminator):
     "Training_state: Losses, Optimizers, Schedulers, AMP Scalers"
     l1_loss = nn.L1Loss()
     lpips_loss = lpips.LPIPS(net='vgg').to(device)
@@ -143,7 +143,7 @@ def train(cfg: DictConfig):
     
     train_dl, val_dl = setup_dataloaders(cfg, preencoded)
     encoder, decoder, discriminator = setup_models(cfg, device, preencoded) 
-    tstate = setup_tstate(cfg, device)
+    tstate = setup_tstate(cfg, device, decoder, discriminator)
     wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
     
     for epoch in range(1, cfg.training.epochs + 1):
