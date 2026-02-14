@@ -139,17 +139,16 @@ def train_step(z, img_real, decoder, discriminator,
 # %% ../nbs/09_train_dec.ipynb #198855af
 @hydra.main(version_base=None, config_path='../configs', config_name='config')
 def train(cfg: DictConfig):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     preencoded = cfg.get('preencoded', False)
     
-    train_dl, val_dl = setup_dataloaders(cfg, preencoded)
+    train_dl, val_dl                = setup_dataloaders(cfg, preencoded)
     encoder, decoder, discriminator = setup_models(cfg, device, preencoded) 
-    tstate = setup_tstate(cfg, device, decoder, discriminator)
-    wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
+    tstate                          = setup_tstate(cfg, device, decoder, discriminator)
+    if not(cfg.get('no_wandb', False)):  wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg)) # CLI: +no_wanb=true 
     
     for epoch in range(1, cfg.training.epochs + 1):
-        decoder.train()
-        discriminator.train()
+        decoder.train(), discriminator.train()
         train_loss = 0
         
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.epochs}'):
@@ -159,8 +158,8 @@ def train(cfg: DictConfig):
         
         train_loss /= len(train_dl)
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
-        wandb.log({'train_loss': train_loss, 'loss_l1': losses['l1'], 'loss_lpips': losses['lpips'], 'loss_gan': losses['gan'],
-                   'loss_disc': losses['disc'], 'epoch': epoch})
+        if wandb.run is not None: wandb.log({'train_loss': train_loss, 'loss_l1': losses['l1'], 'loss_lpips': losses['lpips'], 
+                    'loss_gan': losses['gan'],'loss_disc': losses['disc'], 'epoch': epoch})
         
         # TODO: validation, checkpointing, visualization e.g. reconstruction comparison
         scheduler.step()
