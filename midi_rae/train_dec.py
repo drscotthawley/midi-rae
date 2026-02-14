@@ -99,7 +99,8 @@ def setup_tstate(cfg, device, decoder, discriminator):
     scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)
     schedulerD = torch.optim.lr_scheduler.OneCycleLR(opt_disc, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)   
     scaler_dec, scaler_disc = torch.amp.GradScaler(), torch.amp.GradScaler()
-    return namedtuple('TrainState', ['opt_disc', 'opt_dec', 'scaler_disc', 'scaler_dec', 'l1_loss', 'lpips_loss'])
+    TrainState = namedtuple('TrainState', ['opt_disc', 'opt_dec', 'scaler_disc', 'scaler_dec', 'l1_loss', 'lpips_loss'])
+    return TrainState(opt_dec, opt_disc, scaler_dec, scaler_disc, l1_loss, lpips_loss)
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
 def train_step(z, img_real, decoder, discriminator, 
