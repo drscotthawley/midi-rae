@@ -110,9 +110,9 @@ def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, fi
     pca_fig = plot_embeddings_3d(coords, num_tokens, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx, deltas=deltas)
     if wandb.run is not None: 
         if do_umap:
-            wandb.log({f"{title} UMAP": wandb.Html(umap_fig.to_html()), f"{title} PCA": wandb.Html(pca_fig.to_html())}, step=epoch)
+            wandb.log({f"{title} UMAP": wandb.Html(umap_fig.to_html()), f"{title} PCA": wandb.Html(pca_fig.to_html())})
         else:
-            wandb.log({f"{title} PCA": wandb.Html(pca_fig.to_html())}, step=epoch)
+            wandb.log({f"{title} PCA": wandb.Html(pca_fig.to_html())})
     if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup again
     gc.collect()
     return pca_fig, umap_fig

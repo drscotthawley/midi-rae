@@ -38,24 +38,29 @@ def curr_learn(shared_ct_dict, epoch, interval=100, verbose=False):
     return training
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
-def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None): 
+def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
-    z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False) 
-    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) # same mask for both
-    loss_dict = {} 
+    z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False)
+    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) # same mae_mask for both
+    pmask1_visible, pmask2_visible = pmask1[:, mae_mask1], pmask2[:, mae_mask1]
+    loss_dict = {}
     if mae_decoder is not None:
         recon_patches = mae_decoder(z2, pos2, mae_mask2) # just pick z2 and ignore z1 
         loss_dict['mae'] = calc_mae_loss(recon_patches, img2, pos2, mae_mask2)
 
     z1 = z1.reshape(-1, z1.shape[-1])
     z2 = z2.reshape(-1, z2.shape[-1])
-    pmasks = (pmask1, pmask2)
+    pmasks = (pmask1_visible, pmask2_visible)
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
     loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=pmasks)
-    if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae'] 
+    if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae']
+
+    if torch.isnan(loss_dict['loss']):
+        print("NaN detected!", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()})
+        breakpoint()
     return loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
