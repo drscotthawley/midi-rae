@@ -221,6 +221,7 @@ class LightweightMAEDecoder(nn.Module):
                 ):   
         B, N_full = z.shape[0], pos_full.shape[0]
         z_full = self.mask_token.expand(B, N_full, -1).clone()
+        if z.ndim < 3: z = z.reshape(B, -1, z.shape[-1])          #  # (B*N_vis, dim) -> (B, N_vis, dim)
         z_full[:, mae_mask, :] = z  # insert visible tokens
         for block in self.blocks: z_full = block(z_full, pos=pos_full)
         return self.proj(z_full)  # (B, N_full, patch_size^2)
