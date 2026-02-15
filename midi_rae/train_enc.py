@@ -37,12 +37,12 @@ def curr_learn(shared_ct_dict, epoch, interval=100, verbose=False):
     return training
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
-def compute_batch_loss(batch, model, cfg, global_step): 
+def compute_batch_loss(batch, encoder, cfg, global_step): 
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(model.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
-    z1, pmask1 = model(img1, return_cls_only=False) 
-    z2, pmask2 = model(img2, return_cls_only=False) 
+    z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False) 
+    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False) 
     z1 = z1.reshape(-1, z1.shape[-1])
     z2 = z2.reshape(-1, z2.shape[-1])
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
