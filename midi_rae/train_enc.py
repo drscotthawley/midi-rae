@@ -43,7 +43,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     device = next(encoder.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
     z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False) 
-    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False) 
+    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) # same mask for both
     loss_dict = {} 
     if mae_decoder is not None:
         recon_patches = mae_decoder(z2, pos2, mae_mask2) # just pick z2 and ignore z1 
