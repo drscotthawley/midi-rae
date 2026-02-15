@@ -57,6 +57,7 @@ class PRPairDataset(Dataset):
         file_idx = random.randint(0, self.actual_len - 1)
         img = self.images[file_idx]
         img = torch.from_numpy(img).float() / 255.0
+        img = (img > 0.25).float()  # binarize
         h, w = img.shape
         
         # sample shift_x (non-zero)
@@ -76,6 +77,7 @@ class PRPairDataset(Dataset):
         shift_y = random.randint(-self.max_shift_y, self.max_shift_y)
         img2 = torch.roll(img2, shifts=shift_y, dims=0) # 'roll' is ok because "there's never any notes near top or bottom" 🤞
         
+
         return {
             'img1': img1.unsqueeze(0),  # add channel dim (1, 128, 128)
             'img2': img2.unsqueeze(0),
