@@ -104,7 +104,7 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad()
             with torch.autocast('cuda'):
-                loss_dict, z1, z2, pmask1, pmask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step)
+                loss_dict, z1, z2, pmask1, pmask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
             scaler.scale(loss_dict['loss']).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -115,7 +115,7 @@ def train(cfg: DictConfig):
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
-                val_loss_dict, z1, z2, pmask1, pmask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step)
+                val_loss_dict, z1, z2, pmask1, pmask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
                 val_loss += val_loss_dict['loss'].item()
 
         train_loss /= len(train_dl)
@@ -123,8 +123,8 @@ def train(cfg: DictConfig):
         print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
         
         wandb.log({"train_loss": train_loss, "val_loss": val_loss, 
-           "train_sim": loss_dict['sim'], "train_sigreg": loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], 
-           "val_sim": val_loss_dict['sim'], "val_sigreg": val_loss_dict['sigreg'], "val_anchor": val_loss_dict['anchor'], 
+           "train_sim": loss_dict['sim'], "train_sigreg": loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], "train_mae":loss_dict['mae'],
+           "val_sim": val_loss_dict['sim'], "val_sigreg": val_loss_dict['sigreg'], "val_anchor": val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'],
            "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'], 
            "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
 
