@@ -49,7 +49,10 @@ def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None):
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
     "Anchor embeddings of empty patches to the origin"
-    return z1.square().mean() + z2.square().mean()
+    loss = 0.0
+    if z1.numel() > 0: loss += z1.square().mean()
+    if z2.numel() > 0: loss += z2.square().mean()
+    return loss
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
 def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, pmasks=(None,None), lambda_anchor=0.1):
