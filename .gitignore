@@ -153,3 +153,6 @@ checklink/cookies.txt
 
 # solvit .py nbs
 nbs/*.py
+
+# chats
+*chat.ipynb
