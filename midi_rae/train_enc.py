@@ -7,6 +7,8 @@ __all__ = ['curr_learn', 'compute_batch_loss', 'train']
 
 # %% ../nbs/06_train_enc.ipynb #98edfbef
 import os
+from itertools import chain
+import multiprocessing as mp
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -14,13 +16,12 @@ import wandb
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
 import hydra
-from .vit import ViTEncoder
+from .vit import ViTEncoder, LightweightMAEDecoder
 from .data import PRPairDataset
 from .losses import calc_enc_loss
 from .utils import save_checkpoint
 from .viz import make_emb_viz
 from tqdm.auto import tqdm
-import multiprocessing as mp
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
@@ -37,19 +38,25 @@ def curr_learn(shared_ct_dict, epoch, interval=100, verbose=False):
     return training
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
-def compute_batch_loss(batch, encoder, cfg, global_step): 
+def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None): 
     "Compute loss and return other exal auxiliary variables (for train or val)"
-    device = next(model.parameters()).device
+    device = next(encoder.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
     z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False) 
     z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False) 
+    loss_dict = {} 
+    if mae_decoder is not None:
+        recon_patches = mae_decoder(z2, pos2, mae_mask2) # just pick z2 and ignore z1 
+        loss_dict['mae'] = calc_mae_loss(recon_patches, img2, pos2, mae_mask2)
+
     z1 = z1.reshape(-1, z1.shape[-1])
     z2 = z2.reshape(-1, z2.shape[-1])
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
-    loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
-    return loss_dict, z1, z2, pmask1, pmask2, num_tokens
+    loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
+    if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae'] 
 
+    return loss_dict, z1, z2, pmask1, pmask2, num_tokens
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -73,7 +80,11 @@ def train(cfg: DictConfig):
     model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
               cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
     model = torch.compile(model)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.lr)
+    mae_decoder = LightweightMAEDecoder(patch_size=cfg.model.patch_size, dim=cfg.model.dim).to(device)
+
+    #optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.lr)
+    optimizer = torch.optim.AdamW(chain(model.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
+
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)
     scaler = torch.amp.GradScaler(device)

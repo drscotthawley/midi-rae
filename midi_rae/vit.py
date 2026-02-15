@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['RoPE2D', 'Attention', 'TransformerBlock', 'PatchEmbedding', 'apply_mae_mask', 'ViTEncoder', 'Unpatchify',
-           'ViTDecoder']
+           'ViTDecoder', 'LightweightMAEDecoder']
 
 # %% ../nbs/02_vit.ipynb #b96051a7
 import torch
@@ -195,3 +195,26 @@ class ViTDecoder(nn.Module):
         if strip_cls_token: z = z[:,1:] 
         img = self.unpatch(z) 
         return img
+
+# %% ../nbs/02_vit.ipynb #233cd8a4
+#| eval: false
+class LightweightMAEDecoder(nn.Module):
+    """Simple decoder for MAE pretraining - reconstructs masked patches
+     loss should compare `output[:, ~mae_mask]` against original masked patch pixels.
+    """
+    def __init__(self, patch_size=16, dim=256, depth=2, heads=4):
+        super().__init__()
+        self.patch_size = patch_size
+        self.mask_token = nn.Parameter(torch.randn(1, 1, dim))
+        self.blocks = nn.ModuleList([TransformerBlock(dim, heads) for _ in range(depth)])
+        self.proj = nn.Linear(dim, patch_size * patch_size)  # output pixels per patch
+        
+    def forward(self, x,  # x: (B, N_vis, dim),
+                pos_full, # original set of positions w/o mae masking
+                mae_mask, # 1=visible, 0=masked out
+                ):   
+        B, N_full = x.shape[0], pos_full.shape[0]
+        x_full = self.mask_token.expand(B, N_full, -1).clone()
+        x_full[:, mae_mask, :] = x  # insert visible tokens
+        for block in self.blocks: x_full = block(x_full, pos=pos_full)
+        return self.proj(x_full)  # (B, N_full, patch_size^2)

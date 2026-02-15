@@ -47,7 +47,6 @@ class PreEncodedDataset(Dataset):
 
 # %% ../nbs/09_train_dec.ipynb #f0cf8a0f
 def setup_dataloaders(cfg, preencoded=False):
-        # --- Data ---
     if preencoded:
         train_ds = PreEncodedDataset(cfg.preencode.output_dir + '/train')
         val_ds = PreEncodedDataset(cfg.preencode.output_dir + '/val')
@@ -55,8 +54,9 @@ def setup_dataloaders(cfg, preencoded=False):
         train_ds = PRPairDataset(split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
         val_ds   = PRPairDataset(split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
     
-    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
-    val_dl = DataLoader(val_ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=4, pin_memory=True, drop_last=True)
+    batch_size = cfg.training.dec_batch_size
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, drop_last=True)
     return train_dl, val_dl 
 
 # %% ../nbs/09_train_dec.ipynb #b221cde1
@@ -65,31 +65,38 @@ def setup_models(cfg, device, preencoded):
     if not preencoded:
         encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
                              cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
-        encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
-        encoder.eval()  # frozen
-        for p in encoder.parameters(): p.requires_grad = False
+        #encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
+        if cfg.training.get('enc_ft_lr', 0) <=0: 
+            print("Freezing Encoder")
+            encoder.eval()  # frozen
+            for p in encoder.parameters(): p.requires_grad = False
+        else: 
+            print("Encoder will train") 
+            encoder.train()
     
     decoder = ViTDecoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size),
                          cfg.model.patch_size, cfg.model.dim, 
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
-    decoder = torch.compile(decoder)
+    #decoder = torch.compile(decoder)
     
     discriminator = PatchGANDiscriminator(in_ch=cfg.data.in_channels).to(device)
-    discriminator = torch.compile(discriminator)
+    #discriminator = torch.compile(discriminator) # can cause issues elsewhere; leave off for now
     return encoder, decoder, discriminator
 
 # %% ../nbs/09_train_dec.ipynb #61dd1ef1
-def setup_tstate(cfg, device, decoder, discriminator):
+def setup_tstate(cfg, device, decoder, discriminator, encoder=None):
     "Training_state: Losses, Optimizers, Schedulers, AMP Scalers"
     l1_loss = nn.L1Loss()
     lpips_loss = lpips.LPIPS(net='vgg').to(device)
+    opt_enc = None if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
     opt_dec = torch.optim.AdamW(decoder.parameters(), lr=cfg.training.dec_lr)
     opt_disc = torch.optim.AdamW(discriminator.parameters(), lr=cfg.training.dec_lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs)
-    schedulerD = torch.optim.lr_scheduler.OneCycleLR(opt_disc, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs)  
+    schedulerD = torch.optim.lr_scheduler.OneCycleLR(opt_disc, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs-cfg.training.gan_warmup))   
+    scheduler_enc = None if opt_enc is None else torch.optim.lr_scheduler.OneCycleLR(opt_enc, max_lr=cfg.training.enc_ft_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs))   
     scaler_dec, scaler_disc = torch.amp.GradScaler(), torch.amp.GradScaler()
-    TrainState = namedtuple('TrainState', ['opt_disc', 'opt_dec', 'scaler_disc', 'scaler_dec', 'l1_loss', 'lpips_loss','scheduler','schedulerD'])
-    return TrainState(opt_disc, opt_dec, scaler_disc, scaler_dec, l1_loss, lpips_loss, scheduler, schedulerD)
+    TrainState = namedtuple('TrainState', ['opt_enc', 'opt_disc', 'opt_dec', 'scaler_disc', 'scaler_dec', 'l1_loss', 'lpips_loss','scheduler','schedulerD','scheduler_enc'])
+    return TrainState(opt_enc, opt_disc, opt_dec, scaler_disc, scaler_dec, l1_loss, lpips_loss, scheduler, schedulerD, scheduler_enc)
 
 # %% ../nbs/09_train_dec.ipynb #102f0438
 def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
@@ -98,47 +105,56 @@ def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
         z, img = batch
         return z.to(device), img.to(device)
     else:
-        img = batch['img2'].to(device)  # adjust key based on your dataset
-        with torch.no_grad():
-            z, pmask = encoder(img, return_cls_only=False)
-        return z, img
+        img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
+        with torch.no_grad() if not encoder.training else nullcontext():
+            z1, pmask1 = encoder(img1, return_cls_only=False)
+            z2, pmask2 = encoder(img2, return_cls_only=False)
+            img1 = (img1 > 0.1).float()  # binarize
+            img2 = (img2 > 0.1).float()
+        return {'z1':z1, 'z2':z2, 'pmask1':pmask1, 'pmask2':pmask2, 'img1':img1, 'img2':img2, 'deltas':deltas}
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
-def train_step(epoch, z, img_real, decoder, discriminator,
+def train_step(epoch, z, img_real, decoder, discriminator, 
             tstate,  # named tuple containing optimizers, loss fns, scalers 
-            gan_warmup=20, # epochs before we start using the adversarial loss
-            ):
+            cfg,    # config
+            ): 
     "training step for decoder (and discriminator)"
     decoder.train(), discriminator.train()
     loss_disc, loss_gan = torch.tensor(0.0), torch.tensor(0.0)
-    if epoch > gan_warmup:
+    if epoch > cfg.training.gan_warmup:
         # --- Discriminator step (after warmup) ---
         tstate.opt_disc.zero_grad()
         with torch.autocast('cuda'):
             img_recon = decoder(z)
             d_real = discriminator(img_real)
-            d_fake = discriminator(img_recon.detach())
+            d_fake = discriminator(torch.sigmoid(img_recon.detach()))
             loss_disc = (torch.relu(1 - d_real).mean() + torch.relu(1 + d_fake).mean()) / 2
         tstate.scaler_disc.scale(loss_disc).backward()
         tstate.scaler_disc.step(tstate.opt_disc)
         tstate.scaler_disc.update()
-
+        #with torch.no_grad(): print(f"d_real: {d_real.mean().item():.2f}, d_fake: {d_fake.mean().item():.2f}")
+    
     # --- Decoder step ---
     tstate.opt_dec.zero_grad()
     with torch.autocast('cuda'):
         img_recon = decoder(z)  # recompute for the sake of the comp. graph
-        loss_l1 = tstate.l1_loss(img_recon, img_real)
+        loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
+        #loss_l1 = tstate.l1_loss(img_recon, img_real)
+        weights = torch.where(img_real > 0.05, 10.0, 1.0) # non-black pixels are worth more than black pixels
+        img_recon = torch.sigmoid(img_recon)
+        loss_l1 = (weights * (img_recon - img_real).abs()).mean()
         loss_lpips = tstate.lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
-        loss_dec = loss_l1 + 0.02 * loss_lpips + 0.01 # TODO: adaptive weighting as in RAE paper (??)
-        if epoch > gan_warmup:
+        #loss_dec = loss_l1 + 0.02 * loss_lpips # TODO: adaptive weighting as in RAE paper (??)
+        loss_dec = loss_bce
+        if epoch > cfg.training.gan_warmup: 
             loss_gan = -discriminator(img_recon).mean() # - because generator wants discriminator to say "real"
             loss_dec +=  0.01 * loss_gan
-    tstate.scaler_dec.scale(loss_dec).backward()
+    tstate.scaler_dec.scale(loss_dec).backward(retain_graph=True)
     tstate.scaler_dec.step(tstate.opt_dec)
     tstate.scaler_dec.update()
-
-    keys = ['disc', 'l1', 'lpips', 'gan', 'dec']
-    vals = [loss_disc, loss_l1, loss_lpips, loss_gan, loss_dec]
+    
+    keys = ['disc', 'l1', 'lpips', 'gan', 'dec','bce']
+    vals = [loss_disc, loss_l1, loss_lpips, loss_gan, loss_dec, loss_bce]
     losses = { k:v.item() for k,v in zip(keys, vals) }
     return losses, img_recon.detach()
 
@@ -147,54 +163,86 @@ def train_step(epoch, z, img_real, decoder, discriminator,
 def train(cfg: DictConfig):
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     preencoded = cfg.get('preencoded', False)
-
+    
     train_dl, val_dl                = setup_dataloaders(cfg, preencoded)
-    encoder, decoder, discriminator = setup_models(cfg, device, preencoded)
-    tstate                          = setup_tstate(cfg, device, decoder, discriminator)
+    encoder, decoder, discriminator = setup_models(cfg, device, preencoded) 
+    tstate                          = setup_tstate(cfg, device, decoder, discriminator, encoder=encoder)
     if not(cfg.get('no_wandb', False)):  wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg)) # CLI: +no_wanb=true 
-
+    global_step = 0 
     for epoch in range(1, cfg.training.dec_epochs + 1):
         train_loss = 0
-
+        
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
-            z, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
-            losses, img_recon = train_step(epoch, z, img_real, decoder, discriminator, tstate, gan_warmup=cfg.training.gan_warmup)
+            global_step += 1
+            eb = get_embeddings_batch(batch, encoder, preencoded, device)
+            z1, z2, pmask1, pmask2, deltas, img_real = eb['z1'], eb['z2'], eb['pmask1'], eb['pmask2'], eb['deltas'], eb['img2']
+            if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
+            losses, img_recon = train_step(epoch, z2, img_real, decoder, discriminator, tstate, cfg)
             train_loss += losses['dec']
-            if wandb.run is not None: wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
-                    'train_gan': losses['gan'],'train_disc': losses['disc'], 'epoch': epoch})
 
+            # encoder fine-tuning
+            if tstate.opt_enc is not None: 
+                encoder.train()
+                z1 = z1.reshape(-1, z1.shape[-1])
+                z2 = z2.reshape(-1, z2.shape[-1])
+                num_tokens =  z1.shape[0] // len(deltas)  # or just 65
+                deltas = deltas.repeat_interleave(num_tokens, dim=0)
+                enc_loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
+                lambda_enc = 100
+                enc_loss_dict['loss'] *= lambda_enc
+                enc_loss_dict['loss'].backward()
+                if False and tstate.opt_enc is not None:
+                    grad_norm = sum(p.grad.norm().item() for p in encoder.parameters() if p.grad is not None)
+                    print(f"Encoder grad norm: {grad_norm:.4f}")
+                tstate.opt_enc.step()
+
+            if wandb.run is not None: wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
+                    'train_gan': losses['gan'],'train_disc': losses['disc'], 'enc_loss':enc_loss_dict['loss'].item(), 'epoch': epoch})
+        
         train_loss /= len(train_dl)
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
-
-        if wandb.run is not None: wandb.log({'train_loss': train_loss, 'loss_l1': losses['l1'], 'loss_lpips': losses['lpips'], 
-                    'loss_gan': losses['gan'],'loss_disc': losses['disc'], 'epoch': epoch})
         
         # TODO: validation, checkpointing, visualization e.g. reconstruction comparison
-        decoder.eval()
+        decoder.eval() 
         with torch.no_grad():
             val_loss, loss_gan = 0, torch.tensor(0.0)
             for batch in val_dl:
-                z, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
-                img_recon = decoder(z)  # recompute for the sake of the comp. graph
-                loss_l1 = tstate.l1_loss(img_recon, img_real)
+                eb = get_embeddings_batch(batch, encoder, preencoded, device)
+                z2, img_real = eb['z2'], eb['img2']
+                img_recon = decoder(z2)  # recompute for the sake of the comp. graph
+                loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
+                #loss_l1 = tstate.l1_loss(img_recon, img_real)
+                img_recon = torch.sigmoid(img_recon) 
+                weights = torch.where(img_real > 0.05, 10.0, 1.0)  # non-black pixels are worth more than black pixels
+                loss_l1 = (weights * (img_recon - img_real).abs()).mean()
                 loss_lpips = tstate.lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
-                loss_dec = loss_l1 + 0.02 * loss_lpips # TODO: adaptive weighting as in RAE paper (??)
+                #loss_dec = loss_l1 + 0.02 * loss_lpips # TODO: adaptive weighting as in RAE paper (??)
+                loss_dec = loss_bce
                 if epoch > cfg.training.gan_warmup:
                     loss_gan = -discriminator(img_recon).mean() # - because generator wants discriminator to say "real"
                     loss_dec +=  0.01 * loss_gan
                 val_loss += loss_dec.item()
-            val_loss /= len(val_dl)
-            print(f"\n img_real min, max, mean: ",[x.cpu().numpy() for x in [img_real.min(), img_real.max(), img_real.mean()]])
-            print(f" img_recon min, max, mean: ",[x.cpu().numpy() for x in [img_recon.min(), img_recon.max(), img_recon.mean()]])
+            val_loss /= len(val_dl) 
+
+            #z1, pmask1, pmask2 = eb['z1'], eb['pmask1'], eb['pmask2'] 
+            img_recon = (img_recon > 0.5).float()
+           
+            #print(f" img_real shape, min, mean, max: {img_real.shape}, {img_real.min().item():.4f}, {img_real.mean().item():.4f}, {img_real.max().item():.4f}")
+            #print(f"img_recon shape, min, mean, max: {img_recon.shape}, {img_recon.min().item():.4f}, {img_recon.mean().item():.4f}, {img_recon.max().item():.4f}")
             # viz     
             grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
             grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
-            if wandb.run is not None: wandb.log({'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips,
-                    'val_gan': loss_gan, 'epoch': epoch, "lr_dec": tstate.opt_dec.param_groups[0]['lr'],
-                    'val_real': wandb.Image(grid_real), 'val_recon': wandb.Image(grid_recon) })
+            if wandb.run is not None: wandb.log({'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
+                    'val_gan': loss_gan, 'epoch': epoch, 
+                    "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],
+                    "lr_enc": tstate.opt_enc.param_groups[0]['lr'], 
+                    'val_real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'val_recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
 
+        save_checkpoint(decoder,        tstate.opt_dec, epoch, val_loss, cfg, tag="dec_")
+        save_checkpoint(discriminator, tstate.opt_disc, epoch, val_loss, cfg, tag="disc_")
         tstate.scheduler.step()
-        tstate.schedulerD.step()
+        if tstate.scheduler_enc is not None: tstate.scheduler_enc.step()
+        if epoch > cfg.training.gan_warmup: tstate.schedulerD.step()
     
     wandb.finish()
 

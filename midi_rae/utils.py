@@ -17,7 +17,8 @@ def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=10, n_kee
 
     os.makedirs('checkpoints', exist_ok=True)
     ckpt = {'epoch': epoch, 'model_state_dict': getattr(model, '_orig_mod', model).state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
+        'optimizer_state_dict': optimizer.state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
+
     if epoch % save_every == 0:
         if verbose: print(f"Saving checkpoint to checkpoints/{tag}ckpt_epoch{epoch}.pt")
         torch.save(ckpt, f'checkpoints/{tag}ckpt_epoch{epoch}.pt')
@@ -37,4 +38,4 @@ def load_checkpoint(model, ckpt_path:str, return_all=False, weights_only=False, 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=weights_only)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}
     model.load_state_dict(state_dict, strict=strict)
-    return (model, state_dict) if return_all else model 
+    return (model, state_dict) if return_all else model
