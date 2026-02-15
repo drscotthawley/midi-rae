@@ -18,7 +18,7 @@ from omegaconf import DictConfig, OmegaConf
 import hydra
 from .vit import ViTEncoder, LightweightMAEDecoder
 from .data import PRPairDataset
-from .losses import calc_enc_loss
+from .losses import calc_enc_loss, calc_mae_loss
 from .utils import save_checkpoint
 from .viz import make_emb_viz
 from tqdm.auto import tqdm
