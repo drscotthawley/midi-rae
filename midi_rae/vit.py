@@ -159,7 +159,7 @@ class ViTEncoder(nn.Module):
         for block in self.blocks:  
             x = block(x, pos=pos_visible) 
             x = torch.where(pmask_visible.unsqueeze(-1), x, x * 1e-3)  # empty patches go to small but nonzero #s
-        return (x[:, 0] if return_cls_only else x), pmask, pos, mae_mask 
+        return (x[:, 0] if return_cls_only else x), pmask_visible, pos, mae_mask  # return full pos, not pos_visible
 
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba
