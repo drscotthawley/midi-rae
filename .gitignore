@@ -151,8 +151,10 @@ checklink/cookies.txt
 # Quarto
 .quarto
 
-# solvit .py nbs
+# solvit .py nbs and dups
 nbs/*.py
+nbs/*_dup?.ipynb
+
 
 # chats
 *chat.ipynb
