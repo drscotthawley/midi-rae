@@ -215,12 +215,12 @@ class LightweightMAEDecoder(nn.Module):
         self.blocks = nn.ModuleList([TransformerBlock(dim, heads) for _ in range(depth)])
         self.proj = nn.Linear(dim, patch_size * patch_size)  # output pixels per patch
         
-    def forward(self, x,  # x: (B, N_vis, dim),
+    def forward(self, z,  # (B, N_vis, dim),
                 pos_full, # original set of positions w/o mae masking
                 mae_mask, # 1=visible, 0=masked out
                 ):   
-        B, N_full = x.shape[0], pos_full.shape[0]
-        x_full = self.mask_token.expand(B, N_full, -1).clone()
-        x_full[:, mae_mask, :] = x  # insert visible tokens
-        for block in self.blocks: x_full = block(x_full, pos=pos_full)
-        return self.proj(x_full)  # (B, N_full, patch_size^2)
+        B, N_full = z.shape[0], pos_full.shape[0]
+        z_full = self.mask_token.expand(B, N_full, -1).clone()
+        z_full[:, mae_mask, :] = z  # insert visible tokens
+        for block in self.blocks: z_full = block(z_full, pos=pos_full)
+        return self.proj(z_full)  # (B, N_full, patch_size^2)

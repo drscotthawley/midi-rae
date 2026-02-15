@@ -20,7 +20,7 @@ from .vit import ViTEncoder, LightweightMAEDecoder
 from .data import PRPairDataset
 from .losses import calc_enc_loss, calc_mae_loss
 from .utils import save_checkpoint
-from .viz import make_emb_viz
+from .viz import make_emb_viz, viz_mae_recon
 from tqdm.auto import tqdm
 
 torch.backends.cudnn.benchmark = True
@@ -132,6 +132,9 @@ def train(cfg: DictConfig):
             if epoch % viz_every == 0:
                 zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
                 make_emb_viz(zs_stacked, num_tokens, epoch, model=model, pmasks=(pmask1,pmask2), file_idx=batch['file_idx'], deltas=batch['deltas'])
+                if mae_decoder is not None:
+                    patches_recon = mae_decoder(z2, pos2, mae_mask2)
+                    viz_mae_recon(patches_recon, pos, batch['img2'], epoch=epoch)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)

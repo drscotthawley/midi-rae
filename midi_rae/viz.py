@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz']
+           'plot_embeddings_3d', 'make_emb_viz', 'viz_mae_recon']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -178,3 +178,22 @@ def make_emb_viz(zs,
     if model is not None: model.to(device)
     figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
     return figs
+
+# %% ../nbs/05_viz.ipynb #ccd99bb0
+def viz_mae_recon(patches_recon,   # from proj_out of LightweightMAEDecoder, (B, N_full, patch_size^2)
+            pos,                   # "grid" locations of patches
+            img_real, 
+            epoch=-1,
+            patch_size=16):
+    """show how our LightweightMAEDecoder is doing (during encoder training)"""
+    B, C, H, W = img_real.shape
+    grid_h, grid_w = H//patch_size, W//patch_size
+    if patches_recon.shape[1] % 2 != 0: patches_recon = patches_recon[:,1:]  # probably need to strip of cls token 
+    img_recon = patches_recon.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4) # (B, grid_h, patch_size, grid_w, patch_size)
+    img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
+    grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
+    grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
+    if wandb.run is not None: 
+        wandb.log({'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
+
+

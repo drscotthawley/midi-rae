@@ -78,4 +78,5 @@ d = { 'settings': { 'branch': 'main',
                               'midi_rae.viz.make_emb_viz': ('viz.html#make_emb_viz', 'midi_rae/viz.py'),
                               'midi_rae.viz.pca_project': ('viz.html#pca_project', 'midi_rae/viz.py'),
                               'midi_rae.viz.plot_embeddings_3d': ('viz.html#plot_embeddings_3d', 'midi_rae/viz.py'),
-                              'midi_rae.viz.umap_project': ('viz.html#umap_project', 'midi_rae/viz.py')}}}
+                              'midi_rae.viz.umap_project': ('viz.html#umap_project', 'midi_rae/viz.py'),
+                              'midi_rae.viz.viz_mae_recon': ('viz.html#viz_mae_recon', 'midi_rae/viz.py')}}}
