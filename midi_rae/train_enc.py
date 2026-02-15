@@ -88,7 +88,7 @@ def train(cfg: DictConfig):
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)
     scaler = torch.amp.GradScaler(device)
-    wandb.init(project=cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
+    if not(cfg.get('no_wandb', False)): wandb.init(project=cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
 
     # Training loop
     global_step = 0
@@ -122,7 +122,7 @@ def train(cfg: DictConfig):
         val_loss /= len(val_dl)
         print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
         
-        wandb.log({"train_loss": train_loss, "val_loss": val_loss, 
+        if wandb.run is not None: wandb.log({"train_loss": train_loss, "val_loss": val_loss, 
            "train_sim": loss_dict['sim'], "train_sigreg": loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], "train_mae":loss_dict['mae'],
            "val_sim": val_loss_dict['sim'], "val_sigreg": val_loss_dict['sigreg'], "val_anchor": val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'],
            "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'], 
