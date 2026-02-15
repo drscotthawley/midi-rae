@@ -11,6 +11,7 @@ import torch
 import numpy as np
 import wandb
 import gc
+from torchvision.utils import make_grid
 
 # %% ../nbs/05_viz.ipynb #a164c279
 def cpu_umap_project(embeddings, n_components=3, n_neighbors=15, min_dist=0.1, random_state=42):
