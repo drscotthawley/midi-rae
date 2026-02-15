@@ -12,12 +12,16 @@ model:
   dec_heads: 8
 
 training:
-  batch_size: 768
+  batch_size: 768  # encoder batch size
   lr: 2e-4
   epochs: 1000
   lambd: 0.3
   max_shift_x: 12   # will increase w/epoch via curriculum
   max_shift_y: 12
+  dec_batch_size: 320   # decoder batch size
+  dec_epochs: 100
+  dec_lr: 1e-3
+  gan_warmup: 20   # number of epochs before adversarial training starts
 
 preencode:
   output_dir: /home/shawley/datasets/POP909_encoded
@@ -25,4 +29,3 @@ preencode:
 
 wandb:
   project: vit-midi-rae
-  
