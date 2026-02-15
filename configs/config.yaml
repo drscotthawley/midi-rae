@@ -18,6 +18,7 @@ training:
   lambd: 0.3
   max_shift_x: 12   # will increase w/epoch via curriculum
   max_shift_y: 12
+  mae_lambda: 0.1
   dec_batch_size: 256   # decoder-training batch size
   dec_epochs: 100
   dec_lr: 5e-5
