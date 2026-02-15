@@ -56,7 +56,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae'] 
 
-    return loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, num_tokens
+    return loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, mae_mask2, num_tokens
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -104,7 +104,7 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad()
             with torch.autocast('cuda'):
-                loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, num_tokens = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, mae_mask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
             scaler.scale(loss_dict['loss']).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -115,7 +115,7 @@ def train(cfg: DictConfig):
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
-                val_loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, num_tokens = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                val_loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, mae_mask2, num_tokens = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
                 val_loss += val_loss_dict['loss'].item()
 
         train_loss /= len(train_dl)
