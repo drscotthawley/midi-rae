@@ -51,12 +51,12 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
 
     z1 = z1.reshape(-1, z1.shape[-1])
     z2 = z2.reshape(-1, z2.shape[-1])
+    pmasks = (pmask1, pmask2)
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
-    loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
+    loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=pmasks)
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae'] 
-
-    return loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, mae_mask2, num_tokens, recon_patches
+    return loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -104,36 +104,38 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad()
             with torch.autocast('cuda'):
-                loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
             scaler.scale(loss_dict['loss']).backward()
             scaler.step(optimizer)
             scaler.update()
             train_loss += loss_dict['loss'].item()
+            if wandb.run is not None:
+                wandb.log({"train_loss": train_loss, "train_sim": loss_dict['sim'], "train_sigreg": loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], 
+                    "train_mae":loss_dict['mae'], "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=global_step)
             
         # At end of Epoch: validation, viz, etc
         model.eval()
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
-                val_loss_dict, z1, z2, pmask1, pmask2, pos1, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                val_loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
                 val_loss += val_loss_dict['loss'].item()
 
-        train_loss /= len(train_dl)
-        val_loss /= len(val_dl)
-        print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
-        
-        if wandb.run is not None:
-            wandb.log({"train_loss": train_loss, "val_loss": val_loss,
-               "train_sim": loss_dict['sim'], "train_sigreg": loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], "train_mae":loss_dict['mae'],
-               "val_sim": val_loss_dict['sim'], "val_sigreg": val_loss_dict['sigreg'], "val_anchor": val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'],
-               "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
-               "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
+            train_loss /= len(train_dl)
+            val_loss /= len(val_dl)
+            print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
+            
+            if wandb.run is not None:
+                wandb.log({ "val_loss": val_loss,
+                "val_sim": val_loss_dict['sim'], "val_sigreg": val_loss_dict['sigreg'], "val_anchor": val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'],
+                "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
+                "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=global_step)
 
-            if epoch % viz_every == 0:
-                zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
-                make_emb_viz(zs_stacked, num_tokens, epoch, model=model, pmasks=(pmask1,pmask2), file_idx=batch['file_idx'], deltas=batch['deltas'])
-                if mae_decoder is not None:
-                    viz_mae_recon(recon_patches, pos2, batch['img2'], epoch=epoch)
+                if epoch % viz_every == 0:
+                    zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
+                    make_emb_viz(zs_stacked, num_tokens, epoch, model=model, pmasks=pmasks, file_idx=batch['file_idx'], deltas=batch['deltas'])
+                    if mae_decoder is not None:
+                        viz_mae_recon(recon_patches, pos2, batch['img2'], epoch=epoch)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)
