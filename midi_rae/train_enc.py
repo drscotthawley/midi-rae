@@ -93,12 +93,16 @@ def train(cfg: DictConfig):
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs)
     scaler = torch.amp.GradScaler(device)
-    if not(cfg.get('no_wandb', False)): wandb.init(project=cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
+    if not(cfg.get('no_wandb', False)): 
+        wandb.init(project=cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
+        wandb.define_metric("epoch")
+        wandb.define_metric("*", step_metric="epoch")
 
     # Training loop
     global_step = 0
     viz_every = 10
     for epoch in range(1, cfg.training.epochs+1):
+        wandb.log({"epoch": epoch})
         model.train()
         train_loss = 0
         if False and epoch > 1: # curriculum learning, easily turned off by setting this to False. DL's re-defined each epoch to init workers
@@ -132,13 +136,13 @@ def train(cfg: DictConfig):
                     "train_loss":train_loss, "train_sim":loss_dict['sim'], "train_sigreg":loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], "train_mae":loss_dict['mae'],  
                     "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'], 
                     "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
-                    "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
+                    "lr": optimizer.param_groups[0]['lr'], "epoch": epoch})
 
                 if epoch % viz_every == 0:
                     zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
                     make_emb_viz(zs_stacked, num_tokens, epoch, model=model, pmasks=pmasks, file_idx=batch['file_idx'], deltas=batch['deltas'])
                     if mae_decoder is not None:
-                        viz_mae_recon(recon_patches, pos2, batch['img2'], epoch=epoch)
+                        viz_mae_recon(recon_patches, pos2, batch['img2'])
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)
