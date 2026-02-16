@@ -1,5 +1,5 @@
 data:
-  path: /home/shawley/datasets/POP909_images  # adjust path as needed
+  path: /home/shawley/datasets/POP909_images_basic  # adjust path as needed
   image_size: 128
   in_channels: 1
 
@@ -31,4 +31,3 @@ preencode:
 
 wandb:
   project: vit-midi-rae
-  

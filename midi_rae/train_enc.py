@@ -69,8 +69,8 @@ def train(cfg: DictConfig):
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     print("device = ",device)
 
-    train_ds = PRPairDataset(split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
-    val_ds   = PRPairDataset(split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
+    train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
+    val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
     train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True)
     val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True)
 
@@ -114,9 +114,6 @@ def train(cfg: DictConfig):
             scaler.step(optimizer)
             scaler.update()
             train_loss += loss_dict['loss'].item()
-            if wandb.run is not None:
-                wandb.log({"train_loss": train_loss, "train_sim": loss_dict['sim'], "train_sigreg": loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], 
-                    "train_mae":loss_dict['mae'], "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=global_step)
             
         # At end of Epoch: validation, viz, etc
         model.eval()
@@ -131,10 +128,11 @@ def train(cfg: DictConfig):
             print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
             
             if wandb.run is not None:
-                wandb.log({ "val_loss": val_loss,
-                "val_sim": val_loss_dict['sim'], "val_sigreg": val_loss_dict['sigreg'], "val_anchor": val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'],
-                "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
-                "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=global_step)
+                wandb.log({ 
+                    "train_loss":train_loss, "train_sim":loss_dict['sim'], "train_sigreg":loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], "train_mae":loss_dict['mae'],  
+                    "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'], 
+                    "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
+                    "lr": optimizer.param_groups[0]['lr'], "epoch": epoch}, step=epoch)
 
                 if epoch % viz_every == 0:
                     zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
