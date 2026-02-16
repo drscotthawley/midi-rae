@@ -133,18 +133,21 @@ def apply_mae_mask(x, pos, pmask, mae_mask):
 class ViTEncoder(nn.Module):
     """Vision Transformer Encoder for piano rolls, keeps track of empty patches (pmask) and supports masking"""
     def __init__(self, 
-                in_channels,  # 
-                image_size,   # tuple (H,W), e.g. (256, 256)
-                patch_size,   # assuming square patches, e.g 16
-                dim,          # embedding dim, e.g. 768
-                depth,        # number of transformerblock layers -- 4? 
-                heads):       # number of attention heads - 8? 
+                in_channels,    # 1 for grayscale
+                image_size,     # tuple (H,W), e.g. (256, 256)
+                patch_size,     # assuming square patches, e.g 16
+                dim,            # embedding dim, e.g. 768
+                depth,          # number of transformerblock layers -- 4? 
+                heads,          # number of attention heads - 8? 
+                mask_ratio=0.0, # MAE mask ratio, 0=no masking
+                ):
         super().__init__()
         self.patch_embed = PatchEmbedding(in_channels=in_channels,patch_size=patch_size, dim=dim)
         self.blocks = nn.ModuleList([ TransformerBlock(dim, heads) for _ in range(depth) ])
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        self.mask_ratio = mask_ratio
         
-    def forward(self, x, return_cls_only=True, mask_ratio=0.75, mae_mask=None):
+    def forward(self, x, return_cls_only=True, mae_mask=None):  # mr=0 means masking is turned off for now
         x, pmask, pos = self.patch_embed(x)      # x is now patches, pmask=1 for non-empty patches, 0 for empty
 
         # tack on cls token 
@@ -153,13 +156,13 @@ class ViTEncoder(nn.Module):
         cls_pos = torch.tensor([[-1, -1]], device=pos.device)
         pos = torch.cat([cls_pos, pos], dim=0)  # (num_patches+1, 2)
         pmask = torch.cat([pmask.new_ones(pmask.shape[0], 1), pmask], dim=1)  # (B, 65)
-        if mae_mask is None: mae_mask = make_mae_mask(pmask, ratio=mask_ratio if self.training else 0.0)
+        if mae_mask is None: mae_mask = make_mae_mask(pmask, ratio=self.mask_ratio if self.training else 0.0)
         x, pos_visible, pmask_visible = apply_mae_mask(x, pos, pmask, mae_mask)
 
         for block in self.blocks:  
             x = block(x, pos=pos_visible) 
             x = torch.where(pmask_visible.unsqueeze(-1), x, x * 1e-3)  # empty patches go to small but nonzero #s
-        return (x[:, 0] if return_cls_only else x), pmask, pos, mae_mask  # return full pos, not pos_visible
+        return (x[:, 0] if return_cls_only else x), pmask, pos, mae_mask  # return full pos & pmask, can calc *_visible outside w/ mae_mask
 
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba

@@ -33,11 +33,11 @@ def attraction_loss(z1, z2,  # embeddings of two "views" of the same thing (in b
                     deltas=None,   # optional/TBD: info on semantic 'distance' between z1 & z2
                     tau = 100.0):    # inverse strength of fall-off for delta distances, big=slower
     "How we pull similar 'views' together"
-    if deltas is None: return (z1 - z2).square().mean()
+    if deltas is None: return safe_mean( (z1 - z2).square() )
     delta_diag = (deltas**2).sum(dim=1)
     delta_fac = torch.exp(-delta_diag / tau) # less attraction for more 'distant' views
     #delta_fac = 1/(1 + delta_diag/tau)  # longer tail than exp
-    return ((z1 - z2).square() * delta_fac.unsqueeze(-1) ).mean()
+    return safe_mean( (z1 - z2).square() * delta_fac.unsqueeze(-1) )
 
 # %% ../nbs/03_losses.ipynb #624570b6
 def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None): 
@@ -49,10 +49,7 @@ def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None):
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
     "Anchor embeddings of empty patches to the origin"
-    loss = 0.0
-    if z1.numel() > 0: loss += z1.square().mean()
-    if z2.numel() > 0: loss += z2.square().mean()
-    return loss
+    return safe_mean( z1.square() ) + safe_mean( z2.square() )
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
 def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, pmasks=(None,None), lambda_anchor=0.1):
@@ -73,7 +70,7 @@ def calc_mae_loss(recon_patches, img, pos_full, mae_mask, patch_size=16):
     """
     img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)  # (B, C, H//ps, W//ps, ps, ps)
     img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)    # (B, C, N, ps*ps) -> reshape to (B, N, ps*ps)
-    return (recon_patches[:, 1:, :][:, ~mae_mask[1:], :] - img_patches[:, ~mae_mask[1:], :]).square().mean() # [1:] b/c no CLS token for img_patches
+    return safe_mean( (recon_patches[:, 1:, :][:, ~mae_mask[1:], :] - img_patches[:, ~mae_mask[1:], :]).square() ) # [1:] b/c no CLS token for img_patches
 
 # %% ../nbs/03_losses.ipynb #ade84ead
 class PatchGANDiscriminator(nn.Module):
