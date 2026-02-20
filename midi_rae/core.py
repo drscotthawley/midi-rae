@@ -12,11 +12,18 @@ from dataclasses import dataclass
 # %% ../nbs/00_core.ipynb #c1d2e3f4
 @dataclass
 class PatchState:
-    "Bundle of patch embeddings at a single spatial scale with their metadata."
-    emb: torch.Tensor      # (B, N, dim) patch embeddings
-    pos: torch.Tensor      # (N, 2) grid coordinates (row, col) for each patch
-    pmask: torch.Tensor    # (B, N) content mask — 1 where patch has content (e.g. notes), 0 for empty
-    mae_mask: torch.Tensor # (N,) MAE visibility mask — 1=visible, 0=masked out for reconstruction
+    """Bundle of patch embeddings at a single spatial scale with their metadata.
+
+    Attributes:
+        emb: (B, N, dim) patch embeddings
+        pos: (N, 2) grid coordinates (row, col) for each patch
+        pmask: (B, N) content mask — 1 where patch has content (e.g. notes), 0 for empty
+        mae_mask: (N,) MAE visibility mask — 1=visible, 0=masked out for reconstruction
+    """
+    emb: torch.Tensor
+    pos: torch.Tensor
+    pmask: torch.Tensor
+    mae_mask: torch.Tensor
 
     @property
     def visible(self):
@@ -57,8 +64,12 @@ class PatchState:
 # %% ../nbs/00_core.ipynb #d1e2f3a4
 @dataclass
 class HierarchicalPatchState:
-    "Multi-scale patch states, ordered coarsest → finest (currently: [0]=CLS, [1]=spatial patches)."
-    levels: list # List of `PatchState`, one per scale
+    """Multi-scale patch states, ordered coarsest → finest (currently: [0]=CLS, [1]=spatial patches).
+
+    Attributes:
+        levels: List of `PatchState`, one per scale
+    """
+    levels: list
 
     @property
     def coarsest(self) -> PatchState: return self.levels[0]
@@ -72,8 +83,15 @@ class HierarchicalPatchState:
 # %% ../nbs/00_core.ipynb #e1f2a3b4
 @dataclass
 class EncoderOutput:
-    "Full encoder output."
-    patches: HierarchicalPatchState # Encoded representations (visible patches only)
-    full_pos: torch.Tensor          # (N_full, 2) all grid positions before MAE masking (needed by decoder)
-    full_pmask: torch.Tensor        # (B, N_full) all content masks before MAE masking
-    mae_mask: torch.Tensor          # (N_full,) the MAE mask applied (1=visible, 0=masked)
+    """Full encoder output.
+
+    Attributes:
+        patches: Encoded representations (visible patches only)
+        full_pos: (N_full, 2) all grid positions before MAE masking (needed by decoder)
+        full_pmask: (B, N_full) all content masks before MAE masking
+        mae_mask: (N_full,) the MAE mask applied (1=visible, 0=masked)
+    """
+    patches: HierarchicalPatchState
+    full_pos: torch.Tensor
+    full_pmask: torch.Tensor
+    mae_mask: torch.Tensor
