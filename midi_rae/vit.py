@@ -120,6 +120,7 @@ class PatchEmbedding(nn.Module):
 # %% ../nbs/02_vit.ipynb #2fab57b5
 def make_mae_mask(pmask, ratio=0.75, has_cls_token=True):
     "Apply token masking for MAE training. 1=keep, 0=masked"
+    if ratio < 1e-8: return torch.ones(pmask.shape[1], device=pmask.device, dtype=torch.bool)
     mae_mask = pmask[0] & (torch.rand(pmask.shape[1], device=pmask.device) > ratio)  #  (B, N), 1=visible, 0=masked
     if has_cls_token: mae_mask[0] = True  
     return mae_mask 
@@ -210,7 +211,7 @@ class LightweightMAEDecoder(nn.Module):
     """Simple decoder for MAE pretraining - reconstructs masked patches
      loss should compare `output[:, ~mae_mask]` against original masked patch pixels.
     """
-    def __init__(self, patch_size=16, dim=256, depth=2, heads=4):
+    def __init__(self, patch_size=16, dim=256, depth=4, heads=4):
         super().__init__()
         self.patch_size = patch_size
         self.mask_token = nn.Parameter(torch.randn(1, 1, dim))

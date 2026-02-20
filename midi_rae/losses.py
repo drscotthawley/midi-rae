@@ -9,6 +9,7 @@ __all__ = ['safe_mean', 'SIGReg', 'attraction_loss', 'LeJEPA', 'anchor_loss', 'c
 # %% ../nbs/03_losses.ipynb #b96051a7
 import torch
 import torch.nn as nn
+import torch.nn.functional as F 
 
 # %% ../nbs/03_losses.ipynb #59c62704
 def safe_mean(t, dim=None): 
@@ -71,13 +72,16 @@ def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, pmasks=(None,None
     return loss_dict
 
 # %% ../nbs/03_losses.ipynb #34ecc897
-def calc_mae_loss(recon_patches, img, pos_full, mae_mask, patch_size=16):
-    """for now, MSE evaluated at masked patches
-       TODO: upgrade to some other loss? 
+def calc_mae_loss(recon_patches, img, pos_full, mae_mask, patch_size=16, all_patches=True, use_bce=True):
+    """for now, MSE evaluated at masked patches.  TODO: upgrade to some other loss? 
     """
     img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)  # (B, C, H//ps, W//ps, ps, ps)
     img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)    # (B, C, N, ps*ps) -> reshape to (B, N, ps*ps)
-    return safe_mean( (recon_patches[:, 1:, :][:, ~mae_mask[1:], :] - img_patches[:, ~mae_mask[1:], :]).square() ) # [1:] b/c no CLS token for img_patches
+    if all_patches:  # ignore mae mask 
+        if use_bce: 
+            return F.binary_cross_entropy_with_logits(recon_patches[:, 1:, :], img_patches) 
+        return safe_mean((recon_patches[:, 1:, :] - img_patches).square())
+    return safe_mean((recon_patches[:, 1:, :][:, ~mae_mask[1:], :] - img_patches[:, ~mae_mask[1:], :]).square())
 
 # %% ../nbs/03_losses.ipynb #ade84ead
 class PatchGANDiscriminator(nn.Module):

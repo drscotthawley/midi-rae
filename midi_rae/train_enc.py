@@ -83,7 +83,7 @@ def train(cfg: DictConfig):
         ds.max_shift_y = shared_ct_dict['training']['max_shift_y']
 
     model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
-              cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
+              cfg.model.dim, cfg.model.depth, cfg.model.heads, mask_ratio=cfg.training.mask_ratio).to(device)
     model = torch.compile(model)
     mae_decoder = LightweightMAEDecoder(patch_size=cfg.model.patch_size, dim=cfg.model.dim).to(device)
 
@@ -140,9 +140,9 @@ def train(cfg: DictConfig):
 
                 if epoch % viz_every == 0:
                     zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
-                    make_emb_viz(zs_stacked, num_tokens, epoch, model=model, pmasks=pmasks, file_idx=batch['file_idx'], deltas=batch['deltas'])
-                    if mae_decoder is not None:
-                        viz_mae_recon(recon_patches, pos2, batch['img2'])
+                    make_emb_viz(zs_stacked, num_tokens, epoch=epoch, model=model, pmasks=pmasks, file_idx=batch['file_idx'], deltas=batch['deltas'])
+                if mae_decoder is not None and (epoch % (viz_every//5) == 0):
+                        viz_mae_recon(recon_patches, pos2, batch['img2'], epoch=epoch)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)

@@ -10,6 +10,7 @@ __all__ = ['PreEncodedDataset', 'setup_dataloaders', 'setup_models', 'setup_tsta
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision.utils import make_grid
 import wandb
@@ -18,11 +19,13 @@ import hydra
 from tqdm.auto import tqdm
 import lpips
 from collections import namedtuple
+from contextlib import nullcontext
 
 from .vit import ViTEncoder, ViTDecoder
 from .losses import PatchGANDiscriminator
 from .data import PRPairDataset  # note, we'll only use img2 and ignore img1
 from .utils import save_checkpoint, load_checkpoint
+from .viz import viz_mae_recon
 
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
@@ -51,8 +54,8 @@ def setup_dataloaders(cfg, preencoded=False):
         train_ds = PreEncodedDataset(cfg.preencode.output_dir + '/train')
         val_ds = PreEncodedDataset(cfg.preencode.output_dir + '/val')
     else:
-        train_ds = PRPairDataset(split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
-        val_ds   = PRPairDataset(split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
+        train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
+        val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
     
     batch_size = cfg.training.dec_batch_size
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
@@ -64,8 +67,8 @@ def setup_models(cfg, device, preencoded):
     encoder = None
     if not preencoded:
         encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
-                             cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
-        #encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
+                             cfg.model.dim, cfg.model.depth, cfg.model.heads, mask_ratio=0).to(device)
+        encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
         if cfg.training.get('enc_ft_lr', 0) <=0: 
             print("Freezing Encoder")
             encoder.eval()  # frozen
@@ -88,7 +91,7 @@ def setup_tstate(cfg, device, decoder, discriminator, encoder=None):
     "Training_state: Losses, Optimizers, Schedulers, AMP Scalers"
     l1_loss = nn.L1Loss()
     lpips_loss = lpips.LPIPS(net='vgg').to(device)
-    opt_enc = None if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
+    opt_enc = None #if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
     opt_dec = torch.optim.AdamW(decoder.parameters(), lr=cfg.training.dec_lr)
     opt_disc = torch.optim.AdamW(discriminator.parameters(), lr=cfg.training.dec_lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs)
@@ -107,11 +110,11 @@ def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
     else:
         img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
         with torch.no_grad() if not encoder.training else nullcontext():
-            z1, pmask1 = encoder(img1, return_cls_only=False)
-            z2, pmask2 = encoder(img2, return_cls_only=False)
-            img1 = (img1 > 0.1).float()  # binarize
-            img2 = (img2 > 0.1).float()
-        return {'z1':z1, 'z2':z2, 'pmask1':pmask1, 'pmask2':pmask2, 'img1':img1, 'img2':img2, 'deltas':deltas}
+            z1, pmask1, pos1, mae_mask1  = encoder(img1, return_cls_only=False)
+            z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False)
+            img1 = (img1 > 0.2).float()  # binarize
+            img2 = (img2 > 0.2).float()
+        return {'z1':z1, 'z2':z2, 'pmask1':pmask1, 'pmask2':pmask2, 'pos1':pos1, 'pos2':pos2, 'img1':img1, 'img2':img2, 'deltas':deltas}
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
 def train_step(epoch, z, img_real, decoder, discriminator, 
@@ -197,22 +200,24 @@ def train(cfg: DictConfig):
                 tstate.opt_enc.step()
 
             if wandb.run is not None: wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
-                    'train_gan': losses['gan'],'train_disc': losses['disc'], 'enc_loss':enc_loss_dict['loss'].item(), 'epoch': epoch})
+                    'train_gan': losses['gan'],'train_disc': losses['disc'], 'epoch': epoch})
+                    #'enc_loss':enc_loss_dict['loss'].item(), 
         
         train_loss /= len(train_dl)
         print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
         
-        # TODO: validation, checkpointing, visualization e.g. reconstruction comparison
+        # validation, checkpointing, visualization e.g. reconstruction comparison
         decoder.eval() 
         with torch.no_grad():
             val_loss, loss_gan = 0, torch.tensor(0.0)
             for batch in val_dl:
                 eb = get_embeddings_batch(batch, encoder, preencoded, device)
-                z2, img_real = eb['z2'], eb['img2']
+                z2, pos2, img_real = eb['z2'], eb['pos2'], eb['img2']
                 img_recon = decoder(z2)  # recompute for the sake of the comp. graph
                 loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
                 #loss_l1 = tstate.l1_loss(img_recon, img_real)
                 img_recon = torch.sigmoid(img_recon) 
+                
                 weights = torch.where(img_real > 0.05, 10.0, 1.0)  # non-black pixels are worth more than black pixels
                 loss_l1 = (weights * (img_recon - img_real).abs()).mean()
                 loss_lpips = tstate.lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
@@ -224,19 +229,14 @@ def train(cfg: DictConfig):
                 val_loss += loss_dec.item()
             val_loss /= len(val_dl) 
 
-            #z1, pmask1, pmask2 = eb['z1'], eb['pmask1'], eb['pmask2'] 
-            img_recon = (img_recon > 0.5).float()
-           
-            #print(f" img_real shape, min, mean, max: {img_real.shape}, {img_real.min().item():.4f}, {img_real.mean().item():.4f}, {img_real.max().item():.4f}")
-            #print(f"img_recon shape, min, mean, max: {img_recon.shape}, {img_recon.min().item():.4f}, {img_recon.mean().item():.4f}, {img_recon.max().item():.4f}")
-            # viz     
-            grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
-            grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
-            if wandb.run is not None: wandb.log({'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
+
+            if wandb.run is not None: 
+                viz_mae_recon(img_recon, pos2, batch['img2'], epoch=epoch)
+                wandb.log({'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
                     'val_gan': loss_gan, 'epoch': epoch, 
-                    "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],
-                    "lr_enc": tstate.opt_enc.param_groups[0]['lr'], 
-                    'val_real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'val_recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
+                    "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],})
+                    #"lr_enc": tstate.opt_enc.param_groups[0]['lr'], })
+                    #'val_real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'val_recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
 
         save_checkpoint(decoder,        tstate.opt_dec, epoch, val_loss, cfg, tag="dec_")
         save_checkpoint(discriminator, tstate.opt_disc, epoch, val_loss, cfg, tag="disc_")

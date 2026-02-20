@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz', 'viz_mae_recon']
+           'plot_embeddings_3d', 'make_emb_viz', 'do_recon_eval', 'viz_mae_recon']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -67,6 +67,7 @@ def pca_project(embeddings, **kwargs):
         return cpu_pca_project(embeddings, **kwargs)
 
 # %% ../nbs/05_viz.ipynb #1c5d9cc8
+@torch.no_grad()
 def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, deltas=None, title='Embeddings', debug=False):
     "3D scatter plot of embeddings. color_by: 'none', 'file', or 'pair'"
     import plotly.graph_objects as go
@@ -98,6 +99,7 @@ def plot_embeddings_3d(coords, num_tokens, color_by='pairs', file_idx=None, delt
 
 
 # %% ../nbs/05_viz.ipynb #f1feb8ca
+@torch.no_grad()
 def _make_emb_viz(zs, num_tokens, epoch=-1, title='Embeddings', do_umap=True, file_idx=None, deltas=None):
     "visualize embeddings, projected"
     umap_fig = None
@@ -127,6 +129,7 @@ def _subsample(data, indices, deltas, max_points, debug=False):
     return data[perm], indices[perm], deltas[perm]
 
 # %% ../nbs/05_viz.ipynb #a64048f1
+@torch.no_grad()
 def make_emb_viz(zs,  
                 num_tokens, epoch=-1, 
                 model=None, 
@@ -180,21 +183,43 @@ def make_emb_viz(zs,
     figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
     return figs
 
+# %% ../nbs/05_viz.ipynb #6be20056-1385-46cc-972f-ab1207bce9a6
+def do_recon_eval(recon, real, eps=1e-8): 
+    TP = (recon * real).sum()
+    FP = (recon * (1 - real)).sum()
+    FN = ((1 - recon) * real).sum()
+    TN = ((1 - recon) * (1 - real)).sum()
+    precision = TP / (TP + FP + eps) 
+    recall = TP/ (TP + FN+ eps) 
+    specificity = TN / (TN + FP + eps) 
+    f1 = 2 * precision * recall / (precision + recall + eps) 
+    evals = {  'precision': precision,  'recall': recall,  'specificity': specificity,  'f1': f1}
+    if wandb.run is not None:  wandb.log(evals) 
+    return evals 
+
 # %% ../nbs/05_viz.ipynb #ccd99bb0
-def viz_mae_recon(patches_recon,   # from proj_out of LightweightMAEDecoder, (B, N_full, patch_size^2)
+@torch.no_grad()
+def viz_mae_recon(recon,   # from proj_out of LightweightMAEDecoder, (B, N_full, patch_size^2)
             pos,                   # "grid" locations of patches
             img_real, 
             epoch=-1,
-            patch_size=16):
+            patch_size=16,
+            ):
     """show how our LightweightMAEDecoder is doing (during encoder training)"""
     B, C, H, W = img_real.shape
-    grid_h, grid_w = H//patch_size, W//patch_size
-    if patches_recon.shape[1] % 2 != 0: patches_recon = patches_recon[:,1:]  # probably need to strip of cls token 
-    img_recon = patches_recon.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4) # (B, grid_h, patch_size, grid_w, patch_size)
-    img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
+    if recon.shape != img_real.shape:   # recon is patches; make into an image
+        grid_h, grid_w = H//patch_size, W//patch_size
+        if recon.shape[1] % 2 != 0: recon = recon[:,1:]  # probably need to strip off cls token 
+        img_recon = recon.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4).cpu() # (B, grid_h, patch_size, grid_w, patch_size)
+        img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
+        img_recon = torch.sigmoid(img_recon).cpu()
+    else: 
+        img_recon = recon.cpu()
+    img_recon = (img_recon > 0.25).float() # binarize
+    
+    do_recon_eval(img_recon.cpu(), img_real.cpu())
+    
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
     if wandb.run is not None: 
         wandb.log({'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
-
-
