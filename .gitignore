@@ -157,4 +157,4 @@ nbs/*_dup?.ipynb
 
 
 # chats
-*chat.ipynb
+*chat*.ipynb
