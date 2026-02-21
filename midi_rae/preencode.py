@@ -58,7 +58,7 @@ def preencode(cfg: DictConfig):
             with torch.no_grad():
                 for batch in tqdm(dl, desc=f"Encoding {split}, Chunk {chunk}/{num_chunks}"):
                     img = batch['img2'].to(device)  # img2 come from wider distribution than img1, ignore img1
-                    z, pmask = model(img, return_cls_only=False)  # (B, 65, 768)
+                    z, non_empty = model(img, return_cls_only=False)  # (B, 65, 768)
                     chunk_embeddings.append(z.cpu())
                     chunk_images.append(img.cpu())
             

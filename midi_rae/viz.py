@@ -135,7 +135,7 @@ def make_emb_viz(zs,
                 model=None, 
                 title='Embeddings', 
                 max_points=5000, 
-                pmasks=None, 
+                non_emptys=None, 
                 file_idx=None,
                 deltas=None,
                 do_umap=True,
@@ -161,9 +161,9 @@ def make_emb_viz(zs,
     dim = zs.shape[-1]
     patches = zs.view(-1, num_tokens, dim)[:, 1:]   # 1: strips off cls
     patches = patches.reshape(-1, dim)  
-    pmask1, pmask2 = pmasks
-    pmask = (pmask1 & pmask2)[:,1:] # both non-empty
-    valid = pmask.flatten().repeat(2)  
+    non_empty1, non_empty2 = non_emptys
+    non_empty = (non_empty1 & non_empty2)[:,1:] # both non-empty
+    valid = non_empty.flatten().repeat(2)  
     if debug: print("file_idx.shape, deltas.shape =",file_idx.shape, deltas.shape)
     patch_file_idx = file_idx.view(-1, num_tokens)[:, 1:].reshape(-1)
     patch_deltas = deltas.view(-1, num_tokens)[:, 1:].reshape(-1,2)

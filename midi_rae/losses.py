@@ -74,13 +74,13 @@ def anchor_loss(z1, z2):
     return safe_mean( z1.square() ) + safe_mean( z2.square() )
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
-def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, pmasks=(None,None), lambda_anchor=0.1):
+def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.1):
     "Main loss function for Encoder"
-    pmask1, pmask2 = pmasks
-    pmask = pmask1 & pmask2  # both non-empty
-    valid = pmask.view(-1).bool()
+    non_empty1, non_empty2 = non_emptys
+    non_empty = non_empty1 & non_empty2  # both non-empty
+    valid = non_empty.view(-1).bool()
     loss_dict = LeJEPA(z1[valid], z2[valid], global_step, deltas=deltas[valid], lambd=lambd)
-    aloss = anchor_loss(z1[~pmask1.view(-1).bool()], z2[~pmask2.view(-1).bool()])
+    aloss = anchor_loss(z1[~non_empty1.view(-1).bool()], z2[~non_empty2.view(-1).bool()])
     loss_dict['anchor'] = aloss
     loss_dict['loss'] = loss_dict['loss'] + lambda_anchor * aloss
     return loss_dict

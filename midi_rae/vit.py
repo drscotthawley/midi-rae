@@ -107,32 +107,32 @@ class PatchEmbedding(nn.Module):
         # Check if each patch region in the image is empty
         k = self.conv.kernel_size[0]
         patches = x.unfold(2, k, k).unfold(3, k, k)  # extract patches
-        pmask = (patches.amax(dim=(-1,-2)) > 0.2).squeeze(1).flatten(1) # (B, num_patches), 0=empty, 1=not
+        non_empty = (patches.amax(dim=(-1,-2)) > 0.2).squeeze(1).flatten(1) # (B, num_patches), 0=empty, 1=not
 
         # save patch position "coordinates" (for masking later)
         H, W = x.shape[-2] // k, x.shape[-1] // k  # grid dimensions
         rows = torch.arange(H, device=x.device).repeat_interleave(W)
         cols = torch.arange(W, device=x.device).repeat(H)
         pos = torch.stack([rows, cols], dim=-1)  # (num_patches, 2)
-        return conv_patches, pmask, pos  
+        return conv_patches, non_empty, pos  
 
 
 # %% ../nbs/02_vit.ipynb #2fab57b5
-def make_mae_mask(pmask, ratio=0, has_cls_token=True):
+def make_mae_mask(non_empty, ratio=0, has_cls_token=True):
     "Apply token masking for MAE training. 1=keep, 0=masked"
-    if ratio < 1e-8: return torch.ones(pmask.shape[1], device=pmask.device, dtype=torch.bool)
-    mae_mask = (torch.rand(pmask.shape[1], device=pmask.device) > ratio)  #  (B, N), 1=visible, 0=masked
+    if ratio < 1e-8: return torch.ones(non_empty.shape[1], device=non_empty.device, dtype=torch.bool)
+    mae_mask = (torch.rand(non_empty.shape[1], device=non_empty.device) > ratio)  #  (B, N), 1=visible, 0=masked
     if has_cls_token: mae_mask[0] = True  
     return mae_mask 
 
 # %% ../nbs/02_vit.ipynb #85f5423d
-def apply_mae_mask(x, pos, pmask, mae_mask):
+def apply_mae_mask(x, pos, non_empty, mae_mask):
     "Apply token masking for MAE training. 1=keep, 0=masked"
-    return x[:, mae_mask, :], pos[mae_mask, :], pmask[:,mae_mask]
+    return x[:, mae_mask, :], pos[mae_mask, :], non_empty[:,mae_mask]
 
 # %% ../nbs/02_vit.ipynb #32916a79
 class ViTEncoder(nn.Module):
-    """Vision Transformer Encoder for piano rolls, keeps track of empty patches (pmask) and supports masking"""
+    """Vision Transformer Encoder for piano rolls, keeps track of empty patches (non_empty) and supports masking"""
     def __init__(self, 
                 in_channels,    # 1 for grayscale
                 image_size,     # tuple (H,W), e.g. (256, 256)
@@ -147,21 +147,21 @@ class ViTEncoder(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         
     def forward(self, x, return_cls_only=True, mask_ratio=0.0, mae_mask=None):  # mr=0 means masking is turned off for now
-        x, pmask, pos = self.patch_embed(x)      # x is now patches, pmask=1 for non-empty patches, 0 for empty
+        x, non_empty, pos = self.patch_embed(x)      # x is now patches, non_empty=1 for non-empty patches, 0 for empty
 
         # tack on cls token 
         cls = self.cls_token.expand(x.shape[0], -1, -1) 
         x = torch.cat([cls, x], dim=1)
         cls_pos = torch.tensor([[-1, -1]], device=pos.device)
         pos = torch.cat([cls_pos, pos], dim=0)  # (num_patches+1, 2)
-        pmask = torch.cat([pmask.new_ones(pmask.shape[0], 1), pmask], dim=1)  # (B, 65)
-        if mae_mask is None: mae_mask = make_mae_mask(pmask, ratio=mask_ratio)
-        x, pos_visible, pmask_visible = apply_mae_mask(x, pos, pmask, mae_mask)
+        non_empty = torch.cat([non_empty.new_ones(non_empty.shape[0], 1), non_empty], dim=1)  # (B, 65)
+        if mae_mask is None: mae_mask = make_mae_mask(non_empty, ratio=mask_ratio)
+        x, pos_visible, non_empty_visible = apply_mae_mask(x, pos, non_empty, mae_mask)
 
         for block in self.blocks:  
             x = block(x, pos=pos_visible) 
-            x = torch.where(pmask_visible.unsqueeze(-1), x, x * 1e-3)  # empty patches go to small but nonzero #s
-        return (x[:, 0] if return_cls_only else x), pmask, pos, mae_mask  # return full pos & pmask, can calc *_visible outside w/ mae_mask
+            x = torch.where(non_empty_visible.unsqueeze(-1), x, x * 1e-3)  # empty patches go to small but nonzero #s
+        return (x[:, 0] if return_cls_only else x), non_empty, pos, mae_mask  # return full pos & non_empty, can calc *_visible outside w/ mae_mask
 
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba

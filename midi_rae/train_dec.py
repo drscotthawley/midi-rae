@@ -110,11 +110,11 @@ def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
     else:
         img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
         with torch.no_grad() if not encoder.training else nullcontext():
-            z1, pmask1, pos1, mae_mask1  = encoder(img1, return_cls_only=False)
-            z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False)
+            z1, non_empty1, pos1, mae_mask1  = encoder(img1, return_cls_only=False)
+            z2, non_empty2, pos2, mae_mask2 = encoder(img2, return_cls_only=False)
             img1 = (img1 > 0.2).float()  # binarize
             img2 = (img2 > 0.2).float()
-        return {'z1':z1, 'z2':z2, 'pmask1':pmask1, 'pmask2':pmask2, 'pos1':pos1, 'pos2':pos2, 'img1':img1, 'img2':img2, 'deltas':deltas}
+        return {'z1':z1, 'z2':z2, 'non_empty1':non_empty1, 'non_empty2':non_empty2, 'pos1':pos1, 'pos2':pos2, 'img1':img1, 'img2':img2, 'deltas':deltas}
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
 def train_step(epoch, z, img_real, decoder, discriminator, 
@@ -178,7 +178,7 @@ def train(cfg: DictConfig):
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
             global_step += 1
             eb = get_embeddings_batch(batch, encoder, preencoded, device)
-            z1, z2, pmask1, pmask2, deltas, img_real = eb['z1'], eb['z2'], eb['pmask1'], eb['pmask2'], eb['deltas'], eb['img2']
+            z1, z2, non_empty1, non_empty2, deltas, img_real = eb['z1'], eb['z2'], eb['non_empty1'], eb['non_empty2'], eb['deltas'], eb['img2']
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
             losses, img_recon = train_step(epoch, z2, img_real, decoder, discriminator, tstate, cfg)
             train_loss += losses['dec']
@@ -190,7 +190,7 @@ def train(cfg: DictConfig):
                 z2 = z2.reshape(-1, z2.shape[-1])
                 num_tokens =  z1.shape[0] // len(deltas)  # or just 65
                 deltas = deltas.repeat_interleave(num_tokens, dim=0)
-                enc_loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=(pmask1,pmask2))
+                enc_loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=(non_empty1,non_empty2))
                 lambda_enc = 100
                 enc_loss_dict['loss'] *= lambda_enc
                 enc_loss_dict['loss'].backward()

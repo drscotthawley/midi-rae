@@ -42,9 +42,9 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
-    z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False, mask_ratio=cfg.training.mask_ratio)
-    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) 
-    pmask1_visible, pmask2_visible = pmask1[:, mae_mask1], pmask2[:, mae_mask1]
+    z1, non_empty1, pos1, mae_mask1 = encoder(img1, return_cls_only=False, mask_ratio=cfg.training.mask_ratio)
+    z2, non_empty2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) 
+    non_empty1_visible, non_empty2_visible = non_empty1[:, mae_mask1], non_empty2[:, mae_mask1]
     loss_dict = {}
     if mae_decoder is not None:
         recon_patches = mae_decoder(z2, pos2, mae_mask2) # just pick z2 and ignore z1 
@@ -52,16 +52,16 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
 
     z1 = z1.reshape(-1, z1.shape[-1])
     z2 = z2.reshape(-1, z2.shape[-1])
-    pmasks = (pmask1_visible, pmask2_visible)
+    non_emptys = (non_empty1_visible, non_empty2_visible)
     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
-    loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, pmasks=pmasks)
+    loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae']
 
     if torch.isnan(loss_dict['loss']):
         print("NaN detected!", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()})
         breakpoint()
-    return loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches
+    return loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -113,7 +113,7 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad()
             with torch.autocast('cuda'):
-                loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
             scaler.scale(loss_dict['loss']).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -124,7 +124,7 @@ def train(cfg: DictConfig):
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
-                val_loss_dict, z1, z2, pmasks, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                val_loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
                 val_loss += val_loss_dict['loss'].item()
 
             train_loss /= len(train_dl)
@@ -140,7 +140,7 @@ def train(cfg: DictConfig):
 
                 if epoch % viz_every == 0:
                     zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
-                    make_emb_viz(zs_stacked, num_tokens, epoch=epoch, model=model, pmasks=pmasks, file_idx=batch['file_idx'], deltas=batch['deltas'])
+                    make_emb_viz(zs_stacked, num_tokens, epoch=epoch, model=model, non_emptys=non_emptys, file_idx=batch['file_idx'], deltas=batch['deltas'])
                 if mae_decoder is not None and (epoch % (viz_every//5) == 0):
                         viz_mae_recon(recon_patches, batch['img2'], epoch=epoch, mae_mask=mae_mask2)
 
