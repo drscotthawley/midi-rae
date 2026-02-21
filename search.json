@@ -1,0 +1,392 @@
+[
+  {
+    "objectID": "data.html",
+    "href": "data.html",
+    "title": "data",
+    "section": "",
+    "text": "PRPairDataset\n\ndef PRPairDataset(\n    image_dataset_dir:str='~/datasets/POP909_images/', crop_size:int=128, max_shift_x:int=10, max_shift_y:int=12,\n    split:str='train', val_fraction:float=0.1, seed:int=42, verbose:bool=True\n):\n\npiano roll pair dataset\nCode to test that:\n\ndata = PRPairDataset()\nprint(\"len(data) =\",len(data))\nprint(\"data.actual_len =\",data.actual_len)\ndata_dict = next(iter(data)) \nprint(\"data_dict =n\",data_dict)\n\n# Let's take the sum to make sure there's some non-zero pixel values\nfor imstr in ['img1','img2']:\n    print(f\"data_dict['{imstr}'].sum() = \",data_dict[imstr].sum())\n\nLoading 818 train files from ~/datasets/POP909_images/...\nFinished loading.\nlen(data) = 81800\ndata.actual_len = 818\ndata_dict =n {'img1': tensor([[[0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         ...,\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.]]]), 'img2': tensor([[[0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         ...,\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.],\n         [0., 0., 0.,  ..., 0., 0., 0.]]]), 'deltas': tensor([3., 9.]), 'file_idx': 201}\ndata_dict['img1'].sum() =  tensor(337.7961)\ndata_dict['img2'].sum() =  tensor(340.7451)\n\n\n\nimport matplotlib.pyplot as plt\n\nsamples = [data[i] for i in range(5)]\nfig, axes = plt.subplots(2, 5, figsize=(15, 6))\nprint(\"top row: img1, bottom row: img2\")\nfor i in range(5):\n    sample = samples[i]\n    for j, imstr in enumerate(['img1','img2']): \n        axes[j, i].imshow(data_dict[imstr].squeeze(), cmap='gray') # top row: img1, bottom row: img2\n        axes[j, i].axis('off')\n    axes[1, i].set_title(f\"Δx={sample['deltas'][0]}, Δy={sample['deltas'][1]}\", fontsize=9)\n\nplt.tight_layout()\nplt.show()\n\ntop row: img1, bottom row: img2",
+    "crumbs": [
+      "data"
+    ]
+  },
+  {
+    "objectID": "core.html",
+    "href": "core.html",
+    "title": "core",
+    "section": "",
+    "text": "These dataclasses bundle patch embeddings with their spatial and mask metadata, replacing scattered positional return values and manual mask indexing throughout the codebase.\n\n\nHolds a set of patch embeddings at a single spatial scale, along with their grid positions and masks. Provides convenience properties for common operations like filtering visible patches.\n\n\n\nA list of PatchState objects ordered coarsest → finest (index 0 = global/CLS level). Currently used with two levels (CLS + patches), designed to extend to Swin-style multi-scale later.\n\n\n\nFull encoder output bundling the hierarchical patch states with the full (pre-MAE-masking) positions and masks needed by the decoder for reconstruction.\n\n\n\n\n\ndef PatchState(\n    emb:Tensor, pos:Tensor, non_empty:Tensor, mae_mask:Tensor\n)-&gt;None:\n\nBundle of patch embeddings at a single spatial scale with their metadata.\nAttributes: emb: (B, N, dim) patch embeddings pos: (N, 2) grid coordinates (row, col) for each patch non_empty: (B, N) content mask — 1 where patch has content (e.g. notes), 0 for empty mae_mask: (N,) MAE visibility mask — 1=visible, 0=masked out for reconstruction\n\n\n\n\n\ndef HierarchicalPatchState(\n    levels:list\n)-&gt;None:\n\nMulti-scale patch states, ordered coarsest → finest (currently: [0]=CLS, [1]=spatial patches).\nAttributes: levels: List of PatchState, one per scale\n\n\n\n\n\ndef EncoderOutput(\n    patches:HierarchicalPatchState, full_pos:Tensor, full_non_empty:Tensor, mae_mask:Tensor\n)-&gt;None:\n\nFull encoder output.\nAttributes: patches: Encoded representations (visible patches only) full_pos: (N_full, 2) all grid positions before MAE masking (needed by decoder) full_non_empty: (B, N_full) all content masks before MAE masking mae_mask: (N_full,) the MAE mask applied (1=visible, 0=masked)\n\n\n\nEncoder returns EncoderOutput containing a HierarchicalPatchState:\nenc_out = encoder(img, mask_ratio=0.5)\n\n# Access the patch hierarchy\ncls_state = enc_out.patches.coarsest    # PatchState with CLS token\npatch_state = enc_out.patches.finest    # PatchState with patch embeddings\nWorking with PatchState — filtering, shapes, masks:\nps = enc_out.patches.finest\n\nps.emb          # (B, N_visible, dim) — patch embeddings\nps.pos          # (N_visible, 2) — grid coordinates (row, col)\nps.non_empty    # (B, N_visible) — content mask (1=has notes)\nps.mae_mask     # (N_visible,) — all True for already-filtered patches\nps.dim          # embedding dimension\nps.num_patches  # number of patches\n\nvis = ps.visible  # new PatchState with only MAE-visible patches\nIn compute_batch_loss (encoder training):\n# BEFORE: 8 positional return values\n# loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches = ...\n\n# AFTER:\nloss_dict, enc_out1, enc_out2, recon_patches = compute_batch_loss(...)\nnon_emptys = (enc_out1.patches.finest.non_empty, enc_out2.patches.finest.non_empty)\nIn LightweightMAEDecoder:\n# BEFORE:\n# def forward(self, z, pos_full, mae_mask): ...\n\n# AFTER:\n# def forward(self, enc_out: EncoderOutput): ...\n#   — gets visible embeddings, full positions, and mae_mask all from enc_out\nFuture Swin hierarchy (coarsest → finest):\n# levels[0] = global (like CLS), levels[1] = 4x4, levels[2] = 8x8, levels[3] = 16x16\nh = enc_out.patches\nh.coarsest          # global summary\nh.finest            # finest-resolution patches  \nh.levels[1]         # intermediate scale\nh.levels[1].visible # visible patches at that scale",
+    "crumbs": [
+      "core"
+    ]
+  },
+  {
+    "objectID": "core.html#overview",
+    "href": "core.html#overview",
+    "title": "core",
+    "section": "",
+    "text": "These dataclasses bundle patch embeddings with their spatial and mask metadata, replacing scattered positional return values and manual mask indexing throughout the codebase.\n\n\nHolds a set of patch embeddings at a single spatial scale, along with their grid positions and masks. Provides convenience properties for common operations like filtering visible patches.\n\n\n\nA list of PatchState objects ordered coarsest → finest (index 0 = global/CLS level). Currently used with two levels (CLS + patches), designed to extend to Swin-style multi-scale later.\n\n\n\nFull encoder output bundling the hierarchical patch states with the full (pre-MAE-masking) positions and masks needed by the decoder for reconstruction.\n\n\n\n\n\ndef PatchState(\n    emb:Tensor, pos:Tensor, non_empty:Tensor, mae_mask:Tensor\n)-&gt;None:\n\nBundle of patch embeddings at a single spatial scale with their metadata.\nAttributes: emb: (B, N, dim) patch embeddings pos: (N, 2) grid coordinates (row, col) for each patch non_empty: (B, N) content mask — 1 where patch has content (e.g. notes), 0 for empty mae_mask: (N,) MAE visibility mask — 1=visible, 0=masked out for reconstruction\n\n\n\n\n\ndef HierarchicalPatchState(\n    levels:list\n)-&gt;None:\n\nMulti-scale patch states, ordered coarsest → finest (currently: [0]=CLS, [1]=spatial patches).\nAttributes: levels: List of PatchState, one per scale\n\n\n\n\n\ndef EncoderOutput(\n    patches:HierarchicalPatchState, full_pos:Tensor, full_non_empty:Tensor, mae_mask:Tensor\n)-&gt;None:\n\nFull encoder output.\nAttributes: patches: Encoded representations (visible patches only) full_pos: (N_full, 2) all grid positions before MAE masking (needed by decoder) full_non_empty: (B, N_full) all content masks before MAE masking mae_mask: (N_full,) the MAE mask applied (1=visible, 0=masked)\n\n\n\nEncoder returns EncoderOutput containing a HierarchicalPatchState:\nenc_out = encoder(img, mask_ratio=0.5)\n\n# Access the patch hierarchy\ncls_state = enc_out.patches.coarsest    # PatchState with CLS token\npatch_state = enc_out.patches.finest    # PatchState with patch embeddings\nWorking with PatchState — filtering, shapes, masks:\nps = enc_out.patches.finest\n\nps.emb          # (B, N_visible, dim) — patch embeddings\nps.pos          # (N_visible, 2) — grid coordinates (row, col)\nps.non_empty    # (B, N_visible) — content mask (1=has notes)\nps.mae_mask     # (N_visible,) — all True for already-filtered patches\nps.dim          # embedding dimension\nps.num_patches  # number of patches\n\nvis = ps.visible  # new PatchState with only MAE-visible patches\nIn compute_batch_loss (encoder training):\n# BEFORE: 8 positional return values\n# loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches = ...\n\n# AFTER:\nloss_dict, enc_out1, enc_out2, recon_patches = compute_batch_loss(...)\nnon_emptys = (enc_out1.patches.finest.non_empty, enc_out2.patches.finest.non_empty)\nIn LightweightMAEDecoder:\n# BEFORE:\n# def forward(self, z, pos_full, mae_mask): ...\n\n# AFTER:\n# def forward(self, enc_out: EncoderOutput): ...\n#   — gets visible embeddings, full positions, and mae_mask all from enc_out\nFuture Swin hierarchy (coarsest → finest):\n# levels[0] = global (like CLS), levels[1] = 4x4, levels[2] = 8x8, levels[3] = 16x16\nh = enc_out.patches\nh.coarsest          # global summary\nh.finest            # finest-resolution patches  \nh.levels[1]         # intermediate scale\nh.levels[1].visible # visible patches at that scale",
+    "crumbs": [
+      "core"
+    ]
+  },
+  {
+    "objectID": "train_dec.html",
+    "href": "train_dec.html",
+    "title": "Train Decoder",
+    "section": "",
+    "text": "PreEncodedDataset\n\ndef PreEncodedDataset(\n    encoded_dir\n):\n\nLoad pre-encoded embeddings + images from .pt files\n\n\n\nsetup_dataloaders\n\ndef setup_dataloaders(\n    cfg, preencoded:bool=False\n):\n\n\n\n\nsetup_models\n\ndef setup_models(\n    cfg, device, preencoded\n):\n\n\n\n\nsetup_tstate\n\ndef setup_tstate(\n    cfg, device, decoder, discriminator, encoder:NoneType=None\n):\n\nTraining_state: Losses, Optimizers, Schedulers, AMP Scalers\n\n\n\nget_embeddings_batch\n\ndef get_embeddings_batch(\n    batch, encoder:NoneType=None, preencoded:bool=False, device:str='cuda'\n):\n\nGet embeddings + images from batch, either pre-encoded or computed on-the-fly\n\n\n\ntrain_step\n\ndef train_step(\n    epoch, z, img_real, decoder, discriminator, tstate, # named tuple containing optimizers, loss fns, scalers\n    cfg, # config\n):\n\ntraining step for decoder (and discriminator)\n\n\n\ntrain\n\ndef train(\n    cfg:DictConfig\n):",
+    "crumbs": [
+      "Train Decoder"
+    ]
+  },
+  {
+    "objectID": "train_enc.html",
+    "href": "train_enc.html",
+    "title": "train_enc",
+    "section": "",
+    "text": "def curr_learn(\n    shared_ct_dict, epoch, interval:int=100, verbose:bool=False\n):\n\nUNUSED/UNNECESSARY: curriculum learning: increase difficulty with epoch",
+    "crumbs": [
+      "train_enc"
+    ]
+  },
+  {
+    "objectID": "train_enc.html#curriculum-learning",
+    "href": "train_enc.html#curriculum-learning",
+    "title": "train_enc",
+    "section": "",
+    "text": "def curr_learn(\n    shared_ct_dict, epoch, interval:int=100, verbose:bool=False\n):\n\nUNUSED/UNNECESSARY: curriculum learning: increase difficulty with epoch",
+    "crumbs": [
+      "train_enc"
+    ]
+  },
+  {
+    "objectID": "train_enc.html#compute-loss-on-batch",
+    "href": "train_enc.html#compute-loss-on-batch",
+    "title": "train_enc",
+    "section": "Compute Loss On Batch",
+    "text": "Compute Loss On Batch\n\n\ncompute_batch_loss\n\ndef compute_batch_loss(\n    batch, encoder, cfg, global_step, mae_decoder:NoneType=None\n):\n\nCompute loss and return other exal auxiliary variables (for train or val)",
+    "crumbs": [
+      "train_enc"
+    ]
+  },
+  {
+    "objectID": "train_enc.html#main-training-loop",
+    "href": "train_enc.html#main-training-loop",
+    "title": "train_enc",
+    "section": "Main Training Loop",
+    "text": "Main Training Loop\n\n\ntrain\n\ndef train(\n    cfg:DictConfig\n):",
+    "crumbs": [
+      "train_enc"
+    ]
+  },
+  {
+    "objectID": "train_enc.html#cli-entry-point",
+    "href": "train_enc.html#cli-entry-point",
+    "title": "train_enc",
+    "section": "CLI Entry Point",
+    "text": "CLI Entry Point",
+    "crumbs": [
+      "train_enc"
+    ]
+  },
+  {
+    "objectID": "utils.html",
+    "href": "utils.html",
+    "title": "utils",
+    "section": "",
+    "text": "save_checkpoint\n\ndef save_checkpoint(\n    model, optimizer, epoch, val_loss, cfg, save_every:int=10, n_keep:int=5, verbose:bool=True, tag:str=''\n):\n\nSaves new checkpoint, keeps best & the most recent n_keep\n\n\n\nload_checkpoint\n\ndef load_checkpoint(\n    model, ckpt_path:str, return_all:bool=False, weights_only:bool=False, strict:bool=False\n):\n\nloads a model (and maybe other things) from a checkpoint file",
+    "crumbs": [
+      "utils"
+    ]
+  },
+  {
+    "objectID": "inspect.html",
+    "href": "inspect.html",
+    "title": "Inspect",
+    "section": "",
+    "text": "import os\nassert False == os.path.isdir('/app/data'), \"Do not try to run this on solveit. The memory requirements will crash the VM.\"\nimport torch\nfrom torch.utils.data import DataLoader\nfrom omegaconf import OmegaConf\nfrom midi_rae.vit import ViTEncoder\nfrom midi_rae.data import PRPairDataset\nfrom midi_rae.viz import make_emb_viz\nimport matplotlib.pyplot as plt\n\n# Interactive visualization (without wandb logging)\nimport plotly.io as pio\npio.renderers.default = 'notebook'\nfrom midi_rae.viz import umap_project, pca_project, plot_embeddings_3d, make_emb_viz",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "inspect.html#config",
+    "href": "inspect.html#config",
+    "title": "Inspect",
+    "section": "Config",
+    "text": "Config\n\ncfg = OmegaConf.load('../configs/config.yaml')\ndevice = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'\nprint(f'device = {device}')\n\ndevice = cuda",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "inspect.html#load-dataset",
+    "href": "inspect.html#load-dataset",
+    "title": "Inspect",
+    "section": "Load Dataset",
+    "text": "Load Dataset\n\nval_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='val', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y)\nval_dl = DataLoader(val_ds, batch_size=cfg.training.batch_size, num_workers=4, drop_last=True)\nprint(f'Loaded {len(val_ds)} validation samples, batch_size = {cfg.training.batch_size}')\n\nLoading 91 val files from /home/shawley/datasets/POP909_images_basic...\nFinished loading.\nLoaded 9100 validation samples, batch_size = 768",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "inspect.html#inspect-data",
+    "href": "inspect.html#inspect-data",
+    "title": "Inspect",
+    "section": "Inspect Data",
+    "text": "Inspect Data\n\nbatch = next(iter(val_dl))\nimg1, img2, deltas, file_idx = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device), batch['file_idx'].to(device)\nprint(\"img1.shape, deltas.shape, file_idx.shape =\",img1.shape, deltas.shape, file_idx.shape)\n\nimg1.shape, deltas.shape, file_idx.shape = torch.Size([768, 1, 128, 128]) torch.Size([768, 2]) torch.Size([768])\n\n\n\n# Show a sample image pair\nidx = 0\nfig, axes = plt.subplots(1, 2, figsize=(8, 4))\naxes[0].imshow(img1[idx, 0].cpu(), cmap='gray')\naxes[0].set_title(f'Image 1 (file_idx={file_idx[idx].item()})')\naxes[1].imshow(img2[idx, 0].cpu(), cmap='gray')\naxes[1].set_title(f'Image 2 (deltas = {deltas[idx].cpu().int().numpy()})')\nplt.tight_layout()\nplt.show()",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "inspect.html#load-encoder-from-checkpoint",
+    "href": "inspect.html#load-encoder-from-checkpoint",
+    "title": "Inspect",
+    "section": "Load Encoder from Checkpoint",
+    "text": "Load Encoder from Checkpoint\n\nckpt_path = '../checkpoints/enc_best.pt'  # &lt;-- change as needed\n\nmodel = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), \n                   cfg.model.patch_size, cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)\n\nckpt = torch.load(ckpt_path, map_location=device, weights_only=False)\nstate_dict = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}\nmodel.load_state_dict(state_dict, strict=False)\nmodel.eval()\nprint(f'Loaded checkpoint from {ckpt_path}, epoch {ckpt.get(\"epoch\", \"?\")}')\n\nLoaded checkpoint from ../checkpoints/enc_best.pt, epoch 91",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "inspect.html#run-batch-through-encoder",
+    "href": "inspect.html#run-batch-through-encoder",
+    "title": "Inspect",
+    "section": "Run Batch Through Encoder",
+    "text": "Run Batch Through Encoder\n\nwith torch.no_grad():\n    z1, non_empty1, pos1, mae_mask = model(img1, return_cls_only=False)\n    z2, non_empty2, pos2, mae_mask = model(img2, return_cls_only=False)\n\nz1 = z1.reshape(-1, z1.shape[-1])\nz2 = z2.reshape(-1, z2.shape[-1])\nnum_tokens = z1.shape[0] // len(batch['img1'])\n\nprint(f'z1: {z1.shape}, z2: {z2.shape}, num_tokens: {num_tokens}')\n\nz1: torch.Size([49920, 256]), z2: torch.Size([49920, 256]), num_tokens: 65",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "inspect.html#visualize-embeddings",
+    "href": "inspect.html#visualize-embeddings",
+    "title": "Inspect",
+    "section": "Visualize Embeddings",
+    "text": "Visualize Embeddings\nNOTE: This will visualize all embeddings in the entire batch, not just the single pair of images shown above.\n\n# Combined embeddings from both views\nzs = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])\nprint(\"zs.shape = \",zs.shape)\nnon_emptys = (non_empty1, non_empty2)\n\n# Prepare multiple figures\nfigs = make_emb_viz(zs,  num_tokens, epoch=-1, model=None, title='Embeddings', \n                    max_points=4096, non_emptys=non_emptys, file_idx=file_idx, deltas=deltas, do_umap=False)\n\nfigs.keys() # show what figures are available\n\nzs.shape =  torch.Size([99840, 256])\n\n\ndict_keys(['cls_pca_fig', 'cls_umap_fig', 'patch_pca_fig', 'patch_umap_fig', 'empty_pca_fig'])\n\n\n\nfigs['cls_pca_fig'].show()\n\n                                                    \n\n\nNote how the CLS tokens are nicely grouped in pairs. Let’s see if the same is true for the randomly-sampled pairs of non-empty patch embeddings 🤞:\n\nfigs['patch_pca_fig'].show()",
+    "crumbs": [
+      "Inspect"
+    ]
+  },
+  {
+    "objectID": "preencode.html",
+    "href": "preencode.html",
+    "title": "Pre-encode",
+    "section": "",
+    "text": "This script pre-encodes images using a trained encoder checkpoint, saving the embeddings for faster decoder training.\nUsage:\npython midi_rae/preencode.py encoder_ckpt=checkpoints/best.pt preencode.output_dir=preencoded/\nTODO: - May need a simpler Dataset that returns single images (not pairs) + their filenames - Decide on output format: one .pt per image, or chunked/batched files? - Add config entries for encoder_ckpt path and preencode.output_dir\n\n\n\n\ndef preencode(\n    cfg:DictConfig\n):",
+    "crumbs": [
+      "Pre-encode"
+    ]
+  },
+  {
+    "objectID": "preencode.html#notes",
+    "href": "preencode.html#notes",
+    "title": "Pre-encode",
+    "section": "",
+    "text": "This script pre-encodes images using a trained encoder checkpoint, saving the embeddings for faster decoder training.\nUsage:\npython midi_rae/preencode.py encoder_ckpt=checkpoints/best.pt preencode.output_dir=preencoded/\nTODO: - May need a simpler Dataset that returns single images (not pairs) + their filenames - Decide on output format: one .pt per image, or chunked/batched files? - Add config entries for encoder_ckpt path and preencode.output_dir\n\n\n\n\ndef preencode(\n    cfg:DictConfig\n):",
+    "crumbs": [
+      "Pre-encode"
+    ]
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "midi-rae",
+    "section": "",
+    "text": "This file will become your README and also the index of your documentation.",
+    "crumbs": [
+      "midi-rae"
+    ]
+  },
+  {
+    "objectID": "index.html#developer-guide",
+    "href": "index.html#developer-guide",
+    "title": "midi-rae",
+    "section": "Developer Guide",
+    "text": "Developer Guide\nIf you are new to using nbdev here are some useful pointers to get you started.\n\nInstall midi_rae in Development mode\n# make sure midi_rae package is installed in development mode\n$ pip install -e .\n\n# make changes under nbs/ directory\n# ...\n\n# compile to have changes apply to midi_rae\n$ nbdev_prepare",
+    "crumbs": [
+      "midi-rae"
+    ]
+  },
+  {
+    "objectID": "index.html#usage",
+    "href": "index.html#usage",
+    "title": "midi-rae",
+    "section": "Usage",
+    "text": "Usage\n\nInstallation\nInstall latest from the GitHub repository:\n$ pip install git+https://github.com/drscotthawley/midi-rae.git\nor from pypi:\n$ pip install midi-rae\n\n\nGPU Acceleration (Optional)\nFor faster UMAP and PCA projections using NVIDIA GPUs, install with the gpu extra:\n$ pip install midi-rae[gpu]\nThis requires RAPIDS cuML and cuPy. See the RAPIDS installation guide for setup instructions — pip wheels are available for supported CUDA versions:\n$ pip install cuml-cu12 cupy-cuda12x  # for CUDA 12\nWithout GPU dependencies, the package falls back to CPU-based sklearn and umap-learn automatically.\n\n\nDocumentation\nDocumentation can be found hosted on this GitHub repository’s pages. Additionally you can find package manager specific guidelines on conda and pypi respectively.",
+    "crumbs": [
+      "midi-rae"
+    ]
+  },
+  {
+    "objectID": "index.html#how-to-use",
+    "href": "index.html#how-to-use",
+    "title": "midi-rae",
+    "section": "How to use",
+    "text": "How to use\nFill me in please! Don’t forget code examples:\n\n1+1\n\n2",
+    "crumbs": [
+      "midi-rae"
+    ]
+  },
+  {
+    "objectID": "losses.html",
+    "href": "losses.html",
+    "title": "losses",
+    "section": "",
+    "text": "Turns out zero element tensors will yield NaN when you try to run .mean(), so…\n\n\n\n\ndef safe_mean(\n    t, dim:NoneType=None\n):\n\nsafe replacement for torch.mean( ). can’t be used as a suffix though",
+    "crumbs": [
+      "losses"
+    ]
+  },
+  {
+    "objectID": "losses.html#safe-mean",
+    "href": "losses.html#safe-mean",
+    "title": "losses",
+    "section": "",
+    "text": "Turns out zero element tensors will yield NaN when you try to run .mean(), so…\n\n\n\n\ndef safe_mean(\n    t, dim:NoneType=None\n):\n\nsafe replacement for torch.mean( ). can’t be used as a suffix though",
+    "crumbs": [
+      "losses"
+    ]
+  },
+  {
+    "objectID": "losses.html#lejepa-loss",
+    "href": "losses.html#lejepa-loss",
+    "title": "losses",
+    "section": "LeJEPA Loss",
+    "text": "LeJEPA Loss\nFor an interactive overview of LeJEPA, see https://www.scotthawley.com/ssltoy/\n\n\nSIGReg\n\ndef SIGReg(\n    x, global_step, num_slices:int=256\n):\n\nSIGReg with Epps-Pulley statistic. x is (N, K) tensor.\n\n# Test SIGReg with random embeddings\nbatch_size, embed_dim = 32, 64\nx = torch.randn(batch_size, embed_dim)\nloss = SIGReg(x, global_step=0, num_slices=256)\nprint(f\"SIGReg loss: {loss.item():.4f}\")\n\nSIGReg loss: 3.0071\n\n\n\n\n\nattraction_loss\n\ndef attraction_loss(\n    z1, z2, # embeddings of two \"views\" of the same thing (in batches)\n    deltas:NoneType=None, # optional/TBD: info on semantic 'distance' between z1 & z2\n    tau:float=100.0, # inverse strength of fall-off for delta distances, big=slower\n):\n\nHow we pull similar ‘views’ together\n\n\n\nLeJEPA\n\ndef LeJEPA(\n    z1, z2, global_step, lambd:float=0.5, deltas:NoneType=None\n):\n\nMain LeJEPA loss function\n\n# Test LeJEPA loss\nbatch_size, embed_dim = 32, 64\nz1 = torch.randn(batch_size, embed_dim)\nz2 = torch.randn(batch_size, embed_dim)\n\nloss = LeJEPA(z1, z2, global_step=0, lambd=0.5)\nprint(f\"LeJEPA loss: {loss['loss'].item():.4f}\")\nprint(f\"  Attraction: {attraction_loss(z1, z2).item():.4f}\")\nprint(f\"  SIGReg: {SIGReg(torch.cat((z1, z2), dim=0), global_step=0).item():.4f}\")\n\nLeJEPA loss: 1.0004\n  Attraction: 1.9994\n  SIGReg: 1.5199",
+    "crumbs": [
+      "losses"
+    ]
+  },
+  {
+    "objectID": "losses.html#masked-autoencoder-loss",
+    "href": "losses.html#masked-autoencoder-loss",
+    "title": "losses",
+    "section": "Masked (Auto)Encoder Loss",
+    "text": "Masked (Auto)Encoder Loss\n\n\ncalc_mae_loss\n\ndef calc_mae_loss(\n    recon_patches, img, pos_full, mae_mask, patch_size:int=16, all_patches:bool=False, use_bce:bool=True\n):\n\nfor now, MSE evaluated at masked patches. TODO: upgrade to some other loss?",
+    "crumbs": [
+      "losses"
+    ]
+  },
+  {
+    "objectID": "losses.html#full-encoder-loss",
+    "href": "losses.html#full-encoder-loss",
+    "title": "losses",
+    "section": "Full Encoder Loss",
+    "text": "Full Encoder Loss\n\n\nanchor_loss\n\ndef anchor_loss(\n    z1, z2\n):\n\nAnchor embeddings of empty patches to the origin\n\n\n\ncalc_enc_loss\n\ndef calc_enc_loss(\n    z1, z2, global_step, deltas:NoneType=None, lambd:float=0.5, non_emptys:tuple=(None, None),\n    lambda_anchor:float=0.1\n):\n\nMain loss function for Encoder",
+    "crumbs": [
+      "losses"
+    ]
+  },
+  {
+    "objectID": "losses.html#adversarial-loss",
+    "href": "losses.html#adversarial-loss",
+    "title": "losses",
+    "section": "Adversarial Loss",
+    "text": "Adversarial Loss\n\n\nPatchGANDiscriminator\n\ndef PatchGANDiscriminator(\n    in_ch:int=1, base_ch:int=64, n_layers:int=3, use_spectral_norm:bool=True\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool",
+    "crumbs": [
+      "losses"
+    ]
+  },
+  {
+    "objectID": "vit.html",
+    "href": "vit.html",
+    "title": "ViT",
+    "section": "",
+    "text": "used in both encoder and decoder.\n\n\n\n\ndef RoPE2D(\n    head_dim\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing\nhead_dim = 768//4\nx = torch.rand((2, 8, 256, head_dim))\nrope = RoPE2D(head_dim)\nrot_x = rope(x) \nprint(\"rot_x.shape = \",rot_x.shape)\n\nrot_x.shape =  torch.Size([2, 8, 256, 192])\n\n\n\n\n\n\n\ndef Attention(\n    dim, heads, dim_qkv:NoneType=None\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing \nx = torch.rand(2, 256, 768)\nattn = Attention(768, 8) \na = attn(x) \nprint(\"Done: a.shape = \",a.shape)\n\nattn2 = Attention(768, 8, 64) \na2 = attn2(x) \nprint(\"Done: a2.shape = \",a2.shape)\n\nDone: a.shape =  torch.Size([2, 256, 768])\nDone: a2.shape =  torch.Size([2, 256, 768])\n\n\n\n\n\n\n\ndef TransformerBlock(\n    dim, heads, dim_qkv:NoneType=None, hdim:NoneType=None\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing\nx = torch.randn(2, 256, 768) \ntrans = TransformerBlock(768, 8) \nout = trans(x) \nprint(\"out.shape = \",out.shape)\n\nout.shape =  torch.Size([2, 256, 768])",
+    "crumbs": [
+      "ViT"
+    ]
+  },
+  {
+    "objectID": "vit.html#vit-components",
+    "href": "vit.html#vit-components",
+    "title": "ViT",
+    "section": "",
+    "text": "used in both encoder and decoder.\n\n\n\n\ndef RoPE2D(\n    head_dim\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing\nhead_dim = 768//4\nx = torch.rand((2, 8, 256, head_dim))\nrope = RoPE2D(head_dim)\nrot_x = rope(x) \nprint(\"rot_x.shape = \",rot_x.shape)\n\nrot_x.shape =  torch.Size([2, 8, 256, 192])\n\n\n\n\n\n\n\ndef Attention(\n    dim, heads, dim_qkv:NoneType=None\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing \nx = torch.rand(2, 256, 768)\nattn = Attention(768, 8) \na = attn(x) \nprint(\"Done: a.shape = \",a.shape)\n\nattn2 = Attention(768, 8, 64) \na2 = attn2(x) \nprint(\"Done: a2.shape = \",a2.shape)\n\nDone: a.shape =  torch.Size([2, 256, 768])\nDone: a2.shape =  torch.Size([2, 256, 768])\n\n\n\n\n\n\n\ndef TransformerBlock(\n    dim, heads, dim_qkv:NoneType=None, hdim:NoneType=None\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing\nx = torch.randn(2, 256, 768) \ntrans = TransformerBlock(768, 8) \nout = trans(x) \nprint(\"out.shape = \",out.shape)\n\nout.shape =  torch.Size([2, 256, 768])",
+    "crumbs": [
+      "ViT"
+    ]
+  },
+  {
+    "objectID": "vit.html#encoder",
+    "href": "vit.html#encoder",
+    "title": "ViT",
+    "section": "Encoder",
+    "text": "Encoder\nDoes patch embedding and then some transformer blocks.\n\n\nPatchEmbedding\n\ndef PatchEmbedding(\n    in_channels:int=1, # 1 for solo piano, for midi PR's, = # of instruments\n    patch_size:int=16, # assuming square patches, e.g. 16 implies 16x16\n    dim:int=768, # embedding dimension\n):\n\nBase class for all neural network modules.\nYour models should also subclass this class.\nModules can also contain other Modules, allowing them to be nested in a tree structure. You can assign the submodules as regular attributes::\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    def __init__(self) -&gt; None:\n        super().__init__()\n        self.conv1 = nn.Conv2d(1, 20, 5)\n        self.conv2 = nn.Conv2d(20, 20, 5)\n\n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        return F.relu(self.conv2(x))\nSubmodules assigned in this way will be registered, and will also have their parameters converted when you call :meth:to, etc.\n.. note:: As per the example above, an __init__() call to the parent class must be made before assignment on the child.\n:ivar training: Boolean represents whether this module is in training or evaluation mode. :vartype training: bool\n\n# testing\npe = PatchEmbedding()\nx = torch.randn(2, 1, 256, 256)\nz, non_empty, pos = pe(x) \nprint(\"z.shape, non_empty.shape, pos.shape = \",z.shape, non_empty.shape, pos.shape) \nprint(\"pos = \\n\",pos.tolist())\n\nz.shape, non_empty.shape, pos.shape =  torch.Size([2, 256, 768]) torch.Size([2, 256]) torch.Size([256, 2])\npos = \n [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6], [0, 7], [0, 8], [0, 9], [0, 10], [0, 11], [0, 12], [0, 13], [0, 14], [0, 15], [1, 0], [1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6], [1, 7], [1, 8], [1, 9], [1, 10], [1, 11], [1, 12], [1, 13], [1, 14], [1, 15], [2, 0], [2, 1], [2, 2], [2, 3], [2, 4], [2, 5], [2, 6], [2, 7], [2, 8], [2, 9], [2, 10], [2, 11], [2, 12], [2, 13], [2, 14], [2, 15], [3, 0], [3, 1], [3, 2], [3, 3], [3, 4], [3, 5], [3, 6], [3, 7], [3, 8], [3, 9], [3, 10], [3, 11], [3, 12], [3, 13], [3, 14], [3, 15], [4, 0], [4, 1], [4, 2], [4, 3], [4, 4], [4, 5], [4, 6], [4, 7], [4, 8], [4, 9], [4, 10], [4, 11], [4, 12], [4, 13], [4, 14], [4, 15], [5, 0], [5, 1], [5, 2], [5, 3], [5, 4], [5, 5], [5, 6], [5, 7], [5, 8], [5, 9], [5, 10], [5, 11], [5, 12], [5, 13], [5, 14], [5, 15], [6, 0], [6, 1], [6, 2], [6, 3], [6, 4], [6, 5], [6, 6], [6, 7], [6, 8], [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14], [6, 15], [7, 0], [7, 1], [7, 2], [7, 3], [7, 4], [7, 5], [7, 6], [7, 7], [7, 8], [7, 9], [7, 10], [7, 11], [7, 12], [7, 13], [7, 14], [7, 15], [8, 0], [8, 1], [8, 2], [8, 3], [8, 4], [8, 5], [8, 6], [8, 7], [8, 8], [8, 9], [8, 10], [8, 11], [8, 12], [8, 13], [8, 14], [8, 15], [9, 0], [9, 1], [9, 2], [9, 3], [9, 4], [9, 5], [9, 6], [9, 7], [9, 8], [9, 9], [9, 10], [9, 11], [9, 12], [9, 13], [9, 14], [9, 15], [10, 0], [10, 1], [10, 2], [10, 3], [10, 4], [10, 5], [10, 6], [10, 7], [10, 8], [10, 9], [10, 10], [10, 11], [10, 12], [10, 13], [10, 14], [10, 15], [11, 0], [11, 1], [11, 2], [11, 3], [11, 4], [11, 5], [11, 6], [11, 7], [11, 8], [11, 9], [11, 10], [11, 11], [11, 12], [11, 13], [11, 14], [11, 15], [12, 0], [12, 1], [12, 2], [12, 3], [12, 4], [12, 5], [12, 6], [12, 7], [12, 8], [12, 9], [12, 10], [12, 11], [12, 12], [12, 13], [12, 14], [12, 15], [13, 0], [13, 1], [13, 2], [13, 3], [13, 4], [13, 5], [13, 6], [13, 7], [13, 8], [13, 9], [13, 10], [13, 11], [13, 12], [13, 13], [13, 14], [13, 15], [14, 0], [14, 1], [14, 2], [14, 3], [14, 4], [14, 5], [14, 6], [14, 7], [14, 8], [14, 9], [14, 10], [14, 11], [14, 12], [14, 13], [14, 14], [14, 15], [15, 0], [15, 1], [15, 2], [15, 3], [15, 4], [15, 5], [15, 6], [15, 7], [15, 8], [15, 9], [15, 10], [15, 11], [15, 12], [15, 13], [15, 14], [15, 15]]\n\n\n\n\n\nmake_mae_mask\n\ndef make_mae_mask(\n    non_empty, ratio:int=0, has_cls_token:bool=True\n):\n\nApply token masking for MAE training. 1=keep, 0=masked\n\n\n\napply_mae_mask\n\ndef apply_mae_mask(\n    x, pos, non_empty, mae_mask\n):\n\nApply token masking for MAE training. 1=keep, 0=masked\n\n\n\nViTEncoder\n\ndef ViTEncoder(\n    in_channels, # 1 for grayscale\n    image_size, # tuple (H,W), e.g. (256, 256)\n    patch_size, # assuming square patches, e.g 16\n    dim, # embedding dim, e.g. 768\n    depth, # number of transformerblock layers -- 4?\n    heads, # number of attention heads - 8?\n):\n\nVision Transformer Encoder for piano rolls, keeps track of empty patches (non_empty) and supports masking\n\nB, C, H, W = 4, 1, 128, 128\npatch_size, dim, depth, heads = 16, 256, 2, 4 \nx = torch.randn(B,C,H,W) \nencoder = ViTEncoder( C, (H,W), patch_size, dim, depth, heads) \nout, non_empty, pos, mae_mask = encoder(x) \nprint(\"out.shape = \",out.shape) \n\nout2, non_empty2, pos2, mae_mask = encoder(x, return_cls_only=False, mae_mask=mae_mask) \nprint(\"out2.shape = \",out2.shape)\n\nout.shape =  torch.Size([4, 256])\nout2.shape =  torch.Size([4, 19, 256])",
+    "crumbs": [
+      "ViT"
+    ]
+  },
+  {
+    "objectID": "vit.html#decoder",
+    "href": "vit.html#decoder",
+    "title": "ViT",
+    "section": "Decoder",
+    "text": "Decoder\nLike the Encoder, only instead of doing “PatchEmbedding” on the front end “UnPatchify”\n\n\nUnpatchify\n\ndef Unpatchify(\n    out_channels:int=1, # 1 for solo piano, for midi PR's, = # of instruments\n    image_size:tuple=(128, 128), # h,w for output image\n    patch_size:int=16, # assuming square patches, e.g. 16 implies 16x16\n    dim:int=768, # embedding dimension\n):\n\nTake patches and assemble an image\n\nz = torch.randn([3, 64, dim]) \nunpatch = Unpatchify(dim=dim) # keep the defaults\nimg = unpatch(z) \nprint(\"img.shape = \",img.shape)\n\nimg.shape =  torch.Size([3, 1, 128, 128])\n\n\n\n\n\nViTDecoder\n\ndef ViTDecoder(\n    out_channels, image_size, # tuple (H,W), e.g. (256, 256)\n    patch_size, # assuming square patches, e.g 16\n    dim, # embedding dim, e.g. 768\n    depth:int=4, # number of transformerblock layers -- 4?\n    heads:int=8, # number of attention heads - 8?\n):\n\nVision Transformer Decoder for piano rolls\n\nz = torch.randn(3, 65, dim)  # batch of 3, with CLS token\ndecoder = ViTDecoder(out_channels=1, image_size=(H,W), patch_size=16, dim=dim)\nimg = decoder(z)\nprint(img.shape)\n\ntorch.Size([3, 1, 128, 128])\n\n\n\n\n\nLightweightMAEDecoder\n\ndef LightweightMAEDecoder(\n    patch_size:int=16, dim:int=256, depth:int=4, heads:int=4\n):\n\nSimple decoder for MAE pretraining - reconstructs masked patches loss should compare output[:, ~mae_mask] against original masked patch pixels.",
+    "crumbs": [
+      "ViT"
+    ]
+  },
+  {
+    "objectID": "viz.html",
+    "href": "viz.html",
+    "title": "viz",
+    "section": "",
+    "text": "def cpu_umap_project(\n    embeddings, n_components:int=3, n_neighbors:int=15, min_dist:float=0.1, random_state:int=42\n):\n\nProject embeddings to n_components dimensions via UMAP (on CPU)\n\n\n\n\n\ndef cuml_umap_project(\n    embeddings, n_components:int=3, n_neighbors:int=15, min_dist:float=0.1, random_state:int=42\n):\n\nProject embeddings to n_components dimensions via cuML UMAP (GPU)\n\n\n\n\n\ndef umap_project(\n    embeddings, kwargs:VAR_KEYWORD\n):\n\nCalls one of two preceding UMAP routines based on device availability.",
+    "crumbs": [
+      "viz"
+    ]
+  },
+  {
+    "objectID": "viz.html#umap",
+    "href": "viz.html#umap",
+    "title": "viz",
+    "section": "",
+    "text": "def cpu_umap_project(\n    embeddings, n_components:int=3, n_neighbors:int=15, min_dist:float=0.1, random_state:int=42\n):\n\nProject embeddings to n_components dimensions via UMAP (on CPU)\n\n\n\n\n\ndef cuml_umap_project(\n    embeddings, n_components:int=3, n_neighbors:int=15, min_dist:float=0.1, random_state:int=42\n):\n\nProject embeddings to n_components dimensions via cuML UMAP (GPU)\n\n\n\n\n\ndef umap_project(\n    embeddings, kwargs:VAR_KEYWORD\n):\n\nCalls one of two preceding UMAP routines based on device availability.",
+    "crumbs": [
+      "viz"
+    ]
+  },
+  {
+    "objectID": "viz.html#pca",
+    "href": "viz.html#pca",
+    "title": "viz",
+    "section": "PCA",
+    "text": "PCA\n\n\ncuml_pca_project\n\ndef cuml_pca_project(\n    embeddings, n_components:int=3\n):\n\nProject embeddings to n_components dimensions via cuML PCA (GPU)\n\n\n\ncpu_pca_project\n\ndef cpu_pca_project(\n    embeddings, n_components:int=3\n):\n\nProject embeddings to n_components dimensions via sklearn PCA (CPU)\n\n\n\npca_project\n\ndef pca_project(\n    embeddings, kwargs:VAR_KEYWORD\n):\n\nCalls GPU or CPU PCA based on availability",
+    "crumbs": [
+      "viz"
+    ]
+  },
+  {
+    "objectID": "viz.html#d-plotly-scatterplots",
+    "href": "viz.html#d-plotly-scatterplots",
+    "title": "viz",
+    "section": "3D Plotly Scatterplots",
+    "text": "3D Plotly Scatterplots\n\n\nplot_embeddings_3d\n\ndef plot_embeddings_3d(\n    coords, num_tokens, color_by:str='pairs', file_idx:NoneType=None, deltas:NoneType=None, title:str='Embeddings',\n    debug:bool=False\n):\n\n3D scatter plot of embeddings. color_by: ‘none’, ‘file’, or ‘pair’",
+    "crumbs": [
+      "viz"
+    ]
+  },
+  {
+    "objectID": "viz.html#main-routine",
+    "href": "viz.html#main-routine",
+    "title": "viz",
+    "section": "Main Routine",
+    "text": "Main Routine\nCalls the preceding routines\nTesting that:\n\nn_pairs, dim = 5, 1  # data points\nz1 = 200*torch.arange(n_pairs).unsqueeze(-1).unsqueeze(-1)\nz2 = z1 + 1 \nzs = torch.cat([z1, z2], dim=0).view(-1, dim)\nprint(\"zs.shape = \",zs.shape)\nindices = torch.arange(2*n_pairs)\ndeltas = torch.randint(0,12,(2*n_pairs, 2))\nprint(\"zs = \\n\",zs)\nprint(\"indices =\",indices)\ndata_perm, indices2, deltas2 = _subsample(zs, indices, deltas, max_points=2*(n_pairs-2), debug=True)\nprint(\"data_perm.shape = \",data_perm.shape,\", data_perm = \\n\",data_perm)\n\nzs.shape =  torch.Size([10, 1])\nzs = \n tensor([[  0],\n        [200],\n        [400],\n        [600],\n        [800],\n        [  1],\n        [201],\n        [401],\n        [601],\n        [801]])\nindices = tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])\ndata_perm.shape =  torch.Size([6, 1]) , data_perm = \n tensor([[600],\n        [200],\n        [800],\n        [601],\n        [201],\n        [801]])\n\n\nYes. That does what I expect. Moving on…\n\n\nmake_emb_viz\n\ndef make_emb_viz(\n    zs, num_tokens, epoch:int=-1, model:NoneType=None, title:str='Embeddings', max_points:int=5000,\n    non_emptys:NoneType=None, file_idx:NoneType=None, deltas:NoneType=None, do_umap:bool=True, debug:bool=False\n):\n\nthis is the main routine, showing different groups of embeddings\nTesting visualization:\n\nimport plotly.io as pio\npio.renderers.default = 'notebook'\n\nbs, num_tokens, dim = 32, 65, 256\nz1 = torch.randn([bs, num_tokens, dim])\nfile_idx = torch.arange(bs)\ndeltas = torch.randint(0,12,(bs,2))\nz2 = z1 +  0.1*torch.randn([bs, num_tokens, dim]) # z2 is slightly shifted from z1\n\nzs = torch.cat([z1, z2], dim=0).view(-1, dim)  # combine z's one after the other & flatten to [64*65, 256]\nprint(\"zs.shape = \",zs.shape) \nfile_idx = file_idx.repeat(2).repeat_interleave(num_tokens) \n\nnon_empty1 = torch.ones([bs, num_tokens], dtype=bool)\nnon_empty2 = torch.ones([bs, num_tokens], dtype=bool)\nnon_empty2[16:,:] = 0 # make half of them empty \n\nfigs = make_emb_viz(zs, num_tokens, title='testing', non_emptys=(non_empty1, non_empty2), file_idx=file_idx, deltas=deltas, do_umap=False, debug=True)\n\nzs.shape =  torch.Size([4160, 256])\ncls_tokens.shape = torch.Size([64, 256])\nfile_idx.shape, deltas.shape = torch.Size([4160]) torch.Size([4160, 2])\npatch_file_idx.shape, patch_deltas.shape = torch.Size([4096]) torch.Size([4096, 2])\n\n\n\nfigs['patch_pca_fig'].show()",
+    "crumbs": [
+      "viz"
+    ]
+  },
+  {
+    "objectID": "viz.html#reconstructions",
+    "href": "viz.html#reconstructions",
+    "title": "viz",
+    "section": "Reconstructions",
+    "text": "Reconstructions\n\n\ndo_recon_eval\n\ndef do_recon_eval(\n    recon, real, mae_mask:NoneType=None, patch_size:int=16, eps:float=1e-08\n):\n\nevaluate recon accuracy\n\n\n\npatches_to_img\n\ndef patches_to_img(\n    recon_patches, img_real, patch_size:int=16, mae_mask:NoneType=None\n):\n\nConvert image patches to full image. Copy over real patches where appropriate.\n\n\n\nviz_mae_recon\n\ndef viz_mae_recon(\n    recon, # from proj_out of LightweightMAEDecoder, (B, N_full, patch_size^2)\n    img_real, epoch:int=-1, patch_size:int=16, mae_mask:NoneType=None\n):\n\nshow how our LightweightMAEDecoder is doing (during encoder training)",
+    "crumbs": [
+      "viz"
+    ]
+  }
+]
