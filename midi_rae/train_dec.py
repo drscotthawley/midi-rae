@@ -231,7 +231,7 @@ def train(cfg: DictConfig):
 
 
             if wandb.run is not None: 
-                viz_mae_recon(img_recon, pos2, batch['img2'], epoch=epoch)
+                viz_mae_recon(img_recon, batch['img2'], epoch=epoch)
                 wandb.log({'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
                     'val_gan': loss_gan, 'epoch': epoch, 
                     "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],})

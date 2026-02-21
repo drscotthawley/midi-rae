@@ -118,10 +118,10 @@ class PatchEmbedding(nn.Module):
 
 
 # %% ../nbs/02_vit.ipynb #2fab57b5
-def make_mae_mask(pmask, ratio=0.75, has_cls_token=True):
+def make_mae_mask(pmask, ratio=0, has_cls_token=True):
     "Apply token masking for MAE training. 1=keep, 0=masked"
     if ratio < 1e-8: return torch.ones(pmask.shape[1], device=pmask.device, dtype=torch.bool)
-    mae_mask = pmask[0] & (torch.rand(pmask.shape[1], device=pmask.device) > ratio)  #  (B, N), 1=visible, 0=masked
+    mae_mask = (torch.rand(pmask.shape[1], device=pmask.device) > ratio)  #  (B, N), 1=visible, 0=masked
     if has_cls_token: mae_mask[0] = True  
     return mae_mask 
 
@@ -140,15 +140,13 @@ class ViTEncoder(nn.Module):
                 dim,            # embedding dim, e.g. 768
                 depth,          # number of transformerblock layers -- 4? 
                 heads,          # number of attention heads - 8? 
-                mask_ratio=0.0, # MAE mask ratio, 0=no masking
                 ):
         super().__init__()
         self.patch_embed = PatchEmbedding(in_channels=in_channels,patch_size=patch_size, dim=dim)
         self.blocks = nn.ModuleList([ TransformerBlock(dim, heads) for _ in range(depth) ])
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
-        self.mask_ratio = mask_ratio
         
-    def forward(self, x, return_cls_only=True, mae_mask=None):  # mr=0 means masking is turned off for now
+    def forward(self, x, return_cls_only=True, mask_ratio=0.0, mae_mask=None):  # mr=0 means masking is turned off for now
         x, pmask, pos = self.patch_embed(x)      # x is now patches, pmask=1 for non-empty patches, 0 for empty
 
         # tack on cls token 
@@ -157,7 +155,7 @@ class ViTEncoder(nn.Module):
         cls_pos = torch.tensor([[-1, -1]], device=pos.device)
         pos = torch.cat([cls_pos, pos], dim=0)  # (num_patches+1, 2)
         pmask = torch.cat([pmask.new_ones(pmask.shape[0], 1), pmask], dim=1)  # (B, 65)
-        if mae_mask is None: mae_mask = make_mae_mask(pmask, ratio=self.mask_ratio if self.training else 0.0)
+        if mae_mask is None: mae_mask = make_mae_mask(pmask, ratio=mask_ratio)
         x, pos_visible, pmask_visible = apply_mae_mask(x, pos, pmask, mae_mask)
 
         for block in self.blocks:  

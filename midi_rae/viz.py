@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz', 'do_recon_eval', 'viz_mae_recon']
+           'plot_embeddings_3d', 'make_emb_viz', 'do_recon_eval', 'patches_to_img', 'viz_mae_recon']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -184,7 +184,15 @@ def make_emb_viz(zs,
     return figs
 
 # %% ../nbs/05_viz.ipynb #6be20056-1385-46cc-972f-ab1207bce9a6
-def do_recon_eval(recon, real, eps=1e-8): 
+def do_recon_eval(recon, real, mae_mask=None, patch_size=16, eps=1e-8): 
+    "evaluate  recon accuracy" 
+    if mae_mask is not None: 
+        B, C, H, W = real.shape
+        grid_h, grid_w = H//patch_size, W//patch_size
+        # just grab masked-out subset from images via clever slicing. ;-); 
+        # creates new tensors so we don't need to worry about affecting recon & real in parent/calling routine
+        masked = ~mae_mask.bool().reshape(grid_h, grid_w).repeat_interleave(patch_size, 0).repeat_interleave(patch_size, 1)
+        recon, real = recon[:, :, masked], real[:, :, masked] 
     TP = (recon * real).sum()
     FP = (recon * (1 - real)).sum()
     FN = ((1 - recon) * real).sum()
@@ -197,29 +205,45 @@ def do_recon_eval(recon, real, eps=1e-8):
     if wandb.run is not None:  wandb.log(evals) 
     return evals 
 
+# %% ../nbs/05_viz.ipynb #1aaee236-717b-408c-8252-2e0048f63211
+def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None): 
+    "Convert image patches to full image. Copy over real patches where appropriate."
+    B, C, H, W = img_real.shape
+    grid_h, grid_w = H//patch_size, W//patch_size
+    if recon_patches.shape[1] % 2 != 0: recon_patches = recon_patches[:,1:]  # probably need to strip off cls token 
+    img_recon = recon_patches.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4) # (B, grid_h, patch_size, grid_w, patch_size)
+    img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
+    img_recon = torch.sigmoid(img_recon)
+    img_recon = (img_recon > 0.25).float() # binarize
+    if mae_mask is not None:  # replace non-masked/"visible" patches with straight copy from img_real
+        vis_2d = mae_mask.bool().reshape(grid_h, grid_w)
+        vis_2d = vis_2d.repeat_interleave(patch_size, 0).repeat_interleave(patch_size, 1)
+        img_recon[:, :, vis_2d] = img_real[:, :, vis_2d]
+    return img_recon 
+
 # %% ../nbs/05_viz.ipynb #ccd99bb0
 @torch.no_grad()
 def viz_mae_recon(recon,   # from proj_out of LightweightMAEDecoder, (B, N_full, patch_size^2)
-            pos,                   # "grid" locations of patches
             img_real, 
             epoch=-1,
             patch_size=16,
+            mae_mask=None,
             ):
     """show how our LightweightMAEDecoder is doing (during encoder training)"""
-    B, C, H, W = img_real.shape
+    recon, img_real, mae_mask = recon.cpu(), img_real.cpu(), mae_mask[1:].cpu() if mae_mask is not None else None
+    img_recon_noreplace = None 
     if recon.shape != img_real.shape:   # recon is patches; make into an image
-        grid_h, grid_w = H//patch_size, W//patch_size
-        if recon.shape[1] % 2 != 0: recon = recon[:,1:]  # probably need to strip off cls token 
-        img_recon = recon.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4).cpu() # (B, grid_h, patch_size, grid_w, patch_size)
-        img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
-        img_recon = torch.sigmoid(img_recon).cpu()
+        img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask)
+        img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
     else: 
-        img_recon = recon.cpu()
-    img_recon = (img_recon > 0.25).float() # binarize
-    
-    do_recon_eval(img_recon.cpu(), img_real.cpu())
-    
+        img_recon = (recon > 0.25).float() # binarize.  sigmoid was already applied before calling this routine
+    do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
     if wandb.run is not None: 
-        wandb.log({'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
+        wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 
+                      'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch':epoch }
+        if img_recon_noreplace is not None: 
+            grid_raw  = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
+            wandb_dict = wandb_dict | {'raw': wandb.Image(grid_raw, caption=f"Epoch {epoch}")}
+        wandb.log(wandb_dict)

@@ -17,12 +17,12 @@ class PatchState:
     Attributes:
         emb: (B, N, dim) patch embeddings
         pos: (N, 2) grid coordinates (row, col) for each patch
-        pmask: (B, N) content mask — 1 where patch has content (e.g. notes), 0 for empty
+        non_empty: (B, N) content mask — 1 where patch has content (e.g. notes), 0 for empty
         mae_mask: (N,) MAE visibility mask — 1=visible, 0=masked out for reconstruction
     """
     emb: torch.Tensor
     pos: torch.Tensor
-    pmask: torch.Tensor
+    non_empty: torch.Tensor
     mae_mask: torch.Tensor
 
     @property
@@ -32,7 +32,7 @@ class PatchState:
         return PatchState(
             emb=self.emb[:, m],
             pos=self.pos[m],
-            pmask=self.pmask[:, m],
+            non_empty=self.non_empty[:, m],
             mae_mask=self.mae_mask[m],
         )
 
@@ -43,14 +43,14 @@ class PatchState:
         return PatchState(
             emb=self.emb[:, m],
             pos=self.pos[m],
-            pmask=self.pmask[:, m],
+            non_empty=self.non_empty[:, m],
             mae_mask=self.mae_mask[m],
         )
 
     @property
     def non_empty_flat(self):
         """Flat bool mask for non-empty patches — useful for loss computation"""
-        return self.pmask.reshape(-1).bool()
+        return self.non_empty.reshape(-1).bool()
 
     @property
     def dim(self): return self.emb.shape[-1]
@@ -88,10 +88,10 @@ class EncoderOutput:
     Attributes:
         patches: Encoded representations (visible patches only)
         full_pos: (N_full, 2) all grid positions before MAE masking (needed by decoder)
-        full_pmask: (B, N_full) all content masks before MAE masking
+        full_non_empty: (B, N_full) all content masks before MAE masking
         mae_mask: (N_full,) the MAE mask applied (1=visible, 0=masked)
     """
     patches: HierarchicalPatchState
     full_pos: torch.Tensor
-    full_pmask: torch.Tensor
+    full_non_empty: torch.Tensor
     mae_mask: torch.Tensor

@@ -13,12 +13,12 @@ model:
 
 training:
   batch_size: 768  # encoder batch size
-  lr: 2e-4
-  epochs: 1000
+  lr: 3e-4
+  epochs: 500
   lambd: 0.3
   max_shift_x: 12   # will increase w/epoch via curriculum
   max_shift_y: 12
-  mae_lambda: 10.0
+  mae_lambda: 10
   mask_ratio: 0.5
   dec_batch_size: 256   # decoder-training batch size
   dec_epochs: 500

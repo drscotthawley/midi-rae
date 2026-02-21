@@ -42,8 +42,8 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
-    z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False)
-    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) # same mae_mask for both
+    z1, pmask1, pos1, mae_mask1 = encoder(img1, return_cls_only=False, mask_ratio=cfg.training.mask_ratio)
+    z2, pmask2, pos2, mae_mask2 = encoder(img2, return_cls_only=False, mae_mask=mae_mask1) 
     pmask1_visible, pmask2_visible = pmask1[:, mae_mask1], pmask2[:, mae_mask1]
     loss_dict = {}
     if mae_decoder is not None:
@@ -83,7 +83,7 @@ def train(cfg: DictConfig):
         ds.max_shift_y = shared_ct_dict['training']['max_shift_y']
 
     model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
-              cfg.model.dim, cfg.model.depth, cfg.model.heads, mask_ratio=cfg.training.mask_ratio).to(device)
+              cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
     model = torch.compile(model)
     mae_decoder = LightweightMAEDecoder(patch_size=cfg.model.patch_size, dim=cfg.model.dim).to(device)
 
@@ -102,7 +102,7 @@ def train(cfg: DictConfig):
     global_step = 0
     viz_every = 10
     for epoch in range(1, cfg.training.epochs+1):
-        wandb.log({"epoch": epoch})
+        if wandb.run is not None: wandb.log({"epoch": epoch})
         model.train()
         train_loss = 0
         if False and epoch > 1: # curriculum learning, easily turned off by setting this to False. DL's re-defined each epoch to init workers
@@ -142,7 +142,7 @@ def train(cfg: DictConfig):
                     zs_stacked = torch.cat((z1, z2), dim=0).reshape(-1, z1.shape[-1])
                     make_emb_viz(zs_stacked, num_tokens, epoch=epoch, model=model, pmasks=pmasks, file_idx=batch['file_idx'], deltas=batch['deltas'])
                 if mae_decoder is not None and (epoch % (viz_every//5) == 0):
-                        viz_mae_recon(recon_patches, pos2, batch['img2'], epoch=epoch)
+                        viz_mae_recon(recon_patches, batch['img2'], epoch=epoch, mae_mask=mae_mask2)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         scheduler.step()# val_loss)
