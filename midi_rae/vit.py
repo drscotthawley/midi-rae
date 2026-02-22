@@ -10,6 +10,7 @@ __all__ = ['RoPE2D', 'Attention', 'TransformerBlock', 'PatchEmbedding', 'make_ma
 import torch
 import torch.nn as nn
 import torch.nn.functional as F 
+from .core import PatchState, HierarchicalPatchState, EncoderOutput
 
 # %% ../nbs/02_vit.ipynb #624570b6
 class RoPE2D(nn.Module):
@@ -122,6 +123,7 @@ def make_mae_mask(non_empty, ratio=0, has_cls_token=True):
     "Apply token masking for MAE training. 1=keep, 0=masked"
     if ratio < 1e-8: return torch.ones(non_empty.shape[1], device=non_empty.device, dtype=torch.bool)
     mae_mask = (torch.rand(non_empty.shape[1], device=non_empty.device) > ratio)  #  (B, N), 1=visible, 0=masked
+    #mae_mask = non_empty[0] & mae_mask # temp check to recover old behavior
     if has_cls_token: mae_mask[0] = True  
     return mae_mask 
 
@@ -146,7 +148,7 @@ class ViTEncoder(nn.Module):
         self.blocks = nn.ModuleList([ TransformerBlock(dim, heads) for _ in range(depth) ])
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         
-    def forward(self, x, return_cls_only=True, mask_ratio=0.0, mae_mask=None):  # mr=0 means masking is turned off for now
+    def forward(self, x, mask_ratio=0.0, mae_mask=None):  # mr=0 means masking is turned off for now
         x, non_empty, pos = self.patch_embed(x)      # x is now patches, non_empty=1 for non-empty patches, 0 for empty
 
         # tack on cls token 
@@ -161,8 +163,11 @@ class ViTEncoder(nn.Module):
         for block in self.blocks:  
             x = block(x, pos=pos_visible) 
             x = torch.where(non_empty_visible.unsqueeze(-1), x, x * 1e-3)  # empty patches go to small but nonzero #s
-        return (x[:, 0] if return_cls_only else x), non_empty, pos, mae_mask  # return full pos & non_empty, can calc *_visible outside w/ mae_mask
 
+        #return (x[:, 0] if return_cls_only else x), non_empty, pos, mae_mask  # return full pos & non_empty, can calc *_visible outside w/ mae_mask
+        cls_ps = PatchState(emb=x[:, 0:1], pos=pos[0:1], non_empty=non_empty[:, 0:1], mae_mask=mae_mask[0:1])
+        patch_ps = PatchState(emb=x[:, 1:], pos=pos_visible[1:], non_empty=non_empty_visible[:, 1:], mae_mask=mae_mask[1:])
+        return EncoderOutput(patches=HierarchicalPatchState(levels=[cls_ps, patch_ps]), full_pos=pos, full_non_empty=non_empty, mae_mask=mae_mask)
 
 # %% ../nbs/02_vit.ipynb #9c00b8ba
 class Unpatchify(nn.Module):
@@ -209,7 +214,7 @@ class LightweightMAEDecoder(nn.Module):
     """Simple decoder for MAE pretraining - reconstructs masked patches
      loss should compare `output[:, ~mae_mask]` against original masked patch pixels.
     """
-    def __init__(self, patch_size=16, dim=256, depth=4, heads=4):
+    def __init__(self, patch_size=16, dim=256, depth=6, heads=4):
         super().__init__()
         self.patch_size = patch_size
         self.mask_token = nn.Parameter(torch.randn(1, 1, dim))

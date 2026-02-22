@@ -16,7 +16,6 @@ def safe_mean(t, dim=None):
     """safe replacement for torch.mean( ).  can't be used as a suffix though"""
     return t.mean(dim=dim) if t.numel() > 0 else 0.0
 
-
 # %% ../nbs/03_losses.ipynb #a164c279
 def SIGReg(x, global_step, num_slices=256):
     """SIGReg with Epps-Pulley statistic. x is (N, K) tensor."""
@@ -55,18 +54,15 @@ def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None):
     return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.item(), 'sigreg':sigreg.item()}
 
 # %% ../nbs/03_losses.ipynb #34ecc897
-def calc_mae_loss(recon_patches, img, pos_full, mae_mask, patch_size=16, all_patches=False, use_bce=True):
-    """for now, MSE evaluated at masked patches.  TODO: upgrade to some other loss? 
-    """
-    img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)  # (B, C, H//ps, W//ps, ps, ps)
-    img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)    # (B, C, N, ps*ps) -> reshape to (B, N, ps*ps)
-    if all_patches:  # ignore mae mask 
-        if use_bce: 
-            return F.binary_cross_entropy_with_logits(recon_patches[:, 1:, :], img_patches) 
-        return safe_mean((recon_patches[:, 1:, :] - img_patches).square())
-    if use_bce: 
-        return F.binary_cross_entropy_with_logits(recon_patches[:, 1:, :][:, ~mae_mask[1:], :] , img_patches[:, ~mae_mask[1:], :])
-    return safe_mean((recon_patches[:, 1:, :][:, ~mae_mask[1:], :] - img_patches[:, ~mae_mask[1:], :]).square())
+def calc_mae_loss(recon_patches, img, enc_out, patch_size=16, lambda_visible=0.1):
+    "BCE loss on reconstructed patches, with optional downweighting of visible patches"
+    mae_mask = enc_out.mae_mask[1:]  # strip CLS
+    img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+    img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)  # (B, N, ps*ps)
+    weights = torch.ones_like(recon_patches)
+    weights[:, mae_mask, :] = lambda_visible
+    loss = (F.binary_cross_entropy_with_logits(recon_patches, img_patches, reduction='none') * weights).mean()
+    return loss
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
@@ -74,7 +70,7 @@ def anchor_loss(z1, z2):
     return safe_mean( z1.square() ) + safe_mean( z2.square() )
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
-def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.1):
+def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.05):
     "Main loss function for Encoder"
     non_empty1, non_empty2 = non_emptys
     non_empty = non_empty1 & non_empty2  # both non-empty

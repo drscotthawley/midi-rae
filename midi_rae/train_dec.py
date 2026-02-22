@@ -67,7 +67,7 @@ def setup_models(cfg, device, preencoded):
     encoder = None
     if not preencoded:
         encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
-                             cfg.model.dim, cfg.model.depth, cfg.model.heads, mask_ratio=0).to(device)
+                             cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
         encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
         if cfg.training.get('enc_ft_lr', 0) <=0: 
             print("Freezing Encoder")
@@ -103,18 +103,14 @@ def setup_tstate(cfg, device, decoder, discriminator, encoder=None):
 
 # %% ../nbs/09_train_dec.ipynb #102f0438
 def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
-    """Get embeddings + images from batch, either pre-encoded or computed on-the-fly"""
     if preencoded:
-        z, img = batch
-        return z.to(device), img.to(device)
+        z, pos, img = batch
+        return z.to(device), pos.to(device), img.to(device)
     else:
-        img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
-        with torch.no_grad() if not encoder.training else nullcontext():
-            z1, non_empty1, pos1, mae_mask1  = encoder(img1, return_cls_only=False)
-            z2, non_empty2, pos2, mae_mask2 = encoder(img2, return_cls_only=False)
-            img1 = (img1 > 0.2).float()  # binarize
-            img2 = (img2 > 0.2).float()
-        return {'z1':z1, 'z2':z2, 'non_empty1':non_empty1, 'non_empty2':non_empty2, 'pos1':pos1, 'pos2':pos2, 'img1':img1, 'img2':img2, 'deltas':deltas}
+        img2 = batch['img2'].to(device)
+        with torch.no_grad():
+            enc_out = encoder(img2)
+        return enc_out.patches.all_emb, enc_out.full_pos, img2
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
 def train_step(epoch, z, img_real, decoder, discriminator, 
@@ -170,37 +166,38 @@ def train(cfg: DictConfig):
     train_dl, val_dl                = setup_dataloaders(cfg, preencoded)
     encoder, decoder, discriminator = setup_models(cfg, device, preencoded) 
     tstate                          = setup_tstate(cfg, device, decoder, discriminator, encoder=encoder)
-    if not(cfg.get('no_wandb', False)):  wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg)) # CLI: +no_wanb=true 
+    if not(cfg.get('no_wandb', False)): # CLI: +no_wanb=true
+        wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
+        wandb.define_metric("epoch")
+        wandb.define_metric("*", step_metric="epoch")
     global_step = 0 
     for epoch in range(1, cfg.training.dec_epochs + 1):
         train_loss = 0
-        
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
             global_step += 1
-            eb = get_embeddings_batch(batch, encoder, preencoded, device)
-            z1, z2, non_empty1, non_empty2, deltas, img_real = eb['z1'], eb['z2'], eb['non_empty1'], eb['non_empty2'], eb['deltas'], eb['img2']
+            z2, pos2, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
             losses, img_recon = train_step(epoch, z2, img_real, decoder, discriminator, tstate, cfg)
             train_loss += losses['dec']
 
-            # encoder fine-tuning
-            if tstate.opt_enc is not None: 
-                encoder.train()
-                z1 = z1.reshape(-1, z1.shape[-1])
-                z2 = z2.reshape(-1, z2.shape[-1])
-                num_tokens =  z1.shape[0] // len(deltas)  # or just 65
-                deltas = deltas.repeat_interleave(num_tokens, dim=0)
-                enc_loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=(non_empty1,non_empty2))
-                lambda_enc = 100
-                enc_loss_dict['loss'] *= lambda_enc
-                enc_loss_dict['loss'].backward()
-                if False and tstate.opt_enc is not None:
-                    grad_norm = sum(p.grad.norm().item() for p in encoder.parameters() if p.grad is not None)
-                    print(f"Encoder grad norm: {grad_norm:.4f}")
-                tstate.opt_enc.step()
+            # # encoder fine-tuning
+            # if False and tstate.opt_enc is not None: 
+            #     encoder.train()
+            #     z1 = z1.reshape(-1, z1.shape[-1])
+            #     z2 = z2.reshape(-1, z2.shape[-1])
+            #     num_tokens =  z1.shape[0] // len(deltas)  # or just 65
+            #     deltas = deltas.repeat_interleave(num_tokens, dim=0)
+            #     enc_loss_dict = calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=(non_empty1,non_empty2))
+            #     lambda_enc = 100
+            #     enc_loss_dict['loss'] *= lambda_enc
+            #     enc_loss_dict['loss'].backward()
+            #     if False and tstate.opt_enc is not None:
+            #         grad_norm = sum(p.grad.norm().item() for p in encoder.parameters() if p.grad is not None)
+            #         print(f"Encoder grad norm: {grad_norm:.4f}")
+            #     tstate.opt_enc.step()
 
-            if wandb.run is not None: wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
-                    'train_gan': losses['gan'],'train_disc': losses['disc'], 'epoch': epoch})
+            # if wandb.run is not None: wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
+            #         'train_gan': losses['gan'],'train_disc': losses['disc'], 'epoch': epoch})
                     #'enc_loss':enc_loss_dict['loss'].item(), 
         
         train_loss /= len(train_dl)
@@ -211,11 +208,9 @@ def train(cfg: DictConfig):
         with torch.no_grad():
             val_loss, loss_gan = 0, torch.tensor(0.0)
             for batch in val_dl:
-                eb = get_embeddings_batch(batch, encoder, preencoded, device)
-                z2, pos2, img_real = eb['z2'], eb['pos2'], eb['img2']
+                z2, pos2, img_real  = get_embeddings_batch(batch, encoder, preencoded, device)
                 img_recon = decoder(z2)  # recompute for the sake of the comp. graph
                 loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
-                #loss_l1 = tstate.l1_loss(img_recon, img_real)
                 img_recon = torch.sigmoid(img_recon) 
                 
                 weights = torch.where(img_real > 0.05, 10.0, 1.0)  # non-black pixels are worth more than black pixels
@@ -231,12 +226,14 @@ def train(cfg: DictConfig):
 
 
             if wandb.run is not None: 
-                viz_mae_recon(img_recon, batch['img2'], epoch=epoch)
-                wandb.log({'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
-                    'val_gan': loss_gan, 'epoch': epoch, 
+                viz_mae_recon(img_recon, img_real, epoch=epoch)
+                wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
+                    #'train_gan': losses['gan'],'train_disc': losses['disc'],
+                    'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
+                    #'val_gan': loss_gan, 
+                    'epoch': epoch, 
                     "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],})
                     #"lr_enc": tstate.opt_enc.param_groups[0]['lr'], })
-                    #'val_real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 'val_recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}") })
 
         save_checkpoint(decoder,        tstate.opt_dec, epoch, val_loss, cfg, tag="dec_")
         save_checkpoint(discriminator, tstate.opt_disc, epoch, val_loss, cfg, tag="disc_")

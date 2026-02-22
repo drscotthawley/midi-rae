@@ -4,7 +4,8 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz', 'do_recon_eval', 'patches_to_img', 'viz_mae_recon']
+           'plot_embeddings_3d', 'make_emb_viz', 'expand_patch_mask', 'do_recon_eval', 'patches_to_img',
+           'viz_mae_recon']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -35,12 +36,12 @@ def cuml_umap_project(embeddings, n_components=3, n_neighbors=15, min_dist=0.1, 
 # %% ../nbs/05_viz.ipynb #b8cf6f27
 def umap_project(embeddings, **kwargs): 
     "Calls one of two preceding UMAP routines based on device availability."
-    try:
-        coords = cuml_umap_project(embeddings, **kwargs)
-    except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        coords = cpu_umap_project(embeddings, **kwargs)
-    return coords
+    if embeddings.is_cuda:
+        try: return cuml_umap_project(embeddings, **kwargs)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            return cpu_umap_project(embeddings, **kwargs)
+    return cpu_umap_project(embeddings, **kwargs)
 
 # %% ../nbs/05_viz.ipynb #a4fef620
 def cuml_pca_project(embeddings, n_components=3):
@@ -61,10 +62,10 @@ def cpu_pca_project(embeddings, n_components=3):
 # %% ../nbs/05_viz.ipynb #cf52f98b
 def pca_project(embeddings, **kwargs):
     "Calls GPU or CPU PCA based on availability"
-    try:
-        return cuml_pca_project(embeddings, **kwargs)
-    except:
-        return cpu_pca_project(embeddings, **kwargs)
+    if embeddings.is_cuda:
+        try: return cuml_pca_project(embeddings, **kwargs)
+        except: return cpu_pca_project(embeddings, **kwargs)
+    return cpu_pca_project(embeddings, **kwargs)
 
 # %% ../nbs/05_viz.ipynb #1c5d9cc8
 @torch.no_grad()
@@ -130,79 +131,73 @@ def _subsample(data, indices, deltas, max_points, debug=False):
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
-def make_emb_viz(zs,  
-                num_tokens, epoch=-1, 
-                model=None, 
-                title='Embeddings', 
-                max_points=5000, 
-                non_emptys=None, 
-                file_idx=None,
-                deltas=None,
-                do_umap=True,
-                debug=False):
-    "this is the main routine, showing different groups of embeddings"
-    device = zs.device
+def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings', max_points=5000, do_umap=True, debug=False):
+    "this is the main viz routine, showing different groups of embeddings"
+    device = enc_outs[0].patches[0].emb.device
     if model is not None: model.to('cpu')
     torch.cuda.empty_cache()
-    
-    if file_idx is not None and file_idx.shape[0] < zs.shape[0]:
-        file_idx = file_idx.repeat(2).repeat_interleave(num_tokens).to(device)
-    if deltas is not None and deltas.shape[0] < zs.shape[0]:
-        deltas = deltas.repeat(2, 1).repeat_interleave(num_tokens, dim=0).to(device)
+
+    num_patch_tokens = enc_outs[0].patches[1].num_patches
+    num_all_tokens = enc_outs[0].patches.all_emb.shape[1]  # CLS + patches
+
+    file_idx, deltas = None, None
+    if batch is not None:
+        file_idx = batch['file_idx'].repeat(2).repeat_interleave(num_patch_tokens).to(device)
+        deltas = batch['deltas'].repeat(2, 1).repeat_interleave(num_patch_tokens, dim=0).to(device)
 
     # CLS tokens
-    cls_tokens = zs[::num_tokens]
-    if debug: print("cls_tokens.shape =",cls_tokens.shape)
-    cls_file_idx = file_idx[::num_tokens] if file_idx is not None else None
-    cls_deltas = deltas[::num_tokens] if deltas is not None else None
-    cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, deltas=cls_deltas, do_umap=do_umap)
-    
-    # Patches (non-CLS)
-    dim = zs.shape[-1]
-    patches = zs.view(-1, num_tokens, dim)[:, 1:]   # 1: strips off cls
-    patches = patches.reshape(-1, dim)  
-    non_empty1, non_empty2 = non_emptys
-    non_empty = (non_empty1 & non_empty2)[:,1:] # both non-empty
-    valid = non_empty.flatten().repeat(2)  
-    if debug: print("file_idx.shape, deltas.shape =",file_idx.shape, deltas.shape)
-    patch_file_idx = file_idx.view(-1, num_tokens)[:, 1:].reshape(-1)
-    patch_deltas = deltas.view(-1, num_tokens)[:, 1:].reshape(-1,2)
-    if debug: print("patch_file_idx.shape, patch_deltas.shape =",patch_file_idx.shape, patch_deltas.shape)
+    cls_tokens = torch.cat((enc_outs[0].patches[0].emb, enc_outs[1].patches[0].emb), dim=0).squeeze(1)
+    cls_file_idx = batch['file_idx'].repeat(2).to(device) if batch is not None else None
+    cls_deltas = batch['deltas'].repeat(2, 1).to(device) if batch is not None else None
+    cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_all_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, deltas=cls_deltas, do_umap=do_umap)
+
+    # Patches (non-CLS) — already CLS-stripped via patches[1]
+    dim = enc_outs[0].patches[1].dim
+    patches = torch.cat((enc_outs[0].patches[1].emb, enc_outs[1].patches[1].emb), dim=0).reshape(-1, dim)
+    non_empty = (enc_outs[0].patches[1].non_empty & enc_outs[1].patches[1].non_empty)
+    valid = non_empty.flatten().repeat(2)
 
     # Non-empty patches
-    valid_patches, valid_file_idx, valid_deltas = patches[valid], patch_file_idx[valid], patch_deltas[valid]
+    valid_patches, valid_file_idx, valid_deltas = patches[valid], file_idx[valid], deltas[valid]
     rnd_patches, rnd_file_idx, rnd_deltas = _subsample(valid_patches, valid_file_idx, valid_deltas, max_points)
-    patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, deltas=rnd_deltas, do_umap=do_umap)
-        
-    # Empty patches
-    empty_patches, empty_file_idx, emtpy_deltas = patches[~valid], patch_file_idx[~valid], patch_deltas[~valid]
-    rnd_empty, rnd_empty_idx, rnd_empty_deltas = _subsample(empty_patches, empty_file_idx, emtpy_deltas, max_points)
-    empty_pca_fig = _make_emb_viz(rnd_empty, num_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx, deltas=rnd_empty_deltas)
+    patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_all_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, deltas=rnd_deltas, do_umap=do_umap)
+
+    # plot when both patches are empty 
+    ne1 = enc_outs[0].patches[1].non_empty.flatten().repeat(2)
+    ne2 = enc_outs[1].patches[1].non_empty.flatten().repeat(2)
+    both_empty = ~ne1 & ~ne2
+    empty_patches, empty_file_idx, empty_deltas = patches[both_empty], file_idx[both_empty], deltas[both_empty]
+    if debug: print("emtpy: patches[~both_empty].norm(dim=-1).mean() = ",patches[~both_empty].norm(dim=-1).mean())
+    rnd_empty, rnd_empty_idx, rnd_empty_deltas = _subsample(empty_patches, empty_file_idx, empty_deltas, max_points)
+    empty_pca_fig = _make_emb_viz(rnd_empty, num_all_tokens, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx, deltas=rnd_empty_deltas)
     
     if model is not None: model.to(device)
     figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
     return figs
 
+# %% ../nbs/05_viz.ipynb #f450ea65-c24c-4675-894d-792ee4a9b986
+def expand_patch_mask(mae_mask, grid_h, grid_w, patch_size):
+    """Expand patch-level mask (N,) to pixel-level mask (H, W)"""
+    return mae_mask.bool().reshape(grid_h, grid_w).repeat_interleave(patch_size, 0).repeat_interleave(patch_size, 1)
+
 # %% ../nbs/05_viz.ipynb #6be20056-1385-46cc-972f-ab1207bce9a6
 def do_recon_eval(recon, real, mae_mask=None, patch_size=16, eps=1e-8): 
-    "evaluate  recon accuracy" 
+    "Evaluate recon accuracy, optionally only on masked patches"
     if mae_mask is not None: 
         B, C, H, W = real.shape
         grid_h, grid_w = H//patch_size, W//patch_size
-        # just grab masked-out subset from images via clever slicing. ;-); 
-        # creates new tensors so we don't need to worry about affecting recon & real in parent/calling routine
-        masked = ~mae_mask.bool().reshape(grid_h, grid_w).repeat_interleave(patch_size, 0).repeat_interleave(patch_size, 1)
+        masked = ~expand_patch_mask(mae_mask, grid_h, grid_w, patch_size)
         recon, real = recon[:, :, masked], real[:, :, masked] 
     TP = (recon * real).sum()
     FP = (recon * (1 - real)).sum()
     FN = ((1 - recon) * real).sum()
     TN = ((1 - recon) * (1 - real)).sum()
     precision = TP / (TP + FP + eps) 
-    recall = TP/ (TP + FN+ eps) 
+    recall = TP / (TP + FN + eps) 
     specificity = TN / (TN + FP + eps) 
     f1 = 2 * precision * recall / (precision + recall + eps) 
-    evals = {  'precision': precision,  'recall': recall,  'specificity': specificity,  'f1': f1}
-    if wandb.run is not None:  wandb.log(evals) 
+    evals = {'precision': precision, 'recall': recall, 'specificity': specificity, 'f1': f1}
+    if wandb.run is not None: wandb.log(evals) 
     return evals 
 
 # %% ../nbs/05_viz.ipynb #1aaee236-717b-408c-8252-2e0048f63211
@@ -210,40 +205,38 @@ def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
     "Convert image patches to full image. Copy over real patches where appropriate."
     B, C, H, W = img_real.shape
     grid_h, grid_w = H//patch_size, W//patch_size
-    if recon_patches.shape[1] % 2 != 0: recon_patches = recon_patches[:,1:]  # probably need to strip off cls token 
-    img_recon = recon_patches.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4) # (B, grid_h, patch_size, grid_w, patch_size)
+    if recon_patches.shape[1] % 2 != 0: recon_patches = recon_patches[:,1:]  # strip cls token
+    img_recon = recon_patches.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4)
     img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
     img_recon = torch.sigmoid(img_recon)
-    img_recon = (img_recon > 0.25).float() # binarize
-    if mae_mask is not None:  # replace non-masked/"visible" patches with straight copy from img_real
-        vis_2d = mae_mask.bool().reshape(grid_h, grid_w)
-        vis_2d = vis_2d.repeat_interleave(patch_size, 0).repeat_interleave(patch_size, 1)
+    img_recon = (img_recon > 0.25).float()
+    if mae_mask is not None:
+        vis_2d = expand_patch_mask(mae_mask, grid_h, grid_w, patch_size)
         img_recon[:, :, vis_2d] = img_real[:, :, vis_2d]
     return img_recon 
 
-# %% ../nbs/05_viz.ipynb #ccd99bb0
+# %% ../nbs/05_viz.ipynb #86455273-d2fa-4a97-a6a7-0a71a0a7798f
 @torch.no_grad()
-def viz_mae_recon(recon,   # from proj_out of LightweightMAEDecoder, (B, N_full, patch_size^2)
-            img_real, 
-            epoch=-1,
-            patch_size=16,
-            mae_mask=None,
-            ):
-    """show how our LightweightMAEDecoder is doing (during encoder training)"""
-    recon, img_real, mae_mask = recon.cpu(), img_real.cpu(), mae_mask[1:].cpu() if mae_mask is not None else None
+def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16):
+    """Show how our LightweightMAEDecoder is doing (during encoder training)"""
+    mae_mask = enc_out.mae_mask[1:] if enc_out is not None else None  # strip CLS
+    recon, img_real = recon.cpu(), img_real.cpu()
+    if mae_mask is not None: mae_mask = mae_mask.cpu()
+    
     img_recon_noreplace = None 
-    if recon.shape != img_real.shape:   # recon is patches; make into an image
+    if recon.shape != img_real.shape:
         img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask)
         img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
     else: 
-        img_recon = (recon > 0.25).float() # binarize.  sigmoid was already applied before calling this routine
-    do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size)
+        img_recon = (recon > 0.25).float()
+    evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
     if wandb.run is not None: 
         wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 
-                      'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch':epoch }
+                      'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch': epoch}
         if img_recon_noreplace is not None: 
-            grid_raw  = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
+            grid_raw = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
             wandb_dict = wandb_dict | {'raw': wandb.Image(grid_raw, caption=f"Epoch {epoch}")}
         wandb.log(wandb_dict)
+    return grid_recon, grid_real, evals

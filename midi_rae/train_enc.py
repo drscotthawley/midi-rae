@@ -12,6 +12,7 @@ import multiprocessing as mp
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import OneCycleLR
 import wandb
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
@@ -19,7 +20,7 @@ import hydra
 from .vit import ViTEncoder, LightweightMAEDecoder
 from .data import PRPairDataset
 from .losses import calc_enc_loss, calc_mae_loss
-from .utils import save_checkpoint
+from .utils import save_checkpoint, load_checkpoint
 from .viz import make_emb_viz, viz_mae_recon
 from tqdm.auto import tqdm
 
@@ -48,8 +49,8 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     if mae_decoder is not None:
         eo = enc_out2.patches[1] # readibility/convenience variable
         recon_patches = mae_decoder(enc_out2.patches[1].emb, enc_out2.full_pos[1:], enc_out2.mae_mask[1:]) # no cls
-        loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2)
-
+        loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2, lambda_visible=cfg.training.get('lambda_visible',0.1))
+        print("\nloss_dict['mae'].requires_grad =",loss_dict['mae'].requires_grad)
     z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
     z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
     non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
@@ -91,15 +92,18 @@ def train(cfg: DictConfig):
     optimizer = torch.optim.AdamW(chain(model.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
     epoch_start = 1
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
-        ckpt_path =  cfg.get('checkpoint','checkpoints/enc_best.pt')
+        ckpt_path =  cfg.get('checkpoint',None)
         model, ckpt = load_checkpoint(model, ckpt_path, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch'] + 1 # next epoch after the one completed in thecheckpoint
-        mae_decoder = load_checkpoint(mae_decoder, ckpt_path.replace('enc_','maedec_'), return_all=False)
+        try:
+            mae_decoder = load_checkpoint(mae_decoder, ckpt_path.replace('enc_','maedec_'), return_all=False)
+        except: pass
 
     model = torch.compile(model, dynamic=True)
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, last_epoch=epoch_start-1)
+    scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
+                        **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
     scaler = torch.amp.GradScaler(device)
     
     if not(cfg.get('no_wandb', False)): 
@@ -151,7 +155,7 @@ def train(cfg: DictConfig):
 
                 if epoch % viz_every == 0:
                     make_emb_viz(enc_outs, epoch=epoch, model=model, batch=batch)
-                if mae_decoder is not None and (epoch % (viz_every//2) == 0):
+                if mae_decoder is not None and (epoch % (viz_every//5) == 0):
                         viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[1], epoch=epoch)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")

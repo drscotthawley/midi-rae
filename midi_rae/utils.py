@@ -10,11 +10,12 @@ import os
 import torch
 
 # %% ../nbs/04_utils.ipynb #a164c279
-def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=10, n_keep=5, verbose=True, tag=""):
+def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=25, n_keep=5, verbose=True, tag=""):
     "Saves new checkpoint, keeps best & the most recent n_keep"
     if not hasattr(save_checkpoint, 'best_val_loss'):
         save_checkpoint.best_val_loss = float('inf')
-
+    if epoch % save_every != 0 and val_loss >= save_checkpoint.best_val_loss: return 
+    
     os.makedirs('checkpoints', exist_ok=True)
     ckpt = {'epoch': epoch, 'model_state_dict': getattr(model, '_orig_mod', model).state_dict(),
         'optimizer_state_dict': optimizer.state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
@@ -34,9 +35,9 @@ def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=10, n_kee
 # %% ../nbs/04_utils.ipynb #55fb9d50
 def load_checkpoint(model, ckpt_path:str, return_all=False, weights_only=False, strict=False):
     "loads a model (and maybe other things) from a checkpoint file"
-    print(f">>> Loading model checkpoint from {ckpt_path}")
     device = next(model.parameters()).device
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=weights_only)
+    print(f">>> Loaded model checkpoint from {ckpt_path}")
     ckpt['model_state_dict'] = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}
     model.load_state_dict(ckpt['model_state_dict'], strict=strict)
     return (model, ckpt) if return_all else model
