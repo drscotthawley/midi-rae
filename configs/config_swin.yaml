@@ -1,0 +1,42 @@
+data:
+  path: /home/shawley/datasets/POP909_images_basic  # adjust path as needed
+  image_size: 128
+  in_channels: 1
+
+model:
+  encoder: swin           # 'vit' or 'swin'
+  patch_h: 2
+  patch_w: 2
+  embed_dim: 4            # doubles each stage: 4 → 8 → 16 → 32 → 64 → 128 → 256
+  depths: [1, 1, 2, 2, 6, 2, 1]
+  num_heads: [1, 1, 1, 2, 4, 8, 16]
+  window_size: 8
+  mlp_ratio: 4.0
+  drop_path_rate: 0.1
+  dec_depth: 6            # decoder vit
+  dec_heads: 8
+
+training:
+  batch_size: 768         # encoder batch size
+  lr: 4e-4
+  epochs: 500
+  lambd: 0.3              # lejepa sim-vs-sigreg weight
+  max_shift_x: 12         # will increase w/epoch via curriculum
+  max_shift_y: 12
+  mae_lambda: 10
+  mask_ratio: 0.5
+  empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
+  lambda_visible: 1.0
+  dec_batch_size: 256     # decoder-training batch size
+  dec_epochs: 500
+  dec_lr: 5e-5
+  gan_warmup: 100000      # number of epochs before adversarial training starts
+  enc_ft_lr: -1           # lr for fine-tuning enc via end-to-end training w/ decoder
+
+preencode:
+  output_dir: /home/shawley/datasets/POP909_encoded
+  num_passes: 10          # number of passes through the dataset
+
+wandb:
+  project: swin-midi-rae
+

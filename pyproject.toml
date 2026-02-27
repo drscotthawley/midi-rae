@@ -24,6 +24,7 @@ dependencies = [
     "tqdm",
     "matplotlib",
     "plotly",
+    "timm",
     "scikit-learn",
     "lpips",
 ]
