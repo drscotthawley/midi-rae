@@ -50,7 +50,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
         eo = enc_out2.patches[1] # readibility/convenience variable
         recon_patches = mae_decoder(enc_out2.patches[1].emb, enc_out2.full_pos[1:], enc_out2.mae_mask[1:]) # no cls
         loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2, lambda_visible=cfg.training.get('lambda_visible',0.1))
-        print("\nloss_dict['mae'].requires_grad =",loss_dict['mae'].requires_grad)
+
     z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
     z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
     non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
