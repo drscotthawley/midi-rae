@@ -158,3 +158,9 @@ nbs/*_dup?.ipynb
 
 # chats
 *chat*.ipynb
+
+# Only allow notebooks that start with a number followed by an underscore
+# Start by ignoring all, then un-ignore the ones we want to keep
+nbs/*.ipynb
+!nbs/[0-9]*_*.ipynb
+
