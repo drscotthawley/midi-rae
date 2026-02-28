@@ -176,7 +176,8 @@ def train(cfg: DictConfig):
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
-                val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
                 val_loss += val_loss_dict['loss'].item()
 
             train_loss /= len(train_dl)
