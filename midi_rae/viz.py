@@ -137,24 +137,24 @@ def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings',
     if model is not None: model.to('cpu')
     torch.cuda.empty_cache()
 
-    num_patch_tokens = enc_outs[0].patches[1].num_patches
-    num_all_tokens = enc_outs[0].patches.all_emb.shape[1]  # CLS + patches
+    num_patch_tokens = enc_outs[0].patches[-1].num_patches
+    num_all_tokens = enc_outs[0].patches.all_emb.shape[1]  # CLS + patches # won't work on swin
 
     file_idx, deltas = None, None
     if batch is not None:
         file_idx = batch['file_idx'].repeat(2).repeat_interleave(num_patch_tokens).to(device)
         deltas = batch['deltas'].repeat(2, 1).repeat_interleave(num_patch_tokens, dim=0).to(device)
 
-    # CLS tokens
+    # CLS tokens aka coarsest level
     cls_tokens = torch.cat((enc_outs[0].patches[0].emb, enc_outs[1].patches[0].emb), dim=0).squeeze(1)
     cls_file_idx = batch['file_idx'].repeat(2).to(device) if batch is not None else None
     cls_deltas = batch['deltas'].repeat(2, 1).to(device) if batch is not None else None
     cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, num_all_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, deltas=cls_deltas, do_umap=do_umap)
 
-    # Patches (non-CLS) — already CLS-stripped via patches[1]
+    # Patches (non-CLS) aka finest level — already CLS-stripped via patches[-1]
     dim = enc_outs[0].patches[1].dim
-    patches = torch.cat((enc_outs[0].patches[1].emb, enc_outs[1].patches[1].emb), dim=0).reshape(-1, dim)
-    non_empty = (enc_outs[0].patches[1].non_empty & enc_outs[1].patches[1].non_empty)
+    patches = torch.cat((enc_outs[0].patches[-1].emb, enc_outs[1].patches[-1].emb), dim=0).reshape(-1, dim)
+    non_empty = (enc_outs[0].patches[1].non_empty & enc_outs[1].patches[-1].non_empty)
     valid = non_empty.flatten().repeat(2)
 
     # Non-empty patches
@@ -163,8 +163,8 @@ def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings',
     patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, num_all_tokens, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, deltas=rnd_deltas, do_umap=do_umap)
 
     # plot when both patches are empty 
-    ne1 = enc_outs[0].patches[1].non_empty.flatten().repeat(2)
-    ne2 = enc_outs[1].patches[1].non_empty.flatten().repeat(2)
+    ne1 = enc_outs[0].patches[-1].non_empty.flatten().repeat(2)
+    ne2 = enc_outs[1].patches[-1].non_empty.flatten().repeat(2)
     both_empty = ~ne1 & ~ne2
     empty_patches, empty_file_idx, empty_deltas = patches[both_empty], file_idx[both_empty], deltas[both_empty]
     if debug: print("emtpy: patches[~both_empty].norm(dim=-1).mean() = ",patches[~both_empty].norm(dim=-1).mean())
