@@ -22,6 +22,7 @@ from collections import namedtuple
 from contextlib import nullcontext
 
 from .vit import ViTEncoder, ViTDecoder
+from .swin import SwinEncoder, SwinDecoder
 from .losses import PatchGANDiscriminator
 from .data import PRPairDataset  # note, we'll only use img2 and ignore img1
 from .utils import save_checkpoint, load_checkpoint
@@ -66,8 +67,15 @@ def setup_dataloaders(cfg, preencoded=False):
 def setup_models(cfg, device, preencoded): 
     encoder = None
     if not preencoded:
-        encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
-                             cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
+        if cfg.model.get('encoder', 'vit') == 'swin':
+            encoder = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+                            patch_h=cfg.model.patch_h, patch_w=cfg.model.patch_w,
+                            embed_dim=cfg.model.embed_dim, depths=cfg.model.depths,
+                            num_heads=cfg.model.num_heads, window_size=cfg.model.window_size,
+                            mlp_ratio=cfg.model.mlp_ratio, drop_path_rate=cfg.model.drop_path_rate).to(device)
+        else:
+            encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
+                                 cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
         encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
         if cfg.training.get('enc_ft_lr', 0) <=0: 
             print("Freezing Encoder")
@@ -76,12 +84,20 @@ def setup_models(cfg, device, preencoded):
         else: 
             print("Encoder will train") 
             encoder.train()
-    
-    decoder = ViTDecoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size),
+
+    if cfg.model.get('encoder', 'vit') == 'swin': # decoder should match encoder
+        decoder = SwinDecoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+                            patch_h=cfg.model.patch_h, patch_w=cfg.model.patch_w,
+                            embed_dim=cfg.model.embed_dim,
+                            depths=cfg.model.get('dec_depths', cfg.model.depths), 
+                            num_heads=cfg.model.get('dec_num_heads', cfg.model.num_heads)).to(device)
+    else: 
+        decoder = ViTDecoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size),
                          cfg.model.patch_size, cfg.model.dim, 
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
     #decoder = torch.compile(decoder)
     
+    # note: we don't need discriminator, really 
     discriminator = PatchGANDiscriminator(in_ch=cfg.data.in_channels).to(device)
     #discriminator = torch.compile(discriminator) # can cause issues elsewhere; leave off for now
     return encoder, decoder, discriminator
@@ -123,7 +139,7 @@ def train_step(epoch, z, img_real, decoder, discriminator,
     if epoch > cfg.training.gan_warmup:
         # --- Discriminator step (after warmup) ---
         tstate.opt_disc.zero_grad()
-        with torch.autocast('cuda'):
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             img_recon = decoder(z)
             d_real = discriminator(img_real)
             d_fake = discriminator(torch.sigmoid(img_recon.detach()))
@@ -135,7 +151,7 @@ def train_step(epoch, z, img_real, decoder, discriminator,
     
     # --- Decoder step ---
     tstate.opt_dec.zero_grad()
-    with torch.autocast('cuda'):
+    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         img_recon = decoder(z)  # recompute for the sake of the comp. graph
         loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
         #loss_l1 = tstate.l1_loss(img_recon, img_real)
@@ -180,7 +196,7 @@ def train(cfg: DictConfig):
             losses, img_recon = train_step(epoch, z2, img_real, decoder, discriminator, tstate, cfg)
             train_loss += losses['dec']
 
-            # # encoder fine-tuning
+            # # optional: encoder fine-tuning
             # if False and tstate.opt_enc is not None: 
             #     encoder.train()
             #     z1 = z1.reshape(-1, z1.shape[-1])
@@ -209,24 +225,25 @@ def train(cfg: DictConfig):
             val_loss, loss_gan = 0, torch.tensor(0.0)
             for batch in val_dl:
                 z2, pos2, img_real  = get_embeddings_batch(batch, encoder, preencoded, device)
-                img_recon = decoder(z2)  # recompute for the sake of the comp. graph
-                loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
-                img_recon = torch.sigmoid(img_recon) 
-                
-                weights = torch.where(img_real > 0.05, 10.0, 1.0)  # non-black pixels are worth more than black pixels
-                loss_l1 = (weights * (img_recon - img_real).abs()).mean()
-                loss_lpips = tstate.lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
-                #loss_dec = loss_l1 + 0.02 * loss_lpips # TODO: adaptive weighting as in RAE paper (??)
-                loss_dec = loss_bce
-                if epoch > cfg.training.gan_warmup:
-                    loss_gan = -discriminator(img_recon).mean() # - because generator wants discriminator to say "real"
-                    loss_dec +=  0.01 * loss_gan
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    img_recon = decoder(z2)  # recompute for the sake of the comp. graph
+                    loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
+                    img_recon = torch.sigmoid(img_recon) 
+                    
+                    weights = torch.where(img_real > 0.05, 10.0, 1.0)  # non-black pixels are worth more than black pixels
+                    loss_l1 = (weights * (img_recon - img_real).abs()).mean()
+                    loss_lpips = tstate.lpips_loss(img_recon.repeat(1,3,1,1), img_real.repeat(1,3,1,1)).mean()  # LPIPS wants 3ch
+                    #loss_dec = loss_l1 + 0.02 * loss_lpips # TODO: adaptive weighting as in RAE paper (??)
+                    loss_dec = loss_bce
+                    if epoch > cfg.training.gan_warmup:
+                        loss_gan = -discriminator(img_recon).mean() # - because generator wants discriminator to say "real"
+                        loss_dec +=  0.01 * loss_gan
                 val_loss += loss_dec.item()
             val_loss /= len(val_dl) 
 
 
             if wandb.run is not None: 
-                viz_mae_recon(img_recon, img_real, epoch=epoch)
+                viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size)
                 wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
                     #'train_gan': losses['gan'],'train_disc': losses['disc'],
                     'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
