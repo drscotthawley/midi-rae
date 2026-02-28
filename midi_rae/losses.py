@@ -54,15 +54,28 @@ def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None):
     return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.item(), 'sigreg':sigreg.item()}
 
 # %% ../nbs/03_losses.ipynb #34ecc897
-def calc_mae_loss(recon_patches, img, enc_out, patch_size=16, lambda_visible=0.1):
+# def calc_mae_loss(recon_patches, img, enc_out, patch_size=16, lambda_visible=0.1):
+#     "BCE loss on reconstructed patches, with optional downweighting of visible patches"
+#     mae_mask = enc_out.mae_mask[1:]  # strip CLS
+#     img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+#     img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)  # (B, N, ps*ps)
+#     weights = torch.ones_like(recon_patches)
+#     weights[:, mae_mask, :] = lambda_visible
+#     loss = (F.binary_cross_entropy_with_logits(recon_patches, img_patches, reduction='none') * weights).mean()
+#     return loss
+
+def calc_mae_loss(recon_patches, img, enc_out, lambda_visible=0.1):
     "BCE loss on reconstructed patches, with optional downweighting of visible patches"
-    mae_mask = enc_out.mae_mask[1:]  # strip CLS
+    mae_mask = enc_out.mae_mask
+    patch_size = int(recon_patches.shape[-1] ** 0.5)
+    if mae_mask.dim() == 1: mae_mask = mae_mask[1:]  # strip CLS (ViT only)
     img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
     img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)  # (B, N, ps*ps)
     weights = torch.ones_like(recon_patches)
-    weights[:, mae_mask, :] = lambda_visible
+    weights[mae_mask] = lambda_visible  # works for both (N,) and (B,N)
     loss = (F.binary_cross_entropy_with_logits(recon_patches, img_patches, reduction='none') * weights).mean()
     return loss
+
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
@@ -82,6 +95,7 @@ def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,
     return loss_dict
 
 # %% ../nbs/03_losses.ipynb #ec2cf5ea
+@torch.compiler.disable
 def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarchy level, 0=coarsest, -1=finest
                              global_step, img_size, deltas=None,
                              lambd=0.5, non_emptys=None, lambda_anchor=0.05):
@@ -93,6 +107,7 @@ def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarc
     abs_deltas = deltas.abs()
     n_levels = len(z1)
     for i, (z1_l, z2_l, ne) in enumerate(zip(z1, z2, non_emptys)):
+        if z1_l.shape[1] == 1: continue  # skip degenerate 1-token level
         B, N, D = z1_l.shape
         grid = int(N ** 0.5)
         patch_w, patch_h = img_size // grid, img_size // grid
@@ -103,7 +118,8 @@ def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarc
         num_tokens = N
         d_exp = deltas.repeat_interleave(num_tokens, dim=0)
         z1_flat, z2_flat = z1_l.reshape(-1, D),  z2_l.reshape(-1, D)
-        ne_flat = (ne[0].reshape(-1), ne[1].reshape(-1))
+        #ne_flat = (ne[0].reshape(-1), ne[1].reshape(-1))
+        ne_flat = (ne[0].reshape(-1).bool(), ne[1].reshape(-1).bool())
 
         ld = calc_enc_loss(z1_flat, z2_flat, global_step, deltas=d_exp,
                            lambd=lambd, non_emptys=ne_flat, lambda_anchor=lambda_anchor)

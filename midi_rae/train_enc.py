@@ -7,6 +7,7 @@ __all__ = ['curr_learn', 'compute_batch_loss', 'train']
 
 # %% ../nbs/06_train_enc.ipynb #98edfbef
 import os
+os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 from itertools import chain
 import multiprocessing as mp
 import torch
@@ -17,8 +18,9 @@ import wandb
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
 import hydra
+from .core import *
 from .vit import ViTEncoder, LightweightMAEDecoder
-from .swin import SwinEncoder
+from .swin import SwinEncoder, SwinMAEDecoder
 from .data import PRPairDataset
 from .losses import calc_enc_loss, calc_mae_loss, calc_enc_loss_multiscale
 from .utils import save_checkpoint, load_checkpoint
@@ -40,7 +42,8 @@ def curr_learn(shared_ct_dict, epoch, interval=100, verbose=False):
     return training
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
-def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
+@torch.compiler.disable
+def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, debug=False):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
     img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
@@ -50,7 +53,10 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     recon_patches = None
     if mae_decoder is not None: # recon at finest scale
         eo = enc_out2.patches[-1] # readibility/convenience variable
-        recon_patches = mae_decoder(enc_out2.patches[1].emb, enc_out2.full_pos[1:], enc_out2.mae_mask[1:]) # no cls
+        recon_patches = mae_decoder(enc_out2) 
+        if debug:
+            for i, lv in enumerate(enc_out2.patches.levels):
+                print(f"level {i}: {lv.emb.isnan().any()}, min={lv.emb.min():.4f}, max={lv.emb.max():.4f}")
         loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2, lambda_visible=cfg.training.get('lambda_visible',0.1))
 
     if isinstance(enc_out1.patches, HierarchicalPatchState):
@@ -61,7 +67,8 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
         z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
         z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
         non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
-    
+
+    #for i, z in enumerate(z1): print(f"level {i}: shape={z.shape}, norm={z.norm():.4f}, min={z.min():.4f}, max={z.max():.4f}")
     loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, img_size=cfg.data.image_size, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
 
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae']
@@ -91,6 +98,9 @@ def train(cfg: DictConfig):
         ds.max_shift_x = shared_ct_dict['training']['max_shift_x']
         ds.max_shift_y = shared_ct_dict['training']['max_shift_y']
 
+    # setup models
+    patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
+    dim = cfg.model.get('dim', cfg.model.get('embed_dim', 256))    
     if cfg.model.get('encoder', 'vit') == 'swin':
         from midi_rae.swin import SwinEncoder
         model = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size,
@@ -98,13 +108,16 @@ def train(cfg: DictConfig):
                             embed_dim=cfg.model.embed_dim, depths=cfg.model.depths,
                             num_heads=cfg.model.num_heads, window_size=cfg.model.window_size,
                             mlp_ratio=cfg.model.mlp_ratio, drop_path_rate=cfg.model.drop_path_rate).to(device)
+        dims = tuple(cfg.model.embed_dim * 2**i for i in range(len(cfg.model.depths)-1, -1, -1))
+        mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
     else:
         model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
               cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
+        mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
 
-    patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
-    dim = cfg.model.get('dim', cfg.model.get('embed_dim', 256))
-    mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
+    print("model       =",model.__class__.__name__)
+    print("mae_decoder =",mae_decoder.__class__.__name__)
+
     optimizer = torch.optim.AdamW(chain(model.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
     epoch_start = 1
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
@@ -116,11 +129,21 @@ def train(cfg: DictConfig):
             mae_decoder = load_checkpoint(mae_decoder, ckpt_path.replace('enc_','maedec_'), return_all=False)
         except: pass
 
-    model = torch.compile(model, dynamic=True)
+    if False: # skip compilation
+        #model = torch.compile(model, dynamic=True)
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.expanduser("~/.cache/torch/inductor")
+        os.makedirs(os.environ["TORCHINDUCTOR_CACHE_DIR"], exist_ok=True)
+        torch._inductor.config.fx_graph_cache = True
+        torch._inductor.config.compile_threads = 8
+        torch._dynamo.config.cache_size_limit = 16
+        #model = torch.compile(model, mode="default", fullgraph=False)
+        for i, stage in enumerate(model.stages):
+            model.stages[i] = torch.compile(stage, mode="default")
+    
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
     scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
                         **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
-    scaler = torch.amp.GradScaler(device)
+    #scaler = torch.amp.GradScaler(device)
     
     if not(cfg.get('no_wandb', False)): 
         wandb.init(project=cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
@@ -129,7 +152,8 @@ def train(cfg: DictConfig):
 
     # Training loop
     global_step = (epoch_start - 1) * len(train_dl)
-    viz_every = 10
+    #viz_every = 10
+    viz_every = 1 # make it fail early for debugging
     for epoch in range(epoch_start, cfg.training.epochs+1):
         if wandb.run is not None: wandb.log({"epoch": epoch})
         model.train()
@@ -141,12 +165,14 @@ def train(cfg: DictConfig):
         for batch in tqdm(train_dl, desc=f"Epoch {epoch}/{cfg.training.epochs}"):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast('cuda'):
+            if True: # with torch.autocast('cuda'):
                 #loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
                 loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
-            scaler.scale(loss_dict['loss']).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            #scaler.scale(loss_dict['loss']).backward()
+            #scaler.step(optimizer)
+            #scaler.update()
+            loss_dict['loss'].backward()
+            optimizer.step()
             train_loss += loss_dict['loss'].item()
             
         # At end of Epoch: validation, viz, etc
@@ -172,7 +198,7 @@ def train(cfg: DictConfig):
                 if epoch % viz_every == 0:
                     make_emb_viz(enc_outs, epoch=epoch, model=model, batch=batch)
                 if mae_decoder is not None and (epoch % (viz_every//5) == 0):
-                        viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[1], epoch=epoch)
+                    viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs.finest, epoch=epoch)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         save_checkpoint(mae_decoder, optimizer, epoch, val_loss, cfg, tag="maedec_")

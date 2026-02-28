@@ -17,7 +17,7 @@ model:
   dec_heads: 8
 
 training:
-  batch_size: 480         # encoder batch size
+  batch_size: 360         # encoder batch size
   lr: 4e-4
   epochs: 500
   lambd: 0.3              # lejepa sim-vs-sigreg weight

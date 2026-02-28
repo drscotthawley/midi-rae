@@ -221,10 +221,10 @@ class LightweightMAEDecoder(nn.Module):
         self.blocks = nn.ModuleList([TransformerBlock(dim, heads) for _ in range(depth)])
         self.proj = nn.Linear(dim, patch_size * patch_size)  # output pixels per patch
         
-    def forward(self, z,  # (B, N_vis, dim),
-                pos_full, # original set of positions w/o mae masking
-                mae_mask, # 1=visible, 0=masked out
-                ):   
+    def forward(self, enc_out):
+        z = enc_out.patches.levels[-1].emb  # (B, N_vis, dim) finest level
+        pos_full = enc_out.full_pos          # (N, 2)
+        mae_mask = enc_out.mae_mask          # (B, N) or (N,)
         B, N_full = z.shape[0], pos_full.shape[0]
         z_full = self.mask_token.expand(B, N_full, -1).clone()
         if z.ndim < 3: z = z.reshape(B, -1, z.shape[-1])          #  # (B*N_vis, dim) -> (B, N_vis, dim)
