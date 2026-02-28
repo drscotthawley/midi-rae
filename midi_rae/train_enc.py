@@ -18,8 +18,9 @@ from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
 import hydra
 from .vit import ViTEncoder, LightweightMAEDecoder
+from .swin import SwinEncoder
 from .data import PRPairDataset
-from .losses import calc_enc_loss, calc_mae_loss
+from .losses import calc_enc_loss, calc_mae_loss, calc_enc_loss_multiscale
 from .utils import save_checkpoint, load_checkpoint
 from .viz import make_emb_viz, viz_mae_recon
 from tqdm.auto import tqdm
@@ -57,7 +58,9 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     num_tokens = enc_out1.patches.all_emb.shape[1]
     deltas = deltas.repeat_interleave(num_tokens, dim=0)
     
-    loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
+    #loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
+    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
+
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae']
 
     if torch.isnan(loss_dict['loss']):
@@ -86,8 +89,18 @@ def train(cfg: DictConfig):
         ds.max_shift_x = shared_ct_dict['training']['max_shift_x']
         ds.max_shift_y = shared_ct_dict['training']['max_shift_y']
 
-    model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
+    if cfg.model.get('encoder', 'vit') == 'swin':
+        from midi_rae.swin import SwinEncoder
+        model = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+                            patch_h=cfg.model.patch_h, patch_w=cfg.model.patch_w,
+                            embed_dim=cfg.model.embed_dim, depths=cfg.model.depths,
+                            num_heads=cfg.model.num_heads, window_size=cfg.model.window_size,
+                            mlp_ratio=cfg.model.mlp_ratio, drop_path_rate=cfg.model.drop_path_rate).to(device)
+    else:
+        model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
               cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
+
+
     mae_decoder = LightweightMAEDecoder(patch_size=cfg.model.patch_size, dim=cfg.model.dim).to(device)
     optimizer = torch.optim.AdamW(chain(model.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
     epoch_start = 1

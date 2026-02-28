@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['safe_mean', 'SIGReg', 'attraction_loss', 'LeJEPA', 'calc_mae_loss', 'anchor_loss', 'calc_enc_loss',
-           'PatchGANDiscriminator']
+           'calc_enc_loss_multiscale', 'PatchGANDiscriminator']
 
 # %% ../nbs/03_losses.ipynb #b96051a7
 import torch
@@ -80,6 +80,36 @@ def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,
     loss_dict['anchor'] = aloss
     loss_dict['loss'] = loss_dict['loss'] + lambda_anchor * aloss
     return loss_dict
+
+# %% ../nbs/03_losses.ipynb #ec2cf5ea
+def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarchy level, 0=coarsest, -1=finest
+                             global_step, img_size, deltas=None,
+                             lambd=0.5, non_emptys=None, lambda_anchor=0.05):
+    "Compute enc loss at each hierarchy level, weighted by patch overlap fraction, and average."
+    if not isinstance(z1, list):
+        return calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
+    total = {}
+    abs_deltas = deltas.abs()
+    n_levels = len(z1)
+    for i, (z1_l, z2_l, ne) in enumerate(zip(z1, z2, non_emptys)):
+        B, N, D = z1_l.shape
+        grid = int(N ** 0.5)
+        patch_w, patch_h = img_size // grid, img_size // grid
+        dx, dy = abs_deltas[:, 0], abs_deltas[:, 1]
+        w = (((patch_w - dx) / patch_w).clamp(min=0) * ((patch_h - dy) / patch_h).clamp(min=0)).mean()
+        if w < 1e-8: continue
+
+        num_tokens = N
+        d_exp = deltas.repeat_interleave(num_tokens, dim=0)
+        z1_flat, z2_flat = z1_l.reshape(-1, D),  z2_l.reshape(-1, D)
+        ne_flat = (ne[0].reshape(-1), ne[1].reshape(-1))
+
+        ld = calc_enc_loss(z1_flat, z2_flat, global_step, deltas=d_exp,
+                           lambd=lambd, non_emptys=ne_flat, lambda_anchor=lambda_anchor)
+        for k, v in ld.items():  total[k] = total.get(k, 0) + v * w
+
+    if not total: return {'loss': torch.tensor(0.0, device=deltas.device)}
+    return {k: v / n_levels for k, v in total.items()}
 
 # %% ../nbs/03_losses.ipynb #ade84ead
 class PatchGANDiscriminator(nn.Module):
