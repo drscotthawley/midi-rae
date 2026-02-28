@@ -99,7 +99,9 @@ def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,
 def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarchy level, 0=coarsest, -1=finest
                              global_step, img_size, deltas=None,
                              lambd=0.5, non_emptys=None, lambda_anchor=0.05):
-    "Compute enc loss at each hierarchy level, weighted by patch overlap fraction, and average."
+    """Compute encoder loss at each hierarchy level, weighted by patch overlap fraction.
+    Levels where delta/shift exceeds patch size (resulting in zero overlap) are skipped entirely.
+    Non-empty patch masks focus the sim/anchor losses on musically active regions."""
     if not isinstance(z1, list): # regular vit 
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
         return calc_enc_loss(z1, z2, global_step, deltas=d_exp, lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
@@ -112,6 +114,7 @@ def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarc
         grid = int(N ** 0.5)
         patch_w, patch_h = img_size // grid, img_size // grid
         dx, dy = abs_deltas[:, 0], abs_deltas[:, 1]
+        # hinge-style weight to avoid comparing patches if the deltas (aka shift) exceed patch size. 
         w = (((patch_w - dx) / patch_w).clamp(min=0) * ((patch_h - dy) / patch_h).clamp(min=0)).mean()
         if w < 1e-8: continue
 
