@@ -91,13 +91,14 @@ class SwinEncoder(nn.Module):
         patches = img.unfold(2, self.patch_h, self.patch_h).unfold(3, self.patch_w, self.patch_w)
         return (patches.amax(dim=(-1, -2)) > 0.2).squeeze(1).flatten(1)  # (B, N)
 
-    def _make_mae_mask(self, non_empty, device):
+    def _make_mae_mask(self, non_empty, device, effective_ratio=None):
         "Two-rate MAE mask: non-empty at mae_ratio, empty at mae_ratio*empty_mask_ratio. Returns (B,N) bool, True=visible."
         B, N = non_empty.shape
         rand = torch.rand(B, N, device=device)
+        ratio = effective_ratio if effective_ratio is not None else self.mae_ratio
         threshold = torch.where(non_empty.bool(),
-            torch.full_like(rand, 1.0 - self.mae_ratio),
-            torch.full_like(rand, 1.0 - self.mae_ratio * self.empty_mask_ratio))
+            torch.full_like(rand, 1.0 - ratio),
+            torch.full_like(rand, 1.0 - ratio * self.empty_mask_ratio))
         return rand < threshold
 
     def _make_grid_pos(self, h, w, device):
@@ -122,7 +123,7 @@ class SwinEncoder(nn.Module):
         # MAE masking: replace masked positions with learned mask_token
         effective_ratio = mask_ratio if mask_ratio > 0 else self.mae_ratio
         if mae_mask is None and effective_ratio > 0:
-            mae_mask = self._make_mae_mask(non_empty, device)
+            mae_mask = self._make_mae_mask(non_empty, device, effective_ratio)
         if mae_mask is not None:
             m4d = mae_mask.view(B, H, W, 1)
             x = torch.where(m4d, x, self.mask_token.view(1, 1, 1, -1).expand_as(x))

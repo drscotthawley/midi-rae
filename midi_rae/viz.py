@@ -219,7 +219,7 @@ def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
 
 # %% ../nbs/05_viz.ipynb #86455273-d2fa-4a97-a6a7-0a71a0a7798f
 @torch.no_grad()
-def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16):
+def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=False):
     """Show how our LightweightMAEDecoder is doing (during encoder training)"""
     mae_mask = None
     if enc_out is not None:
@@ -228,6 +228,7 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16):
         elif mae_mask.shape[0] % 2 != 0: mae_mask = mae_mask[1:]  # ViT: strip CLS from (N,)
     recon, img_real = recon.cpu(), img_real.cpu()
     if mae_mask is not None: mae_mask = mae_mask.cpu()
+    if debug: print(f"mae_mask: shape={mae_mask.shape}, pct_visible={mae_mask.float().mean():.3f}")
 
     img_recon_noreplace = None
     if recon.shape != img_real.shape:

@@ -162,7 +162,7 @@ def train(cfg: DictConfig):
         for batch in tqdm(train_dl, desc=f"Epoch {epoch}/{cfg.training.epochs}"):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
-            if True: # with torch.autocast('cuda'):
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
             #scaler.scale(loss_dict['loss']).backward()
             #scaler.step(optimizer)
@@ -192,6 +192,7 @@ def train(cfg: DictConfig):
                 if epoch % viz_every == 0:  make_emb_viz(enc_outs, epoch=epoch, model=model, batch=batch)
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
                     viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size)
+
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         save_checkpoint(mae_decoder, optimizer, epoch, val_loss, cfg, tag="maedec_")
 
