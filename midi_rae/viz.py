@@ -202,13 +202,14 @@ def do_recon_eval(recon, real, mae_mask=None, patch_size=16, eps=1e-8):
     return evals 
 
 # %% ../nbs/05_viz.ipynb #1aaee236-717b-408c-8252-2e0048f63211
-def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None): 
+def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
     "Convert image patches to full image. Copy over real patches where appropriate."
     B, C, H, W = img_real.shape
     grid_h, grid_w = H//patch_size, W//patch_size
-    if recon_patches.shape[1] % 2 != 0: recon_patches = recon_patches[:,1:]  # strip cls token
+    n_patches = grid_h * grid_w
+    if recon_patches.shape[1] > n_patches: recon_patches = recon_patches[:, -n_patches:]  # strip cls if present
     img_recon = recon_patches.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4)
-    img_recon = img_recon.reshape(B, H, W).unsqueeze(1) 
+    img_recon = img_recon.reshape(B, H, W).unsqueeze(1)
     img_recon = torch.sigmoid(img_recon)
     img_recon = (img_recon > 0.25).float()
     if mae_mask is not None:
@@ -220,23 +221,27 @@ def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
 @torch.no_grad()
 def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16):
     """Show how our LightweightMAEDecoder is doing (during encoder training)"""
-    mae_mask = enc_out.mae_mask[1:] if enc_out is not None else None  # strip CLS
+    mae_mask = None
+    if enc_out is not None:
+        mae_mask = enc_out.mae_mask
+        if mae_mask.ndim == 2: mae_mask = mae_mask[0]   # Swin: (B,N) → take first sample
+        elif mae_mask.shape[0] % 2 != 0: mae_mask = mae_mask[1:]  # ViT: strip CLS from (N,)
     recon, img_real = recon.cpu(), img_real.cpu()
     if mae_mask is not None: mae_mask = mae_mask.cpu()
-    
-    img_recon_noreplace = None 
+
+    img_recon_noreplace = None
     if recon.shape != img_real.shape:
         img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask)
         img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
-    else: 
+    else:
         img_recon = (recon > 0.25).float()
     evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
-    if wandb.run is not None: 
-        wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"), 
+    if wandb.run is not None:
+        wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"),
                       'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch': epoch}
-        if img_recon_noreplace is not None: 
+        if img_recon_noreplace is not None:
             grid_raw = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
             wandb_dict = wandb_dict | {'raw': wandb.Image(grid_raw, caption=f"Epoch {epoch}")}
         wandb.log(wandb_dict)
