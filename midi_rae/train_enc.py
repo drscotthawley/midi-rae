@@ -197,8 +197,8 @@ def train(cfg: DictConfig):
 
                 if epoch % viz_every == 0:
                     make_emb_viz(enc_outs, epoch=epoch, model=model, batch=batch)
-                if mae_decoder is not None and (epoch % (viz_every//5) == 0):
-                    viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs.finest, epoch=epoch)
+                if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
+                    viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch)
 
         save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
         save_checkpoint(mae_decoder, optimizer, epoch, val_loss, cfg, tag="maedec_")

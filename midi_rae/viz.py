@@ -153,7 +153,7 @@ def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings',
     # Patches (non-CLS) aka finest level — already CLS-stripped via patches[-1]
     dim = enc_outs[0].patches[-1].dim
     patches = torch.cat((enc_outs[0].patches[-1].emb, enc_outs[1].patches[-1].emb), dim=0).reshape(-1, dim)
-    non_empty = (enc_outs[0].patches[-1].non_empty & enc_outs[1].patches[-1].non_empty)
+    non_empty = (enc_outs[0].patches[-1].non_empty.bool() & enc_outs[1].patches[-1].non_empty.bool())
     valid = non_empty.flatten().repeat(2)
 
     # Non-empty patches
@@ -162,8 +162,8 @@ def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings',
     patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, deltas=rnd_deltas, do_umap=do_umap)
 
     # plot when both patches are empty 
-    ne1 = enc_outs[0].patches[-1].non_empty.flatten().repeat(2)
-    ne2 = enc_outs[1].patches[-1].non_empty.flatten().repeat(2)
+    ne1 = enc_outs[0].patches[-1].non_empty.flatten().repeat(2).bool()
+    ne2 = enc_outs[1].patches[-1].non_empty.flatten().repeat(2).bool()
     both_empty = ~ne1 & ~ne2
     empty_pca_fig = None
     if both_empty.any():
