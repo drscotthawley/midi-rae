@@ -151,9 +151,9 @@ def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings',
     cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, deltas=cls_deltas, do_umap=do_umap)
 
     # Patches (non-CLS) aka finest level — already CLS-stripped via patches[-1]
-    dim = enc_outs[0].patches[1].dim
+    dim = enc_outs[0].patches[-1].dim
     patches = torch.cat((enc_outs[0].patches[-1].emb, enc_outs[1].patches[-1].emb), dim=0).reshape(-1, dim)
-    non_empty = (enc_outs[0].patches[1].non_empty & enc_outs[1].patches[-1].non_empty)
+    non_empty = (enc_outs[0].patches[-1].non_empty & enc_outs[1].patches[-1].non_empty)
     valid = non_empty.flatten().repeat(2)
 
     # Non-empty patches
