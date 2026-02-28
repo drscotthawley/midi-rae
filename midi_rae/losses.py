@@ -86,8 +86,9 @@ def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarc
                              global_step, img_size, deltas=None,
                              lambd=0.5, non_emptys=None, lambda_anchor=0.05):
     "Compute enc loss at each hierarchy level, weighted by patch overlap fraction, and average."
-    if not isinstance(z1, list):
-        return calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
+    if not isinstance(z1, list): # regular vit 
+        d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
+        return calc_enc_loss(z1, z2, global_step, deltas=d_exp, lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
     total = {}
     abs_deltas = deltas.abs()
     n_levels = len(z1)

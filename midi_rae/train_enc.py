@@ -47,26 +47,28 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None):
     enc_out1 = encoder(img1, mask_ratio=cfg.training.mask_ratio)
     enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)
     loss_dict = {}
-    if mae_decoder is not None:
-        eo = enc_out2.patches[1] # readibility/convenience variable
+    recon_patches = None
+    if mae_decoder is not None: # recon at finest scale
+        eo = enc_out2.patches[-1] # readibility/convenience variable
         recon_patches = mae_decoder(enc_out2.patches[1].emb, enc_out2.full_pos[1:], enc_out2.mae_mask[1:]) # no cls
         loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2, lambda_visible=cfg.training.get('lambda_visible',0.1))
 
-    z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
-    z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
-    non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
-    num_tokens = enc_out1.patches.all_emb.shape[1]
-    deltas = deltas.repeat_interleave(num_tokens, dim=0)
+    if isinstance(enc_out1.patches, HierarchicalPatchState):
+        z1 = [lvl.emb for lvl in enc_out1.patches.levels]
+        z2 = [lvl.emb for lvl in enc_out2.patches.levels]
+        non_emptys = [(l1.non_empty, l2.non_empty) for l1, l2 in zip(enc_out1.patches.levels, enc_out2.patches.levels)]
+    else:
+        z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
+        z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
+        non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
     
-    #loss_dict = loss_dict | calc_enc_loss(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
-    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
+    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, img_size=cfg.data.image_size, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
 
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae']
 
     if torch.isnan(loss_dict['loss']):
         print("NaN detected!", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()})
         breakpoint()
-    #return loss_dict, z1, z2, non_emptys, pos2, mae_mask2, num_tokens, recon_patches
     return loss_dict, (z1, z2), (enc_out1, enc_out2), recon_patches
 
 # %% ../nbs/06_train_enc.ipynb #6713ab74
@@ -100,8 +102,9 @@ def train(cfg: DictConfig):
         model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
               cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
 
-
-    mae_decoder = LightweightMAEDecoder(patch_size=cfg.model.patch_size, dim=cfg.model.dim).to(device)
+    patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
+    dim = cfg.model.get('dim', cfg.model.get('embed_dim', 256))
+    mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
     optimizer = torch.optim.AdamW(chain(model.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
     epoch_start = 1
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
