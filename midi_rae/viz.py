@@ -98,7 +98,6 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, tit
     fig.update_layout(title=title, margin=dict(l=0, r=0, b=0, t=30))
     return fig
 
-
 # %% ../nbs/05_viz.ipynb #f1feb8ca
 @torch.no_grad()
 def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True, file_idx=None, deltas=None):
@@ -120,7 +119,6 @@ def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True, file_idx=None,
     gc.collect()
     return pca_fig, umap_fig
 
-
 # %% ../nbs/05_viz.ipynb #b618d453
 def _subsample(data, indices, deltas, max_points, debug=False):
     "Subsample data and indices together, in pairs"
@@ -131,10 +129,10 @@ def _subsample(data, indices, deltas, max_points, debug=False):
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
-def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings', max_points=5000, do_umap=True, debug=False):
+def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings', max_points=5000, do_umap=True, debug=False):
     "this is the main viz routine, showing different groups of embeddings"
     device = enc_outs[0].patches[0].emb.device
-    if model is not None: model.to('cpu')
+    if encoder is not None: encoder.to('cpu')
     torch.cuda.empty_cache()
 
     num_patch_tokens = enc_outs[0].patches[-1].num_patches
@@ -172,7 +170,7 @@ def make_emb_viz(enc_outs, epoch=-1, model=None, batch=None, title='Embeddings',
         rnd_empty, rnd_empty_idx, rnd_empty_deltas = _subsample(empty_patches, empty_file_idx, empty_deltas, max_points)
         empty_pca_fig = _make_emb_viz(rnd_empty, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx, deltas=rnd_empty_deltas)
     
-    if model is not None: model.to(device)
+    if encoder is not None: encoder.to(device)
     figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
     return figs
 

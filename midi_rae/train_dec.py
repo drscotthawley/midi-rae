@@ -21,6 +21,7 @@ import lpips
 from collections import namedtuple
 from contextlib import nullcontext
 
+from .core import * 
 from .vit import ViTEncoder, ViTDecoder
 from .swin import SwinEncoder, SwinDecoder
 from .losses import PatchGANDiscriminator
@@ -96,6 +97,7 @@ def setup_models(cfg, device, preencoded):
                          cfg.model.patch_size, cfg.model.dim, 
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
     #decoder = torch.compile(decoder)
+    print("\n** Models:",encoder.__class__.__name__, decoder.__class__.__name__)
     
     # note: we don't need discriminator, really 
     discriminator = PatchGANDiscriminator(in_ch=cfg.data.in_channels).to(device)
@@ -110,7 +112,7 @@ def setup_tstate(cfg, device, decoder, discriminator, encoder=None):
     opt_enc = None #if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
     opt_dec = torch.optim.AdamW(decoder.parameters(), lr=cfg.training.dec_lr)
     opt_disc = torch.optim.AdamW(discriminator.parameters(), lr=cfg.training.dec_lr)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs, div_factor=5)
     schedulerD = torch.optim.lr_scheduler.OneCycleLR(opt_disc, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs-cfg.training.gan_warmup))   
     scheduler_enc = None if opt_enc is None else torch.optim.lr_scheduler.OneCycleLR(opt_enc, max_lr=cfg.training.enc_ft_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs))   
     scaler_dec, scaler_disc = torch.amp.GradScaler(), torch.amp.GradScaler()
@@ -118,29 +120,32 @@ def setup_tstate(cfg, device, decoder, discriminator, encoder=None):
     return TrainState(opt_enc, opt_disc, opt_dec, scaler_disc, scaler_dec, l1_loss, lpips_loss, scheduler, schedulerD, scheduler_enc)
 
 # %% ../nbs/09_train_dec.ipynb #102f0438
-def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda'):
+def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda', allow_grad=False):
     if preencoded:
         z, pos, img = batch
         return z.to(device), pos.to(device), img.to(device)
-    else:
+    elif encoder is not None:
         img2 = batch['img2'].to(device)
-        with torch.no_grad():
-            enc_out = encoder(img2)
-        return enc_out.patches.all_emb, enc_out.full_pos, img2
+        with (nullcontext() if allow_grad else torch.no_grad()), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                enc_out2 = encoder(img2)
+        return enc_out2, img2
+    else: 
+        raise ValueError("get_embeddings_batch: Need either preencoded data or encoder.")
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
-def train_step(epoch, z, img_real, decoder, discriminator, 
+def train_step(epoch, enc_out, img_real, decoder, discriminator, 
             tstate,  # named tuple containing optimizers, loss fns, scalers 
             cfg,    # config
             ): 
     "training step for decoder (and discriminator)"
+    
     decoder.train(), discriminator.train()
     loss_disc, loss_gan = torch.tensor(0.0), torch.tensor(0.0)
     if epoch > cfg.training.gan_warmup:
         # --- Discriminator step (after warmup) ---
         tstate.opt_disc.zero_grad()
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            img_recon = decoder(z)
+            img_recon = decoder(enc_out)
             d_real = discriminator(img_real)
             d_fake = discriminator(torch.sigmoid(img_recon.detach()))
             loss_disc = (torch.relu(1 - d_real).mean() + torch.relu(1 + d_fake).mean()) / 2
@@ -152,7 +157,7 @@ def train_step(epoch, z, img_real, decoder, discriminator,
     # --- Decoder step ---
     tstate.opt_dec.zero_grad()
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        img_recon = decoder(z)  # recompute for the sake of the comp. graph
+        img_recon = decoder(enc_out)  # recompute for the sake of the comp. graph
         loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
         #loss_l1 = tstate.l1_loss(img_recon, img_real)
         weights = torch.where(img_real > 0.05, 10.0, 1.0) # non-black pixels are worth more than black pixels
@@ -182,6 +187,7 @@ def train(cfg: DictConfig):
     train_dl, val_dl                = setup_dataloaders(cfg, preencoded)
     encoder, decoder, discriminator = setup_models(cfg, device, preencoded) 
     tstate                          = setup_tstate(cfg, device, decoder, discriminator, encoder=encoder)
+    patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
     if not(cfg.get('no_wandb', False)): # CLI: +no_wanb=true
         wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg), settings=wandb.Settings(start_method="fork", _disable_stats=True))
         wandb.define_metric("epoch")
@@ -191,9 +197,9 @@ def train(cfg: DictConfig):
         train_loss = 0
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
             global_step += 1
-            z2, pos2, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
+            enc_out, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
-            losses, img_recon = train_step(epoch, z2, img_real, decoder, discriminator, tstate, cfg)
+            losses, img_recon = train_step(epoch, enc_out, img_real, decoder, discriminator, tstate, cfg)
             train_loss += losses['dec']
 
             # # optional: encoder fine-tuning
@@ -224,9 +230,9 @@ def train(cfg: DictConfig):
         with torch.no_grad():
             val_loss, loss_gan = 0, torch.tensor(0.0)
             for batch in val_dl:
-                z2, pos2, img_real  = get_embeddings_batch(batch, encoder, preencoded, device)
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    img_recon = decoder(z2)  # recompute for the sake of the comp. graph
+                    enc_out, img_real  = get_embeddings_batch(batch, encoder, preencoded, device)
+                    img_recon = decoder(enc_out)  # recompute for the sake of the comp. graph
                     loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real)
                     img_recon = torch.sigmoid(img_recon) 
                     
@@ -244,16 +250,15 @@ def train(cfg: DictConfig):
 
             if wandb.run is not None: 
                 viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size)
-                wandb.log({'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 
-                    #'train_gan': losses['gan'],'train_disc': losses['disc'],
-                    'val_dec': loss_dec, 'val_l1': loss_l1, 'val_lpips': loss_lpips, 'val_bce':loss_bce,
-                    #'val_gan': loss_gan, 
-                    'epoch': epoch, 
-                    "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],})
+                wandb.log({
+                    'train_dec': losses['dec'], 'train_l1': losses['l1'], 'train_lpips': losses['lpips'], 'train_bce':losses['bce'],
+                    'val_dec': loss_dec,          'val_l1': loss_l1,        'val_lpips': loss_lpips,        'val_bce':loss_bce,
+                    #'train_gan': losses['gan'],'train_disc': losses['disc'],  val_gan': loss_gan, 
+                    'epoch': epoch,   "lr_dec": tstate.opt_dec.param_groups[0]['lr'], "lr_disc": tstate.opt_disc.param_groups[0]['lr'],})
                     #"lr_enc": tstate.opt_enc.param_groups[0]['lr'], })
 
-        save_checkpoint(decoder,        tstate.opt_dec, epoch, val_loss, cfg, tag="dec_")
-        save_checkpoint(discriminator, tstate.opt_disc, epoch, val_loss, cfg, tag="disc_")
+        save_checkpoint(decoder, epoch, val_loss, cfg, optimizer=tstate.opt_dec, tag="")
+        #save_checkpoint(discriminator, tstate.opt_disc, epoch, val_loss, cfg, tag="")
         tstate.scheduler.step()
         if tstate.scheduler_enc is not None: tstate.scheduler_enc.step()
         if epoch > cfg.training.gan_warmup: tstate.schedulerD.step()
@@ -263,4 +268,6 @@ def train(cfg: DictConfig):
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
 if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
+    print(logo)
+    print("Decoder Training\n")
     train()

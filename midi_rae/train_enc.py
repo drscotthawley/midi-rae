@@ -38,7 +38,7 @@ from tqdm.auto import tqdm
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
 
-# model compilation
+# torch compilation
 torch._inductor.config.fx_graph_cache = True
 torch._inductor.config.compile_threads = 8
 torch._dynamo.config.cache_size_limit = 16
@@ -103,41 +103,40 @@ def train(cfg: DictConfig):
         ds.max_shift_y = shared_ct_dict['training']['max_shift_y']
 
     # setup models
-    patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
-    dim = cfg.model.get('dim', cfg.model.get('embed_dim', 256))    
-    if cfg.model.get('encoder', 'vit') == 'swin':
+    cfm = cfg.model 
+    patch_size = cfm.get('patch_size', cfm.get('patch_h', 16))
+    dim = cfm.get('dim', cfm.get('embed_dim', 256))    
+    if cfm.get('encoder', 'vit') == 'swin':
         from midi_rae.swin import SwinEncoder
-        model = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size,
-                            patch_h=cfg.model.patch_h, patch_w=cfg.model.patch_w,
-                            embed_dim=cfg.model.embed_dim, depths=cfg.model.depths,
-                            num_heads=cfg.model.num_heads, window_size=cfg.model.window_size,
-                            mlp_ratio=cfg.model.mlp_ratio, drop_path_rate=cfg.model.drop_path_rate).to(device)
-        dims = tuple(cfg.model.embed_dim * 2**i for i in range(len(cfg.model.depths)-1, -1, -1))
+        encoder = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size, patch_h=cfm.patch_h, patch_w=cfm.patch_w,
+                            embed_dim=cfm.embed_dim, depths=cfm.depths, num_heads=cfm.num_heads, window_size=cfm.window_size,
+                            mlp_ratio=cfm.mlp_ratio, drop_path_rate=cfm.drop_path_rate).to(device)
+        dims = tuple(cfm.embed_dim * 2**i for i in range(len(cfm.depths)-1, -1, -1))
         mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
     else:
-        model = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfg.model.patch_size, 
-                           cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
+        encoder = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfm.patch_size, 
+                           cfm.dim, cfm.depth, cfm.heads).to(device)
         mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
 
-    print("model, mae_decoder  =", model.__class__.__name__, mae_decoder.__class__.__name__)
+    print("encoder, mae_decoder  =", encoder.__class__.__name__, mae_decoder.__class__.__name__)
 
-    optimizer = torch.optim.AdamW(chain(model.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
+    optimizer = torch.optim.AdamW(chain(encoder.parameters(), mae_decoder.parameters()), lr=cfg.training.lr)
     epoch_start = 1
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
         ckpt_path =  cfg.get('checkpoint',None)
-        model, ckpt = load_checkpoint(model, ckpt_path, return_all=True)
+        encoder, ckpt = load_checkpoint(encoder, ckpt_path, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch'] + 1 # next epoch after the one completed in thecheckpoint
         try: mae_decoder = load_checkpoint(mae_decoder, ckpt_path.replace('enc_','maedec_'), return_all=False)
         except: pass
 
-    if cfg.model.get('encoder', 'vit') == 'vit': 
-        model = torch.compile(model, dynamic=True)
+    if cfm.get('encoder', 'vit') == 'vit': 
+        encoder = torch.compile(encoder, dynamic=True)
     elif False: #  swin compilation takes a while and is fraught with difficulty :-( 
-        #model = torch.compile(model, dynamic=True)
-        #model = torch.compile(model, mode="default", fullgraph=False)
-        for i, stage in enumerate(model.stages):
-            model.stages[i] = torch.compile(stage, mode="default")
+        #encoder = torch.compile(encoder, dynamic=True)
+        #encoder = torch.compile(encoder, mode="default", fullgraph=False)
+        for i, stage in enumerate(encoder.stages):
+            encoder.stages[i] = torch.compile(stage, mode="default")
     
     scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
                         **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
@@ -153,7 +152,7 @@ def train(cfg: DictConfig):
     viz_every = 5
     for epoch in range(epoch_start, cfg.training.epochs+1):
         if wandb.run is not None: wandb.log({"epoch": epoch})
-        model.train()
+        encoder.train()
         train_loss = 0
         # if False and epoch > 1: # curriculum learning, easily turned off by setting this to False. DL's re-defined each epoch to init workers
         #     shared_ct_dict['training'] = curr_learn(shared_ct_dict, epoch)
@@ -163,7 +162,7 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder)
             #scaler.scale(loss_dict['loss']).backward()
             #scaler.step(optimizer)
             #scaler.update()
@@ -172,12 +171,12 @@ def train(cfg: DictConfig):
             train_loss += loss_dict['loss'].item()
             
         # At end of Epoch: validation, viz, etc
-        model.eval()
+        encoder.eval()
         val_loss = 0
         with torch.no_grad():
             for batch in val_dl:
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, model, cfg, global_step, mae_decoder=mae_decoder)
+                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder)
                 val_loss += val_loss_dict['loss'].item()
 
             train_loss /= len(train_dl)
@@ -190,12 +189,11 @@ def train(cfg: DictConfig):
                     "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'], 
                     "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
                     "lr": optimizer.param_groups[0]['lr'], "epoch": epoch})
-                if epoch % viz_every == 0:  make_emb_viz(enc_outs, epoch=epoch, model=model, batch=batch)
+                if epoch % viz_every == 0:  make_emb_viz(enc_outs, epoch=epoch, encoder=encoder, batch=batch)
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
                     viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size)
 
-        save_checkpoint(model, optimizer, epoch, val_loss, cfg, tag="enc_")
-        save_checkpoint(mae_decoder, optimizer, epoch, val_loss, cfg, tag="maedec_")
+        save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag="") # optimzer gets saved with mae_decoder, not encoder
 
         scheduler.step()# val_loss)
 
@@ -203,4 +201,5 @@ def train(cfg: DictConfig):
 #| eval: false
 if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
     print(logo)
+    print("Encoder Training\n")
     train()

@@ -203,11 +203,11 @@ class ViTDecoder(nn.Module):
         self.blocks = nn.ModuleList([ TransformerBlock(dim, heads) for _ in range(depth) ])
         self.unpatch = Unpatchify(out_channels, image_size, patch_size, dim)
         
-    def forward(self, z, strip_cls_token=True):
+    def forward(self, enc_out, strip_cls_token=True):
+        z = enc_out.patches.all_emb          # (B, 1+N, dim) — CLS + patches
         for block in self.blocks:  z = block(z)
         if strip_cls_token: z = z[:,1:] 
-        img = self.unpatch(z) 
-        return img
+        return self.unpatch(z)
 
 # %% ../nbs/02_vit.ipynb #233cd8a4
 class LightweightMAEDecoder(nn.Module):

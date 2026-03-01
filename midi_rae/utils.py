@@ -9,28 +9,34 @@ __all__ = ['save_checkpoint', 'load_checkpoint']
 import os 
 import torch
 
-# %% ../nbs/04_utils.ipynb #a164c279
-def save_checkpoint(model, optimizer, epoch, val_loss, cfg, save_every=25, n_keep=5, verbose=True, tag=""):
-    "Saves new checkpoint, keeps best & the most recent n_keep"
+# %% ../nbs/04_utils.ipynb #71615b73-c28e-41b0-9905-a99045419702
+def save_checkpoint(model, epoch, val_loss, cfg, optimizer=None, save_every=25, n_keep=5, verbose=True, tag=""):
+    """Saves new checkpoint, keeps best & the most recent n_keep.
+       Can loop over multiple models. (Saves separate files for each model)"""
     if not hasattr(save_checkpoint, 'best_val_loss'):
         save_checkpoint.best_val_loss = float('inf')
-    if epoch % save_every != 0 and val_loss >= save_checkpoint.best_val_loss: return 
-    
+    if epoch % save_every != 0 and val_loss >= save_checkpoint.best_val_loss: return
+
     os.makedirs('checkpoints', exist_ok=True)
-    ckpt = {'epoch': epoch, 'model_state_dict': getattr(model, '_orig_mod', model).state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
+    models = model if isinstance(model, (list, tuple)) else [model]
+    for i, m in enumerate(models):
+        ckpt = {'epoch': epoch, 'model_state_dict': getattr(m, '_orig_mod', m).state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
+        if optimizer is not None and i == 0: ckpt = ckpt | {'optimizer_state_dict': optimizer.state_dict()}  # Only first model on list gets optimizer in its ckpt file.
 
-    if epoch % save_every == 0:
-        if verbose: print(f"Saving checkpoint to checkpoints/{tag}ckpt_epoch{epoch}.pt")
-        torch.save(ckpt, f'checkpoints/{tag}ckpt_epoch{epoch}.pt')
-    if val_loss < save_checkpoint.best_val_loss:
-        torch.save(ckpt, f'checkpoints/{tag}best.pt')
+        mtag = f"{getattr(m, '_orig_mod', m).__class__.__name__}_{tag}"
+        if epoch % save_every == 0:
+            if verbose: print(f"Saving checkpoint to checkpoints/{mtag}ckpt_epoch{epoch}.pt")
+            torch.save(ckpt, f'checkpoints/{mtag}ckpt_epoch{epoch}.pt')
+        if val_loss < save_checkpoint.best_val_loss:
+            torch.save(ckpt, f'checkpoints/{mtag}_best.pt')
+
+        # delete any checkpoints older than the n_keep-th one
+        ckpts = sorted([f for f in os.listdir('checkpoints') if f.startswith(f'{mtag}ckpt_epoch')],
+                   key=lambda x: os.path.getmtime(f'checkpoints/{x}'))
+        for old in ckpts[:-n_keep]: os.remove(f'checkpoints/{old}')
+
+    if val_loss <= save_checkpoint.best_val_loss:
         save_checkpoint.best_val_loss = val_loss
-
-    # delete any checkpoints older than the n_keep-th one
-    ckpts = sorted([f for f in os.listdir('checkpoints') if f.startswith(f'{tag}ckpt_epoch')],
-               key=lambda x: os.path.getmtime(f'checkpoints/{x}'))
-    for old in ckpts[:-n_keep]: os.remove(f'checkpoints/{old}')
 
 # %% ../nbs/04_utils.ipynb #55fb9d50
 def load_checkpoint(model, ckpt_path:str, return_all=False, weights_only=False, strict=False):
