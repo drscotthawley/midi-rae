@@ -26,7 +26,7 @@ from .vit import ViTEncoder, ViTDecoder
 from .swin import SwinEncoder, SwinDecoder
 from .losses import PatchGANDiscriminator
 from .data import PRPairDataset  # note, we'll only use img2 and ignore img1
-from .utils import save_checkpoint, load_checkpoint
+from .utils import set_seed, save_checkpoint, load_checkpoint
 from .viz import viz_mae_recon
 
 torch.backends.cudnn.benchmark = True
@@ -77,7 +77,7 @@ def setup_models(cfg, device, preencoded):
         else:
             encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
                                  cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
-        encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt'))
+        encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', f'checkpoints/{encoder.__class__.__name__}__best.pt'))
         if cfg.training.get('enc_ft_lr', 0) <=0: 
             print("Freezing Encoder")
             encoder.eval()  # frozen
@@ -170,6 +170,8 @@ def train_step(epoch, enc_out, img_real, decoder, discriminator,
             loss_gan = -discriminator(img_recon).mean() # - because generator wants discriminator to say "real"
             loss_dec +=  0.01 * loss_gan
     tstate.scaler_dec.scale(loss_dec).backward(retain_graph=True)
+    tstate.scaler_dec.unscale_(tstate.opt_dec)
+    torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
     tstate.scaler_dec.step(tstate.opt_dec)
     tstate.scaler_dec.update()
     
@@ -182,6 +184,8 @@ def train_step(epoch, enc_out, img_real, decoder, discriminator,
 @hydra.main(version_base=None, config_path='../configs', config_name='config')
 def train(cfg: DictConfig):
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    print("config:",cfg,"\ndevice = ",device)
+    set_seed()
     preencoded = cfg.get('preencoded', False)
     
     train_dl, val_dl                = setup_dataloaders(cfg, preencoded)
@@ -223,7 +227,7 @@ def train(cfg: DictConfig):
                     #'enc_loss':enc_loss_dict['loss'].item(), 
         
         train_loss /= len(train_dl)
-        print(f'Epoch {epoch}: train_loss={train_loss:.4f}')
+        print(f'Epoch {epoch}: train_loss={train_loss:.6f}')
         
         # validation, checkpointing, visualization e.g. reconstruction comparison
         decoder.eval() 

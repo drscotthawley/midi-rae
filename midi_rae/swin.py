@@ -24,12 +24,12 @@ class SwinEncoder(nn.Module):
     def __init__(self,
                  img_height:int,           # Input image height in pixels (e.g. 128)
                  img_width:int,            # Input image width in pixels (e.g. 128)
-                 patch_h:int=2,            # Patch height for initial embedding
-                 patch_w:int=2,            # Patch width for initial embedding
+                 patch_h:int=4,            # Patch height for initial embedding
+                 patch_w:int=4,            # Patch width for initial embedding
                  in_chans:int=1,           # Number of input channels (1 for piano roll)
-                 embed_dim:int=4,          # Base embedding dimension (doubles each stage)
-                 depths:tuple=(1,1,2,2,6,2,1),   # Number of transformer blocks per stage
-                 num_heads:tuple=(1,1,1,2,4,8,16),# Attention heads per stage
+                 embed_dim:int=8,          # Base embedding dimension (doubles each stage)
+                 depths:tuple=(1,2,2,6,2,1),   # Number of transformer blocks per stage
+                 num_heads:tuple=(1,1,2,4,8,16),# Attention heads per stage
                  window_size:int=8,        # Window size for windowed attention
                  mlp_ratio:float=4.,       # MLP hidden dim = embed_dim * mlp_ratio
                  qkv_bias:bool=True,       # Add bias to QKV projections

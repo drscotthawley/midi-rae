@@ -27,7 +27,7 @@ from .vit import ViTEncoder, LightweightMAEDecoder
 from .swin import SwinEncoder, SwinMAEDecoder
 from .data import PRPairDataset
 from .losses import calc_enc_loss, calc_mae_loss, calc_enc_loss_multiscale
-from .utils import save_checkpoint, load_checkpoint
+from .utils import set_seed, save_checkpoint, load_checkpoint
 from .viz import make_emb_viz, viz_mae_recon
 from tqdm.auto import tqdm
 
@@ -53,7 +53,9 @@ logging.getLogger("torch").setLevel(logging.ERROR)
 def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, debug=False):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
-    img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
+    #img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
+    img1, img2, deltas = batch['img1'].to(device, non_blocking=True), batch['img2'].to(device, non_blocking=True), batch['deltas'].to(device, non_blocking=True)
+
     enc_out1 = encoder(img1, mask_ratio=cfg.training.mask_ratio)
     enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)
     loss_dict = {}
@@ -88,6 +90,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, debug
 def train(cfg: DictConfig):
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     print("config:",cfg,"\ndevice = ",device)
+    set_seed()
 
     train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
     val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y) 
@@ -133,8 +136,6 @@ def train(cfg: DictConfig):
     if cfm.get('encoder', 'vit') == 'vit': 
         encoder = torch.compile(encoder, dynamic=True)
     elif False: #  swin compilation takes a while and is fraught with difficulty :-( 
-        #encoder = torch.compile(encoder, dynamic=True)
-        #encoder = torch.compile(encoder, mode="default", fullgraph=False)
         for i, stage in enumerate(encoder.stages):
             encoder.stages[i] = torch.compile(stage, mode="default")
     
@@ -167,6 +168,7 @@ def train(cfg: DictConfig):
             #scaler.step(optimizer)
             #scaler.update()
             loss_dict['loss'].backward()
+            torch.nn.utils.clip_grad_norm_(chain(encoder.parameters(), mae_decoder.parameters()), max_norm=1.0)
             optimizer.step()
             train_loss += loss_dict['loss'].item()
             

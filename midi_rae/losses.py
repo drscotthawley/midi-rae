@@ -19,21 +19,23 @@ def safe_mean(t, dim=None):
 # %% ../nbs/03_losses.ipynb #a164c279
 def SIGReg(x, global_step, num_slices=256):
     """SIGReg with Epps-Pulley statistic. x is (N, K) tensor."""
-    device = x.device
-    g = torch.Generator(device=device).manual_seed(global_step)
-    proj_shape = (x.size(1), num_slices)
-    A = torch.randn(proj_shape, generator=g, device=device)
-    A = A / (A.norm(dim=0, keepdim=True) + 1e-10)  # normalize columns
-    
-    # Epps-Pulley statistic
-    t = torch.linspace(-5, 5, 17, device=device) # values used in LeJEPA paper, worked for SSLtoy
-    exp_f = torch.exp(-0.5 * t**2)  # theoretical CF for N(0,1)
-    x_t = (x @ A).unsqueeze(2) * t  # (N, M, T)
-    ecf = (torch.exp(1j * x_t).mean(dim=0)).abs()  # empirical CF
-    diff = (ecf - exp_f).abs().square().mul(exp_f)  # weighted L2 distance
-    #N = x.size(0)  # With respect to Yann: Don't scale by N because then if you change the batch size you have to retune lambd by hand ugh
-    T = torch.trapz(diff, t, dim=1).sum() #* N  # sum here is over num slices, not data points
-    return T
+    with torch.amp.autocast('cuda', enabled=False):
+        x = x.float()
+        device = x.device
+        g = torch.Generator(device=device).manual_seed(global_step)
+        proj_shape = (x.size(1), num_slices)
+        A = torch.randn(proj_shape, generator=g, device=device)
+        A = A / (A.norm(dim=0, keepdim=True) + 1e-10)  # normalize columns
+        
+        # Epps-Pulley statistic
+        t = torch.linspace(-5, 5, 17, device=device) # values used in LeJEPA paper, worked for SSLtoy
+        exp_f = torch.exp(-0.5 * t**2)  # theoretical CF for N(0,1)
+        x_t = (x @ A).unsqueeze(2) * t  # (N, M, T)
+        ecf = (torch.exp(1j * x_t).mean(dim=0)).abs()  # empirical CF
+        diff = (ecf - exp_f).abs().square().mul(exp_f)  # weighted L2 distance
+        #N = x.size(0)  # With respect to Yann: Don't scale by N because then if you change the batch size you have to retune lambd by hand ugh
+        T = torch.trapz(diff, t, dim=1).sum() #* N  # sum here is over num slices, not data points
+        return T
 
 # %% ../nbs/03_losses.ipynb #cf61d695
 def attraction_loss(z1, z2,  # embeddings of two "views" of the same thing (in batches)
@@ -54,16 +56,6 @@ def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None):
     return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.item(), 'sigreg':sigreg.item()}
 
 # %% ../nbs/03_losses.ipynb #34ecc897
-# def calc_mae_loss(recon_patches, img, enc_out, patch_size=16, lambda_visible=0.1):
-#     "BCE loss on reconstructed patches, with optional downweighting of visible patches"
-#     mae_mask = enc_out.mae_mask[1:]  # strip CLS
-#     img_patches = img.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-#     img_patches = img_patches.flatten(2, 3).flatten(-2, -1).squeeze(1)  # (B, N, ps*ps)
-#     weights = torch.ones_like(recon_patches)
-#     weights[:, mae_mask, :] = lambda_visible
-#     loss = (F.binary_cross_entropy_with_logits(recon_patches, img_patches, reduction='none') * weights).mean()
-#     return loss
-
 def calc_mae_loss(recon_patches, img, enc_out, lambda_visible=0.1):
     "BCE loss on reconstructed patches, with optional downweighting of visible patches"
     mae_mask = enc_out.mae_mask
@@ -75,7 +67,6 @@ def calc_mae_loss(recon_patches, img, enc_out, lambda_visible=0.1):
     weights[mae_mask] = lambda_visible  # works for both (N,) and (B,N)
     loss = (F.binary_cross_entropy_with_logits(recon_patches, img_patches, reduction='none') * weights).mean()
     return loss
-
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
@@ -104,9 +95,9 @@ def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarc
     Non-empty patch masks focus the sim/anchor losses on musically active regions."""
     if not isinstance(z1, list): # regular vit 
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
-        return calc_enc_loss(z1, z2, global_step, deltas=d_exp, lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
+        return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(), lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
     total = {}
-    abs_deltas = deltas.abs()
+    abs_deltas = deltas.abs().float()
     n_levels = len(z1)
     for i, (z1_l, z2_l, ne) in enumerate(zip(z1, z2, non_emptys)):
         if z1_l.shape[1] == 1: continue  # skip degenerate 1-token level
@@ -119,8 +110,8 @@ def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarc
         if w < 1e-8: continue
 
         num_tokens = N
-        d_exp = deltas.repeat_interleave(num_tokens, dim=0)
-        z1_flat, z2_flat = z1_l.reshape(-1, D),  z2_l.reshape(-1, D)
+        d_exp = deltas.repeat_interleave(num_tokens, dim=0).float()
+        z1_flat, z2_flat = z1_l.reshape(-1, D).float(), z2_l.reshape(-1, D).float()
         #ne_flat = (ne[0].reshape(-1), ne[1].reshape(-1))
         ne_flat = (ne[0].reshape(-1).bool(), ne[1].reshape(-1).bool())
 
