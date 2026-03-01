@@ -129,7 +129,7 @@ def _subsample(data, indices, deltas, max_points, debug=False):
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
-def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings', max_points=5000, do_umap=True, debug=False):
+def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings', max_points=5000, do_umap=False, debug=False):
     "this is the main viz routine, showing different groups of embeddings"
     device = enc_outs[0].patches[0].emb.device
     if encoder is not None: encoder.to('cpu')
@@ -180,23 +180,30 @@ def expand_patch_mask(mae_mask, grid_h, grid_w, patch_size):
     return mae_mask.bool().reshape(grid_h, grid_w).repeat_interleave(patch_size, 0).repeat_interleave(patch_size, 1)
 
 # %% ../nbs/05_viz.ipynb #6be20056-1385-46cc-972f-ab1207bce9a6
-def do_recon_eval(recon, real, mae_mask=None, patch_size=16, eps=1e-8): 
+def do_recon_eval(recon, real, mae_mask=None, patch_size=16, eps=1e-8, return_maps=False): 
     "Evaluate recon accuracy, optionally only on masked patches"
+    # Full spatial maps (B, C, H, W) — before any masking
+    TPmap = (recon * real).bool()
+    FPmap = (recon * (1 - real)).bool()
+    FNmap = ((1 - recon) * real).bool()
+    TNmap = ((1 - recon) * (1 - real)).bool()
+
+    # Aggregate only over masked patches if applicable
     if mae_mask is not None: 
         B, C, H, W = real.shape
-        grid_h, grid_w = H//patch_size, W//patch_size
+        grid_h, grid_w = H // patch_size, W // patch_size
         masked = ~expand_patch_mask(mae_mask, grid_h, grid_w, patch_size)
-        recon, real = recon[:, :, masked], real[:, :, masked] 
-    TP = (recon * real).sum()
-    FP = (recon * (1 - real)).sum()
-    FN = ((1 - recon) * real).sum()
-    TN = ((1 - recon) * (1 - real)).sum()
+        TP, FP, FN, TN = (m[:, :, masked].sum() for m in (TPmap, FPmap, FNmap, TNmap))
+    else:
+        TP, FP, FN, TN = (m.sum() for m in (TPmap, FPmap, FNmap, TNmap))
+
     precision = TP / (TP + FP + eps) 
     recall = TP / (TP + FN + eps) 
     specificity = TN / (TN + FP + eps) 
     f1 = 2 * precision * recall / (precision + recall + eps) 
     evals = {'precision': precision, 'recall': recall, 'specificity': specificity, 'f1': f1}
     if wandb.run is not None: wandb.log(evals) 
+    if return_maps: evals = evals | {'TPmap': TPmap, 'TNmap': TNmap, 'FPmap': FPmap, 'FNmap': FNmap}
     return evals 
 
 # %% ../nbs/05_viz.ipynb #1aaee236-717b-408c-8252-2e0048f63211
@@ -209,7 +216,7 @@ def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
     img_recon = recon_patches.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4)
     img_recon = img_recon.reshape(B, H, W).unsqueeze(1)
     img_recon = torch.sigmoid(img_recon)
-    img_recon = (img_recon > 0.25).float()
+    img_recon = (img_recon > 0.5).float()
     if mae_mask is not None:
         vis_2d = expand_patch_mask(mae_mask, grid_h, grid_w, patch_size)
         img_recon[:, :, vis_2d] = img_real[:, :, vis_2d]
@@ -217,7 +224,7 @@ def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
 
 # %% ../nbs/05_viz.ipynb #86455273-d2fa-4a97-a6a7-0a71a0a7798f
 @torch.no_grad()
-def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=False):
+def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=False, return_maps=False):
     """Show how our LightweightMAEDecoder is doing (during encoder training)"""
     mae_mask = None
     if enc_out is not None:
@@ -234,14 +241,22 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=
         img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
     else:
         img_recon = (recon > 0.25).float()
-    evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size)
+    evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size, return_maps=return_maps)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
+    if return_maps:  # RGB image: White=TP, Black=TN, Red=FP, Yellow=FN 
+        r  = (evals['TPmap'] | evals['FPmap'] | evals['FNmap']).float()
+        g  = (evals['TPmap'] | evals['FNmap']).float()
+        b  = (evals['TPmap']).float()
+        img_map = torch.cat((r, g, b), dim=1)
+        grid_map = make_grid(img_map[:64], nrow=8, normalize=True)
     if wandb.run is not None:
         wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"),
                       'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch': epoch}
+        if return_maps: wandb_dict = wandb_dict | {'map': wandb.Image(grid_map, caption=f"Epoch {epoch}") }
         if img_recon_noreplace is not None:
             grid_raw = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
             wandb_dict = wandb_dict | {'raw': wandb.Image(grid_raw, caption=f"Epoch {epoch}")}
         wandb.log(wandb_dict)
-    return grid_recon, grid_real, evals
+    if return_maps: return grid_recon, grid_real, grid_map, evals
+    else: return grid_recon, grid_real, evals
