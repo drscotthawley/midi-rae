@@ -131,21 +131,20 @@ class SwinEncoder(nn.Module):
             mae_mask = torch.ones(B, N_full, device=device, dtype=torch.bool)
         x = self.pos_drop(x)
 
-        # Run stages, collect intermediates
+        # Run stages, collect intermediates; squash empty patches after each stage
         intermediates = []
-        for i, stage in enumerate(self.stages):
-            x = stage.downsample(x) if i == len(self.stages) - 1 else stage(x) # no attention on coursest (solo) level
-            intermediates.append(x)
-        intermediates[-1] = self.norm(intermediates[-1])
-
-        # Build non-empty masks for each scale via max-pool cascade
         ne = non_empty.view(B, 1, grid_h, grid_w).float()
         ne_scales = []
-        for feat in intermediates:
-            Hf, Wf = feat.shape[1], feat.shape[2]
-            while ne.shape[2] > Hf:
-                ne = F.max_pool2d(ne, 2)
+        for i, stage in enumerate(self.stages):
+            x = stage.downsample(x) if i == len(self.stages) - 1 else stage(x)
+            Hf, Wf = x.shape[1], x.shape[2]
+            while ne.shape[2] > Hf: ne = F.max_pool2d(ne, 2)
+            #x = x * ne.permute(0, 2, 3, 1)      # hard squash: multiply by non-empty
+            #x = x * torch.where(ne > 0, 1.0, 0.001).permute(0, 2, 3, 1)  # soft squash: rescale by tiny number
+            intermediates.append(x)
             ne_scales.append(ne.view(B, -1))
+        intermediates[-1] = self.norm(intermediates[-1])
+
 
         # Build HierarchicalPatchState (coarsest first)
         levels = []

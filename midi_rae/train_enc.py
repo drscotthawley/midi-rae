@@ -77,7 +77,8 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, debug
         z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
         non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
 
-    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, img_size=cfg.data.image_size, deltas=deltas, lambd=cfg.training.lambd, non_emptys=non_emptys)
+    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, img_size=cfg.data.image_size, deltas=deltas, 
+                lambd=cfg.training.lambd, non_emptys=non_emptys, lambda_anchor=cfg.training.get('lambda_anchor',0.05))
 
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('mae_lambda', 1.0) * loss_dict['mae']
     if torch.isnan(loss_dict['loss']):
@@ -190,7 +191,10 @@ def train(cfg: DictConfig):
                     "train_loss":train_loss, "train_sim":loss_dict['sim'], "train_sigreg":loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], "train_mae":loss_dict['mae'],  
                     "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict['anchor'], "val_mae": val_loss_dict['mae'], 
                     "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
-                    "lr": optimizer.param_groups[0]['lr'], "epoch": epoch})
+                    "lr": optimizer.param_groups[0]['lr'], "epoch": epoch,
+                    **{f"levels/train_{k}_L{l}": v for l, ld in enumerate(loss_dict.get('levels', [])) for k, v in ld.items()},
+                    **{f"levels/val_{k}_L{l}": v for l, ld in enumerate(val_loss_dict.get('levels', [])) for k, v in ld.items()},
+                })
                 if epoch % viz_every == 0:  make_emb_viz(enc_outs, epoch=epoch, encoder=encoder, batch=batch)
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
                     viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size)

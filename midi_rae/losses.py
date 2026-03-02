@@ -38,21 +38,24 @@ def SIGReg(x, global_step, num_slices=256):
         return T
 
 # %% ../nbs/03_losses.ipynb #cf61d695
-def attraction_loss(z1, z2,  # embeddings of two "views" of the same thing (in batches)
+def attraction_loss(z1, z2,        # embeddings of two "views" of the same thing (in batches)
                     deltas=None,   # optional/TBD: info on semantic 'distance' between z1 & z2
-                    tau = 100.0):    # inverse strength of fall-off for delta distances, big=slower
+                    tau = 100.0,   # inverse strength of fall-off for delta distances, big=slower
+                    psize=None):   # patch_size (patch_w, patch_h)
     "How we pull similar 'views' together"
     if deltas is None: return safe_mean( (z1 - z2).square() )
     delta_diag = (deltas**2).sum(dim=1)
     delta_fac = torch.exp(-delta_diag / tau) # less attraction for more 'distant' views
     #delta_fac = 1/(1 + delta_diag/tau)  # longer tail than exp
+    if psize is not None:          
+        delta_fac[(deltas[:,0].abs() >= psize[0]) | (deltas[:,1].abs() >= psize[1])] = 0  # zero out cases where shift > patch size 
     return safe_mean( (z1 - z2).square() * delta_fac.unsqueeze(-1) )
 
 # %% ../nbs/03_losses.ipynb #624570b6
-def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None): 
+def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None, psize=None): 
     "Main LeJEPA loss function"
-    sim = attraction_loss(z1, z2, deltas=deltas)
-    sigreg = SIGReg( torch.cat((z1, z2), dim=0), global_step ) * 1 # normalize to similar scale as sim
+    sim = attraction_loss(z1, z2, deltas=deltas, psize=psize)
+    sigreg = SIGReg( torch.cat((z1, z2), dim=0), global_step ) * 0.5 # "normalize" to similar scale as sim (by hand :shrug:)
     return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.item(), 'sigreg':sigreg.item()}
 
 # %% ../nbs/03_losses.ipynb #34ecc897
@@ -74,53 +77,57 @@ def anchor_loss(z1, z2):
     return safe_mean( z1.square() ) + safe_mean( z2.square() )
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
-def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.05):
+def calc_enc_loss(z1, z2, global_step, deltas=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.05, psize=None):
     "Main loss function for Encoder"
     non_empty1, non_empty2 = non_emptys
     non_empty = non_empty1 & non_empty2  # both non-empty
     valid = non_empty.view(-1).bool()
-    loss_dict = LeJEPA(z1[valid], z2[valid], global_step, deltas=deltas[valid], lambd=lambd)
-    aloss = anchor_loss(z1[~non_empty1.view(-1).bool()], z2[~non_empty2.view(-1).bool()])
-    loss_dict['anchor'] = aloss
-    loss_dict['loss'] = loss_dict['loss'] + lambda_anchor * aloss
+    loss_dict = LeJEPA( z1[valid], z2[valid], global_step, deltas=deltas[valid], lambd=lambd, psize=psize )
+    if lambda_anchor > 0:
+        loss_dict['anchor'] = anchor_loss(z1[~non_empty1.view(-1).bool()], z2[~non_empty2.view(-1).bool()])
+        loss_dict['loss'] = loss_dict['loss'] + lambda_anchor * loss_dict['anchor'] 
     return loss_dict
 
-# %% ../nbs/03_losses.ipynb #ec2cf5ea
+# %% ../nbs/03_losses.ipynb #f16b3d15-ea32-4d89-ae0d-76431c5f194d
 @torch.compiler.disable
-def calc_enc_loss_multiscale(z1, z2,  # lists of embeddings at each swin hierarchy level, 0=coarsest, -1=finest
-                             global_step, img_size, deltas=None,
+def calc_enc_loss_multiscale(z1, z2, global_step, img_size, deltas=None,
                              lambd=0.5, non_emptys=None, lambda_anchor=0.05):
-    """Compute encoder loss at each hierarchy level, weighted by patch overlap fraction.
-    Levels where delta/shift exceeds patch size (resulting in zero overlap) are skipped entirely.
-    Non-empty patch masks focus the sim/anchor losses on musically active regions."""
-    if not isinstance(z1, list): # regular vit 
+    """Compute encoder loss at each hierarchy level of the Swin encoder. really really this time"""
+    if not isinstance(z1, list):  # regular vit
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
-        return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(), lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
+        return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(),
+                             lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
     total = {}
-    abs_deltas = deltas.abs().float()
     n_levels = len(z1)
-    for i, (z1_l, z2_l, ne) in enumerate(zip(z1, z2, non_emptys)):
-        if z1_l.shape[1] == 1: continue  # skip degenerate 1-token level
+    a_sum = a_count = 0.0
+    level_losses = []
+
+    for lev, (z1_l, z2_l, ne) in enumerate(zip(z1, z2, non_emptys)):
         B, N, D = z1_l.shape
-        grid = int(N ** 0.5)
-        patch_w, patch_h = img_size // grid, img_size // grid
-        dx, dy = abs_deltas[:, 0], abs_deltas[:, 1]
-        # hinge-style weight to avoid comparing patches if the deltas (aka shift) exceed patch size. 
-        w = (((patch_w - dx) / patch_w).clamp(min=0) * ((patch_h - dy) / patch_h).clamp(min=0)).mean()
-        if w < 1e-8: continue
-
-        num_tokens = N
-        d_exp = deltas.repeat_interleave(num_tokens, dim=0).float()
-        z1_flat, z2_flat = z1_l.reshape(-1, D).float(), z2_l.reshape(-1, D).float()
-        #ne_flat = (ne[0].reshape(-1), ne[1].reshape(-1))
-        ne_flat = (ne[0].reshape(-1).bool(), ne[1].reshape(-1).bool())
-
-        ld = calc_enc_loss(z1_flat, z2_flat, global_step, deltas=d_exp,
-                           lambd=lambd, non_emptys=ne_flat, lambda_anchor=lambda_anchor)
-        for k, v in ld.items():  total[k] = total.get(k, 0) + v * w
+        grid = int(N ** 0.5)  # TODO: assumes squares
+        psize = (img_size // grid, img_size // grid)
+        d_expanded = deltas.repeat_interleave(N, dim=0).float()
+        z1_flat, z2_flat =      ( x.reshape(-1, D).float() for x in (z1_l,  z2_l))
+        ne_flat          = tuple( x.reshape(-1).bool()     for x in (ne[0], ne[1]))  # non-emptys
+        ld = calc_enc_loss(z1_flat, z2_flat, global_step, deltas=d_expanded,
+                           lambd=lambd, non_emptys=ne_flat, lambda_anchor=0, psize=psize)
+        ld['anchor'] = safe_mean(z1_flat[~ne_flat[0]].square()) + safe_mean(z2_flat[~ne_flat[1]].square()) # just for logging
+        level_losses.append(ld)
+        for k, v in ld.items(): total[k] = total.get(k, 0) + v
+            
+        if lambda_anchor > 0:   # accumulate global anchor loss on emptys
+            w = D ** 0.5    # weight by sqrt(emb dim) b/c coarser levs are rarely empty -> rarely get anchor loss applied
+            for z, m in ((z1_flat, ~ne_flat[0]), (z2_flat, ~ne_flat[1])):
+                if (n := z[m].shape[0]) > 0:  # Weight levels equally by num patches. Avg globally later
+                    a_sum += safe_mean(z[m].square()) * n * w; a_count += n * w 
 
     if not total: return {'loss': torch.tensor(0.0, device=deltas.device)}
-    return {k: v / n_levels for k, v in total.items()}
+    total = {k: v / n_levels for k, v in total.items()}
+    if a_count > 0:
+        total['anchor'] = a_sum / a_count
+        total['loss'] += lambda_anchor * total['anchor']
+    total['levels'] = level_losses
+    return total
 
 # %% ../nbs/03_losses.ipynb #ade84ead
 class PatchGANDiscriminator(nn.Module):

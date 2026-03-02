@@ -19,13 +19,14 @@ training:
   batch_size: 380         # encoder batch size
   lr: 2e-4
   epochs: 200
-  lambd: 0.3              # lejepa sim-vs-sigreg weight
-  max_shift_x: 12         # will increase w/epoch via curriculum
+  lambd: 0.3              # lejepa attraction-vs-sigreg weight
+  max_shift_x: 12         # could increase w/epoch via curriculum
   max_shift_y: 12
-  mae_lambda: 10
-  mask_ratio: 0.5
+  mae_lambda: 1.0          # strength of mae loss term
+  mask_ratio: 0.5         # between levels, ma
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
-  lambda_visible: 1.0
+  lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
+  lambda_anchor: 1.0      # tendency to draw embeddings for empty patches to zero
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 100 # 500
   dec_lr: 2e-3

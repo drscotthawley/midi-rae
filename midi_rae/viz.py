@@ -4,8 +4,8 @@
 
 # %% auto #0
 __all__ = ['cpu_umap_project', 'cuml_umap_project', 'umap_project', 'cuml_pca_project', 'cpu_pca_project', 'pca_project',
-           'plot_embeddings_3d', 'make_emb_viz', 'expand_patch_mask', 'do_recon_eval', 'patches_to_img',
-           'viz_mae_recon']
+           'plot_embeddings_3d', 'make_emb_viz', 'show_fig_table', 'expand_patch_mask', 'do_recon_eval',
+           'patches_to_img', 'viz_mae_recon']
 
 # %% ../nbs/05_viz.ipynb #b96051a7
 import torch
@@ -62,6 +62,7 @@ def cpu_pca_project(embeddings, n_components=3):
 # %% ../nbs/05_viz.ipynb #cf52f98b
 def pca_project(embeddings, **kwargs):
     "Calls GPU or CPU PCA based on availability"
+    if len(embeddings) < 2: return None
     if embeddings.is_cuda:
         try: return cuml_pca_project(embeddings, **kwargs)
         except: return cpu_pca_project(embeddings, **kwargs)
@@ -72,6 +73,7 @@ def pca_project(embeddings, **kwargs):
 def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, title='Embeddings', debug=False):
     "3D scatter plot of embeddings. color_by: 'none', 'file', or 'pair'"
     import plotly.graph_objects as go
+    if coords is None: return None
     n = len(coords)
     if debug: print(" plot_embeddings_3d: n =",n)
     
@@ -102,7 +104,8 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, tit
 @torch.no_grad()
 def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True, file_idx=None, deltas=None):
     "visualize embeddings, projected"
-    umap_fig = None
+    if zs is None:  return {} # 'pca':pca_fig, 'umap':umap_fig} if umap_fig is not None else {'pca':pca_fig}
+    umap_fig, pca_fig = None, None
     if do_umap:
         coords = umap_project(zs)
         umap_fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx, deltas=deltas)
@@ -111,13 +114,13 @@ def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True, file_idx=None,
     coords = pca_project(zs)
     pca_fig = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx, deltas=deltas)
     if wandb.run is not None: 
-        if do_umap:
+        if do_umap and umap_fig is not None:
             wandb.log({f"{title} UMAP": wandb.Html(umap_fig.to_html()), f"{title} PCA": wandb.Html(pca_fig.to_html())})
-        else:
+        if pca_fig is not None:
             wandb.log({f"{title} PCA": wandb.Html(pca_fig.to_html())})
     if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup again
     gc.collect()
-    return pca_fig, umap_fig
+    return {'pca':pca_fig, 'umap':umap_fig} if umap_fig is not None else {'pca':pca_fig}
 
 # %% ../nbs/05_viz.ipynb #b618d453
 def _subsample(data, indices, deltas, max_points, debug=False):
@@ -127,52 +130,73 @@ def _subsample(data, indices, deltas, max_points, debug=False):
     perm = torch.cat([perm1,perm2])
     return data[perm], indices[perm], deltas[perm]
 
+# %% ../nbs/05_viz.ipynb #eceafaa0-dad6-43cd-ab67-7abbe8d13ab8
+def _gather_level(enc_outs,        # list of encoder outputs
+                  lev,             # level of hierarchy: 0=coarsest, -1=finest
+                  batch=None):     #  info from dataset, e.g. file_idx, deltas
+    "Consolidates all embeddings at a given level for visualization"
+    eo0     = enc_outs[0]                     # used for info that's the same for all enc_outs
+    edim    = eo0.patches[lev].dim            # embedding dimensions at this level
+    N       = eo0.patches[lev].num_patches    # num patch tokens at this level
+    n_eo    = len(enc_outs)
+    device  = eo0.patches[lev].emb.device     # assume same device for all eo's
+    emb, non_empty = [], []
+    for eo in enc_outs: 
+        emb.append( eo.patches[lev].emb )  
+        non_empty.append( eo.patches[lev].non_empty.bool() )
+    emb, non_empty = torch.cat(emb, dim=0), torch.cat(non_empty, dim=0)
+    if batch is None: return emb.reshape(-1, edim), non_empty.flatten(), None, None  # (BT*N, edim), (BT*N,), where BT = B*n_eo
+        
+    file_idx = batch['file_idx'].repeat(n_eo).repeat_interleave(N).to(device)
+    deltas = batch['deltas'].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
+    return emb.reshape(-1, edim), non_empty.flatten(), file_idx, deltas # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,2)
+
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
 def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings', max_points=5000, do_umap=False, debug=False):
     "this is the main viz routine, showing different groups of embeddings"
+    if not isinstance(enc_outs, (list, tuple)): enc_outs = [enc_outs]
     device = enc_outs[0].patches[0].emb.device
     if encoder is not None: encoder.to('cpu')
     torch.cuda.empty_cache()
-
-    num_patch_tokens = enc_outs[0].patches[-1].num_patches
-
-    file_idx, deltas = None, None
-    if batch is not None:
-        file_idx = batch['file_idx'].repeat(2).repeat_interleave(num_patch_tokens).to(device)
-        deltas = batch['deltas'].repeat(2, 1).repeat_interleave(num_patch_tokens, dim=0).to(device)
-
-    # CLS tokens aka coarsest level
-    cls_tokens = torch.cat((enc_outs[0].patches[0].emb, enc_outs[1].patches[0].emb), dim=0).squeeze(1)
-    cls_file_idx = batch['file_idx'].repeat(2).to(device) if batch is not None else None
-    cls_deltas = batch['deltas'].repeat(2, 1).to(device) if batch is not None else None
-    cls_pca_fig, cls_umap_fig = _make_emb_viz(cls_tokens, epoch=epoch, title='CLS Tokens '+title, file_idx=cls_file_idx, deltas=cls_deltas, do_umap=do_umap)
-
-    # Patches (non-CLS) aka finest level — already CLS-stripped via patches[-1]
-    dim = enc_outs[0].patches[-1].dim
-    patches = torch.cat((enc_outs[0].patches[-1].emb, enc_outs[1].patches[-1].emb), dim=0).reshape(-1, dim)
-    non_empty = (enc_outs[0].patches[-1].non_empty.bool() & enc_outs[1].patches[-1].non_empty.bool())
-    valid = non_empty.flatten().repeat(2)
-
-    # Non-empty patches
-    valid_patches, valid_file_idx, valid_deltas = patches[valid], file_idx[valid], deltas[valid]
-    rnd_patches, rnd_file_idx, rnd_deltas = _subsample(valid_patches, valid_file_idx, valid_deltas, max_points)
-    patch_pca_fig, patch_umap_fig = _make_emb_viz(rnd_patches, epoch=epoch, title='RND Patches '+title, file_idx=rnd_file_idx, deltas=rnd_deltas, do_umap=do_umap)
-
-    # plot when both patches are empty 
-    ne1 = enc_outs[0].patches[-1].non_empty.flatten().repeat(2).bool()
-    ne2 = enc_outs[1].patches[-1].non_empty.flatten().repeat(2).bool()
-    both_empty = ~ne1 & ~ne2
-    empty_pca_fig = None
-    if both_empty.any():
-        empty_patches, empty_file_idx, empty_deltas = patches[both_empty], file_idx[both_empty], deltas[both_empty]
-        if debug: print("emtpy: patches[~both_empty].norm(dim=-1).mean() = ",patches[~both_empty].norm(dim=-1).mean())
-        rnd_empty, rnd_empty_idx, rnd_empty_deltas = _subsample(empty_patches, empty_file_idx, empty_deltas, max_points)
-        empty_pca_fig = _make_emb_viz(rnd_empty, epoch=epoch, title='RND Empty Patches '+title, do_umap=False, file_idx=rnd_empty_idx, deltas=rnd_empty_deltas)
-    
+    figs = []
+    for lev in range(enc_outs[0].patches.num_levels):
+        emb, non_empty, file_idx, deltas = _gather_level(enc_outs, lev, batch=batch)
+        lev_figs = {}
+        for mask, label in [(non_empty, 'non_empty'), (~non_empty, 'empty')]:
+            if not mask.any(): continue
+            rnd_emb, rnd_fi, rnd_d = _subsample(emb[mask], file_idx[mask], deltas[mask], max_points)
+            lev_figs[label] = _make_emb_viz(rnd_emb, epoch=epoch, title=f'{label} Level {lev} (dim={emb.shape[-1]}), {title}', file_idx=rnd_fi, deltas=rnd_d, do_umap=do_umap)
+        figs.append(lev_figs)
     if encoder is not None: encoder.to(device)
-    figs = {'cls_pca_fig':cls_pca_fig, 'cls_umap_fig':cls_umap_fig, 'patch_pca_fig':patch_pca_fig, 'patch_umap_fig':patch_umap_fig, 'empty_pca_fig': empty_pca_fig}
     return figs
+
+# %% ../nbs/05_viz.ipynb #5f2723b2-287c-427a-822b-f2f9e715169b
+def _cell_title(figs, lev, label):
+    if label not in figs[lev] or 'pca' not in figs[lev][label]: return ""
+    n_pts = sum(len(t.x) for t in figs[lev][label]['pca'].data)
+    return f"Level {lev} {label} (N={n_pts})"
+    
+def show_fig_table(figs):
+    "Display all PCA figs in a grid: rows=levels, cols=non_empty|empty"
+    from plotly.subplots import make_subplots
+    n_levels = len(figs)
+    col_labels = ['non_empty', 'empty']
+    specs = [[{'type': 'scene'} for _ in col_labels] for _ in reversed(range(n_levels))]
+    subplot_titles = [_cell_title(figs, lev, lab) for lev in reversed(range(n_levels)) for lab in col_labels]
+    big_fig = make_subplots(rows=n_levels, cols=2, specs=specs, subplot_titles=subplot_titles, 
+                            vertical_spacing=0.03, horizontal_spacing=0.02)
+    for row, lev_dict in enumerate(reversed(figs)):
+        lev = n_levels - 1 - row
+        for col_idx, label in enumerate(col_labels):
+            if label not in lev_dict or 'pca' not in lev_dict[label]: continue
+            for trace in lev_dict[label]['pca'].data:
+                big_fig.add_trace(trace, row=row+1, col=col_idx+1)
+
+    big_fig.update_layout(height=300*n_levels, width=800, title_text="Embeddings by Level (PCA)",
+                      margin=dict(l=20, r=20, t=40, b=20), showlegend=False)
+
+    big_fig.show()
 
 # %% ../nbs/05_viz.ipynb #f450ea65-c24c-4675-894d-792ee4a9b986
 def expand_patch_mask(mae_mask, grid_h, grid_w, patch_size):
