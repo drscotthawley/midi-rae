@@ -56,7 +56,7 @@ def cuml_pca_project(embeddings, n_components=3):
 def cpu_pca_project(embeddings, n_components=3):
     "Project embeddings to n_components dimensions via sklearn PCA (CPU)"
     from sklearn.decomposition import PCA
-    if isinstance(embeddings, torch.Tensor): embeddings = embeddings.detach().cpu().numpy()
+    if isinstance(embeddings, torch.Tensor): embeddings = embeddings.float().detach().cpu().numpy()
     return PCA(n_components=n_components).fit_transform(embeddings)
 
 # %% ../nbs/05_viz.ipynb #cf52f98b

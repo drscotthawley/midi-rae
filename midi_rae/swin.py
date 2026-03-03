@@ -39,7 +39,9 @@ class SwinEncoder(nn.Module):
                  drop_path_rate:float=0.1, # Stochastic depth rate
                  norm_layer:type=nn.LayerNorm, # Normalization layer class
                  mae_ratio:float=0.,       # Fraction of non-empty patches to mask (0=no masking)
-                 empty_mask_ratio:float=0.05): # Mask rate for empty patches relative to mae_ratio
+                 empty_mask_ratio:float=0.05, # Mask rate for empty patches relative to mae_ratio
+                 squash_coarse = False,     # Overwrite course level empty patch tokens with a learned empty patch token.
+                 ):
         super().__init__()
         self.num_stages, self.embed_dim = len(depths), embed_dim
         self.num_features = int(embed_dim * 2 ** (self.num_stages - 1))
@@ -52,10 +54,14 @@ class SwinEncoder(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate)
 
         # Learnable replacement tokens
-        self.empty_token, self.mask_token = nn.Parameter(torch.zeros(embed_dim)), nn.Parameter(torch.zeros(embed_dim))
+        #self.empty_token, self.mask_token = nn.Parameter(torch.zeros(embed_dim)), nn.Parameter(torch.zeros(embed_dim)) # on finestt level only
+        self.empty_input_token = nn.Parameter(torch.zeros(embed_dim))
+        self.mask_token = nn.Parameter(torch.zeros(embed_dim)) # on finest level only 
+        embed_dims = [int(embed_dim * 2 ** i) for i in range(self.num_stages)]
+        #self.empty_tokens = nn.ParameterList([nn.Parameter(torch.zeros(d)) for d in embed_dims]) # exactly 0's bad for Attention
+        self.empty_tokens = None if (not squash_coarse) else  nn.ParameterList([nn.Parameter(torch.randn(d) * 1.0) for d in embed_dims]) #  rand values better for Attention
 
         # Build stages using timm's SwinTransformerV2Stage
-        embed_dims = [int(embed_dim * 2 ** i) for i in range(self.num_stages)]
         dpr = calculate_drop_path_rates(drop_path_rate, list(depths), stagewise=True)
         self.stages = nn.ModuleList()
         in_dim, scale = embed_dims[0], 1
@@ -81,7 +87,8 @@ class SwinEncoder(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self) -> Set[str]:
-        nod = {'empty_token', 'mask_token'}
+        nod = {'empty_input_token', 'mask_token'}
+        if self.empty_tokens is not None: nod |= {f'empty_tokens.{i}' for i in range(len(self.empty_tokens))}
         for n, _ in self.named_parameters():
             if any(kw in n for kw in ('cpb_mlp', 'logit_scale')): nod.add(n)
         return nod
@@ -116,9 +123,9 @@ class SwinEncoder(nn.Module):
         x = self.patch_norm(x.permute(0, 2, 3, 1).contiguous())            # → (B, H', W', C) NHWC
         B, H, W, C = x.shape
 
-        # Replace empty patches with learned empty_token
+        # finsest level Replace empty patches with learned empty_token
         ne4d = non_empty.view(B, H, W, 1)
-        x = torch.where(ne4d, x, self.empty_token.view(1, 1, 1, -1).expand_as(x))
+        #x = torch.where(ne4d, x, self.empty_input_token.view(1, 1, 1, -1).expand_as(x)) # 9:32pm turning off for a sec
 
         # MAE masking: replace masked positions with learned mask_token
         effective_ratio = mask_ratio if mask_ratio > 0 else self.mae_ratio
@@ -131,7 +138,7 @@ class SwinEncoder(nn.Module):
             mae_mask = torch.ones(B, N_full, device=device, dtype=torch.bool)
         x = self.pos_drop(x)
 
-        # Run stages, collect intermediates; squash empty patches after each stage
+        # Run stages, collect intermediates; maybe squash empty patches after each stage
         intermediates = []
         ne = non_empty.view(B, 1, grid_h, grid_w).float()
         ne_scales = []
@@ -139,11 +146,18 @@ class SwinEncoder(nn.Module):
             x = stage.downsample(x) if i == len(self.stages) - 1 else stage(x)
             Hf, Wf = x.shape[1], x.shape[2]
             while ne.shape[2] > Hf: ne = F.max_pool2d(ne, 2)
-            #x = x * ne.permute(0, 2, 3, 1)      # hard squash: multiply by non-empty
+            # TODO: squashing empty z's can "corrupt" higher-ups. ??  level = len(self.stages)-i-1
+            #if i == len(self.stages)-1:             # safe to do it on coarsest level.
+            #    x = x * ne.permute(0, 2, 3, 1)      # hard squash: multiply by non-empty
             #x = x * torch.where(ne > 0, 1.0, 0.001).permute(0, 2, 3, 1)  # soft squash: rescale by tiny number
+            if self.empty_tokens is not None:
+                x = torch.where(ne.permute(0, 2, 3, 1) > 0, x, self.empty_tokens[i].view(1, 1, 1, -1).expand_as(x))
             intermediates.append(x)
             ne_scales.append(ne.view(B, -1))
         intermediates[-1] = self.norm(intermediates[-1])
+        #intermediates[-1] = intermediates[-1] * ne.permute(0, 2, 3, 1)  # re-squash coarsest lev after norm
+        if self.empty_tokens is not None:
+            intermediates[-1]= torch.where(ne.permute(0, 2, 3, 1) > 0, intermediates[-1], self.empty_tokens[-1].view(1, 1, 1, -1).expand_as(intermediates[-1]))
 
 
         # Build HierarchicalPatchState (coarsest first)

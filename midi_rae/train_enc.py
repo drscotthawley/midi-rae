@@ -207,5 +207,5 @@ def train(cfg: DictConfig):
 #| eval: false
 if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
     print(logo)
-    print("Encoder Training\n")
+    print("I just met you - Encoder Training\n")
     train()
