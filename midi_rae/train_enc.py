@@ -83,7 +83,8 @@ class CurriculumSchedule():
             self.scheduler = OneCycleLR(optimizer, max_lr=self.cfg.training.lr,
                                    steps_per_epoch=1, epochs=self.intervals[stage_idx], div_factor=5)
             self.prev_stage = stage_idx
-        self.scheduler.step()
+        else:
+            self.scheduler.step()
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
 #@torch.compiler.disable
