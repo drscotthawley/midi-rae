@@ -72,7 +72,7 @@ class PRPairDataset(Dataset):
             
         self.actual_len = len(self.filenames)
         self.images = []
-        if verbose: print(f"Loading {self.actual_len} {split} files from {image_dataset_dir}...")
+        if verbose: print(f"Loading {self.actual_len} {split} files from {image_dataset_dir}... ",end="")
         for f in self.filenames: 
             img = Image.open(f).convert('L')  # grayscale
             #img = torch.from_numpy(np.array(img)).float() / 255.0 # moved to getitem to save RAM on solveit
