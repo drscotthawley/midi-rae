@@ -26,7 +26,7 @@ training:
   mask_ratio: 0.5         # between levels, ma
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
-  lambda_anchor: 0.05     # l2 loss on empty patch embeddings
+  lambda_anchor: 0.02     # l2 loss on empty patch embeddings
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 100 # 500
   dec_lr: 2e-3
