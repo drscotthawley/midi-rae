@@ -30,9 +30,13 @@ def save_checkpoint(model, epoch, val_loss, cfg, optimizer=None, save_every=25, 
 
     os.makedirs('checkpoints', exist_ok=True)
     models = model if isinstance(model, (list, tuple)) else [model]
+    added_opt = False 
     for i, m in enumerate(models):
+        if m is None: continue
         ckpt = {'epoch': epoch, 'model_state_dict': getattr(m, '_orig_mod', m).state_dict(), 'config': dict(cfg), 'val_loss': val_loss}
-        if optimizer is not None and i == 0: ckpt = ckpt | {'optimizer_state_dict': optimizer.state_dict()}  # Only first model on list gets optimizer in its ckpt file.
+        if (optimizer is not None) and not added_opt:
+            added_opt = True
+            ckpt = ckpt | {'optimizer_state_dict': optimizer.state_dict()}  # Only first model on list gets optimizer in its ckpt file.
 
         mtag = f"{getattr(m, '_orig_mod', m).__class__.__name__}_{tag}"
         if epoch % save_every == 0:
