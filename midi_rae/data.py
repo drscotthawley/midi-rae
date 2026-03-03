@@ -53,9 +53,10 @@ class PRPairDataset(Dataset):
             seed=42,
             verbose=True,
             sigma=7,               # param for truncnorm dist for sampling shifts/deltas
+            shared=None,   # Possible shared memory thing for changing deets on the fly
             ):
         self.crop_size, self.max_shift_x, self.max_shift_y = crop_size, max_shift_x, max_shift_y
-        self.sigma = sigma 
+        self.sigma, self.shared = sigma, shared
         
         # Load and split filenames
         all_filenames = glob(os.path.join(os.path.expanduser(image_dataset_dir), '**/*.png'), recursive=True)
@@ -93,7 +94,9 @@ class PRPairDataset(Dataset):
         img = shift_no_wrap(img, shifts=aug_y, dims=0)
          
         h, w = img.shape
-        shift_x, shift_y = sample_shifts(self.max_shift_x, self.max_shift_y, self.sigma)
+        sx = self.shared['training']['max_shift_x'] if self.shared else self.max_shift_x
+        sy = self.shared['training']['max_shift_y'] if self.shared else self.max_shift_y
+        shift_x, shift_y = sample_shifts(sx, sy, self.sigma)
 
         # cropping
         # sample loc1 such that both crops are valid

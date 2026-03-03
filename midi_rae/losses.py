@@ -49,7 +49,8 @@ def attraction_loss(z1, z2,        # embeddings of two "views" of the same thing
     delta_diag = (deltas**2).sum(dim=1)
     delta_fac = torch.exp(-delta_diag / tau) # less attraction for more 'distant' views
     #delta_fac = 1/(1 + delta_diag/tau)  # longer tail than exp
-    if psize is not None:         
+    if psize is not None:
+        delta_fac = delta_fac * math.sqrt((32./psize[0])*(32./psize[1]))  # joint-non-empty frequency normalization
         delta_fac[(deltas[:,0].abs() >= psize[0]) | (deltas[:,1].abs() >= psize[1])] = 0 # zero out cases where shift >= patch size 
         #delta_fac = (1 - deltas[:,0].abs()/psize[0]).clamp(min=0) * (1 - deltas[:,1].abs()/psize[1]).clamp(min=0)  # "overlap weighting": bilinear falloff (to zero if shift >= psize)
     return safe_mean( (z1 - z2).square() * delta_fac.unsqueeze(-1) )
