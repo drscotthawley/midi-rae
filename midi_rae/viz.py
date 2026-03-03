@@ -138,18 +138,21 @@ def _gather_level(enc_outs,        # list of encoder outputs
     eo0     = enc_outs[0]                     # used for info that's the same for all enc_outs
     edim    = eo0.patches[lev].dim            # embedding dimensions at this level
     N       = eo0.patches[lev].num_patches    # num patch tokens at this level
-    n_eo    = len(enc_outs)
+    n_eo    = len(enc_outs)                   # num encoder outs (e.g. 2)
     device  = eo0.patches[lev].emb.device     # assume same device for all eo's
-    emb, non_empty = [], []
+    emb, non_empty, joint_non_empty = [], [], None
     for eo in enc_outs: 
         emb.append( eo.patches[lev].emb )  
-        non_empty.append( eo.patches[lev].non_empty.bool() )
-    emb, non_empty = torch.cat(emb, dim=0), torch.cat(non_empty, dim=0)
-    if batch is None: return emb.reshape(-1, edim), non_empty.flatten(), None, None  # (BT*N, edim), (BT*N,), where BT = B*n_eo
-        
+        this_ne = eo.patches[lev].non_empty.bool() 
+        non_empty.append( this_ne )
+        joint_non_empty = this_ne if joint_non_empty is None else joint_non_empty & this_ne
+    emb, non_empty = torch.cat(emb, dim=0), torch.cat(non_empty, dim=0)      # cat along batch dim
+    non_empty, joint_non_empty = non_empty.flatten(), joint_non_empty.repeat(n_eo,1).flatten()
+
+    if batch is None: return emb.reshape(-1, edim), non_empty, joint_non_empty,  None, None  # (BT*N, edim), (BT*N,), (BT*N,), where BT = B*n_eo    
     file_idx = batch['file_idx'].repeat(n_eo).repeat_interleave(N).to(device)
     deltas = batch['deltas'].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
-    return emb.reshape(-1, edim), non_empty.flatten(), file_idx, deltas # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,2)
+    return emb.reshape(-1, edim), non_empty,  joint_non_empty, file_idx, deltas     # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,), (BT*N,2)
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
@@ -161,9 +164,9 @@ def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings
     torch.cuda.empty_cache()
     figs = [] 
     for lev in range(enc_outs[0].patches.num_levels):
-        emb, non_empty, file_idx, deltas = _gather_level(enc_outs, lev, batch=batch)
+        emb, non_empty, joint_non_empty, file_idx, deltas = _gather_level(enc_outs, lev, batch=batch)
         lev_figs = {}
-        for mask, label in [(non_empty, 'non_empty'), (~non_empty, 'empty')]:
+        for mask, label in [(joint_non_empty, 'joint_non_empty'), (~non_empty, 'empty')]:
             if not mask.any(): continue
             rnd_emb, rnd_fi, rnd_d = _subsample(emb[mask], file_idx[mask], deltas[mask], max_points)
             lev_figs[label] = _make_emb_viz(rnd_emb, epoch=epoch, title=f'{label} Level {lev} (dim={emb.shape[-1]}), {title}', file_idx=rnd_fi, deltas=rnd_d, do_umap=do_umap)
@@ -181,7 +184,7 @@ def show_fig_table(figs):
     "Display all PCA figs in a grid: rows=levels, cols=non_empty|empty"
     from plotly.subplots import make_subplots
     n_levels = len(figs)
-    col_labels = ['non_empty', 'empty']
+    col_labels = ['joint_non_empty', 'empty']
     specs = [[{'type': 'scene'} for _ in col_labels] for _ in reversed(range(n_levels))]
     subplot_titles = [_cell_title(figs, lev, lab) for lev in reversed(range(n_levels)) for lab in col_labels]
     big_fig = make_subplots(rows=n_levels, cols=2, specs=specs, subplot_titles=subplot_titles, 
