@@ -197,7 +197,7 @@ def train(cfg: DictConfig):
                 })
                 if epoch % viz_every == 0:  make_emb_viz(enc_outs, epoch=epoch, encoder=encoder, batch=batch)
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
-                    viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size)
+                    viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
 
         save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag="") # optimzer gets saved with mae_decoder, not encoder
 
