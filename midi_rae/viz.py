@@ -159,7 +159,7 @@ def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings
     device = enc_outs[0].patches[0].emb.device
     if encoder is not None: encoder.to('cpu')
     torch.cuda.empty_cache()
-    figs = []
+    figs = [] 
     for lev in range(enc_outs[0].patches.num_levels):
         emb, non_empty, file_idx, deltas = _gather_level(enc_outs, lev, batch=batch)
         lev_figs = {}
