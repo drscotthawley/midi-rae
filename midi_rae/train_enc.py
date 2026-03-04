@@ -89,14 +89,15 @@ class CurriculumSchedule():
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
 #@torch.compiler.disable
-def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, debug=False):
+def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_encoder=None, debug=False):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
-    #img1, img2, deltas = batch['img1'].to(device), batch['img2'].to(device), batch['deltas'].to(device)
     img1, img2, deltas = batch['img1'].to(device, non_blocking=True), batch['img2'].to(device, non_blocking=True), batch['deltas'].to(device, non_blocking=True)
 
-    enc_out1 = encoder(img1, mask_ratio=cfg.training.mask_ratio)
+    enc1_fn  = ema_encoder if ema_encoder is not None else encoder
+    enc_out1 = enc1_fn(img1, mask_ratio=cfg.training.mask_ratio)
     enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)
+
     loss_dict = {}
     recon_patches = None
     if mae_decoder is not None: # recon at finest scale
@@ -156,8 +157,9 @@ def train(cfg: DictConfig):
                            cfm.dim, cfm.depth, cfm.heads).to(device)
         mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
 
-    #mae_decoder = None # temp override 
+    if cfg.training.lambda_mae <=0: mae_decoder = None 
     cjprint("encoder, mae_decoder  =", encoder.__class__.__name__, mae_decoder.__class__.__name__,color="green")
+    ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every)
     params = list(encoder.parameters()) if mae_decoder is None else list(chain(encoder.parameters(), mae_decoder.parameters()))
     optimizer = torch.optim.AdamW(params, lr=cfg.training.lr)
     epoch_start = 1
@@ -201,13 +203,14 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder)
+                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder)
             #scaler.scale(loss_dict['loss']).backward()
             #scaler.step(optimizer)
             #scaler.update()
             loss_dict['loss'].backward()
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             optimizer.step()
+            if ema_encoder is not None: ema_encoder.update(encoder)
             train_loss += loss_dict['loss'].item()
             
         # At end of Epoch: validation, viz, etc
@@ -216,7 +219,7 @@ def train(cfg: DictConfig):
         with torch.no_grad():
             for batch in val_dl:
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder)
+                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder)
                 val_loss += val_loss_dict['loss'].item()
 
             train_loss /= len(train_dl)
@@ -225,9 +228,9 @@ def train(cfg: DictConfig):
             
             if wandb.run is not None: 
                 wandb.log({ 
-                    "train_loss":train_loss, "train_sim":loss_dict['sim'], "train_sigreg":loss_dict['sigreg'], "train_anchor":loss_dict['anchor'], 
+                    "train_loss":train_loss, "train_sim":loss_dict['sim'], "train_sigreg":loss_dict['sigreg'], "train_anchor":loss_dict.get('anchor',0), 
                     "train_mae": loss_dict.get('mae', 0),  "val_mae": val_loss_dict.get('mae', 0),
-                    "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict['anchor'],  
+                    "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict.get('anchor',0),  
                     "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
                     "lr": optimizer.param_groups[0]['lr'], "epoch": epoch,
                     **{f"levels/train_{k}_L{l}": v for l, ld in enumerate(loss_dict.get('levels', [])) for k, v in ld.items()},

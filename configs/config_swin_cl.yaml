@@ -24,11 +24,13 @@ training:
   max_shift_y: 12
   init_shift_x: 1
   init_shift_y: 1
-  lambda_mae: 0.01         # strength of mae loss term
+  lambda_mae: 0.0         # strength of mae loss term
   mask_ratio: 0.5         # between levels, ma
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
-  lambda_anchor: 0.01     # l2 loss on empty patch embeddings
+  lambda_anchor: 0.0     # l2 loss on empty patch embeddings
+  ema_eta: 0.99
+  ema_update_every: 1 
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 100 # 500
   dec_lr: 2e-3

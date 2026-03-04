@@ -110,7 +110,7 @@ def load_optimizer_state_partial(optimizer, ckpt_opt, device):
 # %% ../nbs/04_utils.ipynb #44938a52-0c59-4de8-90fe-97f4ab607632
 class EMAModel(nn.Module):
     """Exponential moving average wrapper for stable teacher-student training."""
-    def __init__(self, model, eta=0.995, update_every=5, dtype=torch.bfloat16):
+    def __init__(self, model, eta=0.99, update_every=1, dtype=torch.bfloat16):
         super().__init__()
         self.eta, self.update_every, self.dtype = eta, update_every, dtype
         self.register_buffer('_steps', torch.tensor(0))
@@ -126,6 +126,6 @@ class EMAModel(nn.Module):
             for b_ema, b in zip(self.ema.buffers(), model.buffers()):
                 b_ema.data.copy_(b.data.to(b_ema.data))  # buffers copy directly, no EMA
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         with torch.no_grad():
-            return self.ema(x)
+            return self.ema(x, **kwargs)
