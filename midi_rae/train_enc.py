@@ -236,7 +236,10 @@ def train(cfg: DictConfig):
                 if epoch % viz_every == 0:  
                     rprint("But here's some numbers  ","yellow")
                     cjprint("Sending visualization data",color="green")
-                    make_emb_viz(enc_outs, epoch=epoch, encoder=encoder, batch=batch)
+                    figs = make_emb_viz(enc_outs, epoch=epoch, encoder=encoder, batch=batch)
+                    del figs
+                    gc.collect()
+                    
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
                     viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
 

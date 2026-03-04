@@ -62,7 +62,7 @@ def cpu_pca_project(embeddings, n_components=3):
 # %% ../nbs/05_viz.ipynb #cf52f98b
 def pca_project(embeddings, **kwargs):
     "Calls GPU or CPU PCA based on availability"
-    if len(embeddings) < 2: return None
+    if len(embeddings) < 4: return None
     if embeddings.is_cuda:
         try: return cuml_pca_project(embeddings, **kwargs)
         except: return cpu_pca_project(embeddings, **kwargs)
@@ -169,7 +169,7 @@ def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings
         for mask, label in [(joint_non_empty, 'joint_non_empty'), (~non_empty, 'empty')]:
             if not mask.any(): continue
             rnd_emb, rnd_fi, rnd_d = _subsample(emb[mask], file_idx[mask], deltas[mask], max_points)
-            lev_figs[label] = _make_emb_viz(rnd_emb, epoch=epoch, title=f'{label} Level {lev} (dim={emb.shape[-1]}), {title}', file_idx=rnd_fi, deltas=rnd_d, do_umap=do_umap)
+            lev_figs[label] = _make_emb_viz(rnd_emb.cpu(), epoch=epoch, title=f'{label} Level {lev} (dim={emb.shape[-1]}), {title}', file_idx=rnd_fi, deltas=rnd_d, do_umap=do_umap)
         figs.append(lev_figs)
     if encoder is not None: encoder.to(device)
     return figs
