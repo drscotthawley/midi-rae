@@ -4,11 +4,14 @@
 
 # %% auto #0
 __all__ = ['cjprint', 'rprint', 'cchange', 'crevert', 'set_seed', 'save_checkpoint', 'load_checkpoint',
-           'load_optimizer_state_partial']
+           'load_optimizer_state_partial', 'EMAModel']
 
 # %% ../nbs/04_utils.ipynb #b96051a7
 import os 
 import torch
+import torch
+import torch.nn as nn
+from copy import deepcopy
 
 # %% ../nbs/04_utils.ipynb #a0ed4481-d65c-4d8c-abd8-bcefe291ed3f
 def cjprint(*args, color=None, justify="left", width=None, bright=True, revert=True, end=None):
@@ -67,7 +70,9 @@ def save_checkpoint(model, epoch, val_loss, cfg, optimizer=None, save_every=25, 
 
         mtag = f"{getattr(m, '_orig_mod', m).__class__.__name__}_{tag}"
         if epoch % save_every == 0:
-            if verbose: print(f"Saving checkpoint to checkpoints/{mtag}ckpt_epoch{epoch}.pt")
+            if verbose: 
+                print(f"Saving checkpoint to checkpoints/{mtag}ckpt_epoch{epoch}.pt")
+                rprint("Recall me maybe \n","yellow")
             torch.save(ckpt, f'checkpoints/{mtag}ckpt_epoch{epoch}.pt')
         if val_loss < save_checkpoint.best_val_loss:
             torch.save(ckpt, f'checkpoints/{mtag}_best.pt')
@@ -100,5 +105,27 @@ def load_optimizer_state_partial(optimizer, ckpt_opt, device):
         if i in ckpt_state:
             optimizer.state[param] = {
                 k: v.to(device) if torch.is_tensor(v) else v
-                for k, v in ckpt_state[i].items()
-            }
+                for k, v in ckpt_state[i].items() }
+
+# %% ../nbs/04_utils.ipynb #44938a52-0c59-4de8-90fe-97f4ab607632
+class EMAModel(nn.Module):
+    """Exponential moving average wrapper for stable teacher-student training."""
+    def __init__(self, model, eta=0.995, update_every=5, dtype=torch.bfloat16):
+        super().__init__()
+        self.eta, self.update_every, self.dtype = eta, update_every, dtype
+        self.register_buffer('_steps', torch.tensor(0))
+        self.ema = deepcopy(model).to(dtype)
+        for p in self.ema.parameters(): p.requires_grad_(False)
+
+    def update(self, model):
+        self._steps += 1
+        if self._steps % self.update_every != 0: return
+        with torch.no_grad():
+            for p_ema, p in zip(self.ema.parameters(), model.parameters()):
+                p_ema.data.mul_(self.eta).add_(p.data.to(p_ema.data), alpha=1 - self.eta)
+            for b_ema, b in zip(self.ema.buffers(), model.buffers()):
+                b_ema.data.copy_(b.data.to(b_ema.data))  # buffers copy directly, no EMA
+
+    def forward(self, x):
+        with torch.no_grad():
+            return self.ema(x)

@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import OneCycleLR
 import wandb
 from hydra import compose, initialize
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import hydra
 from .core import *
@@ -128,7 +129,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, debug
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def train(cfg: DictConfig):
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-    cjprint(f"config: {cfg}\ndevice = {device}",color="green")
+    cjprint(f"config file: {HydraConfig.get().job.config_name}\nconfig: {cfg}\ndevice = {device}",color="green")
     set_seed()
 
     manager = mp.Manager()
@@ -194,6 +195,7 @@ def train(cfg: DictConfig):
         encoder.train()
         train_loss = 0
         if cfg.training.get('init_shift_x',-1) > 0: 
+            curr_learn.step(epoch, optimizer)
             shared_ct_dict['training'] = curr_learn(shared_ct_dict, epoch)
         for batch in tqdm(train_dl, desc=f"Epoch {epoch}/{cfg.training.epochs}"):
             global_step += 1
@@ -241,7 +243,6 @@ def train(cfg: DictConfig):
         save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag="") # optimzer gets saved with mae_decoder, not encoder
 
         #scheduler.step()
-        curr_learn.step(epoch, optimizer)
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3
 #| eval: false
