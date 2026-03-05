@@ -53,7 +53,7 @@ def attraction_loss(z1, z2,        # embeddings of two "views" of the same thing
     #delta_fac = 1/(1 + delta_diag/tau)  # longer tail than exp
     if psize is not None:
         if freq_scale: delta_fac = delta_fac * math.sqrt((32./psize[0])*(32./psize[1]))  # joint-non-empty frequency normalization (scales per refinement)
-        if zero_outside_receptive_field: 
+        if zero_outside_receptive_field and psize[0]==4: 
             delta_fac[(deltas[:,0].abs() >= psize[0]) | (deltas[:,1].abs() >= psize[1])] = 0 # zero out cases where shift >= patch size 
         #delta_fac = (1 - deltas[:,0].abs()/psize[0]).clamp(min=0) * (1 - deltas[:,1].abs()/psize[1]).clamp(min=0)  # "overlap weighting": bilinear falloff (to zero if shift >= psize)
     return safe_mean( (z1 - z2).square() * delta_fac.unsqueeze(-1) )
@@ -72,10 +72,12 @@ def attraction_loss_new(z1, z2,        # embeddings of two "views" of the same t
     return safe_mean( (dist - margin).clamp(min=0).square() )
 
 # %% ../nbs/03_losses.ipynb #624570b6
-def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None, psize=None): 
+def LeJEPA(z1, z2, global_step, lambd=0.5, deltas=None, psize=None, sigreg_on_both=True): 
     "Main LeJEPA loss function"
     sim = attraction_loss(z1, z2, deltas=deltas, psize=psize)
-    sigreg = SIGReg( torch.cat((z1, z2), dim=0), global_step ) * 0.5 # "normalize" to similar scale as sim (by hand :shrug:)
+    # design decision! ignore z1 and just use z2, to make things more consistent when A/B'ing the use of the EMA encoder.
+    torch.cat((z1, z2), dim=0) if (z1.requires_grad and z2.requires_grad) else z2
+    sigreg = SIGReg( z2, global_step ) * 0.5 # "normalize" to similar scale as sim (by hand :shrug:)
     return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.item(), 'sigreg':sigreg.item()}
 
 # %% ../nbs/03_losses.ipynb #34ecc897

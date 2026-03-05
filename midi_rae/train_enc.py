@@ -57,17 +57,22 @@ from bisect import bisect_right
 
 class CurriculumSchedule(): 
     "Manage curriculum learning for shifts in pitch and time."
-    def __init__(self, cfg, intervals=None): 
+    def __init__(self, cfg, intervals=None, verbose=True): 
         self.cfg = cfg
         self.max_shifts_x = list(range(cfg.training.init_shift_x, cfg.training.max_shift_x+1))
         self.max_shifts_y = list(range(cfg.training.init_shift_y, cfg.training.max_shift_y+1))
-        if intervals is None: self.intervals = [100, 25, 40, 40, 40, 25, 40, 40, 40, 20, 20, 20]
+        #if intervals is None: self.intervals = [100, 25, 40, 40, 40, 25, 40, 40, 40, 20, 20, 20]
+        if intervals is None: self.intervals = [20, 10, 10, 20, 20, 20, 20, 10, 10, 10, 10, 10]
         elif not isinstance(intervals, (tuple, list)): self.intervals = [intervals]*12 # :shrug: 
         else: self.intervals = intervals
         self.epoch_bounds = []        
         _t = 1 # my epochs start at 1 not zero. shouldn't matter but so it is. 
         for n in self.intervals:
             _t += n; self.epoch_bounds.append(_t)
+        if verbose:
+            cjprint("CurriculumSchedule:", color="magenta")
+            cjprint(f"max_shifts_x: {'  '.join(f'{v:3d}' for v in self.max_shifts_x)}", color="magenta")
+            cjprint(f"epoch bounds: {'  '.join(f'{v:3d}' for v in self.epoch_bounds)}", color="magenta")
         self.prev_stage = -1  # for lr schedling 
 
     def __call__(self, shared_ct_dict, epoch, verbose=False):
@@ -129,6 +134,8 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
 # %% ../nbs/06_train_enc.ipynb #69be248f-4310-4da7-81f2-826063804f8d
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def train(cfg: DictConfig):
+    dict_test = dict(cfg) # force resolution of required fields (e.g. tag=???)
+    
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     cjprint(f"config file: {HydraConfig.get().job.config_name}\nconfig: {cfg}\ndevice = {device}",color="green")
     set_seed()
@@ -158,8 +165,9 @@ def train(cfg: DictConfig):
         mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
 
     if cfg.training.lambda_mae <=0: mae_decoder = None 
-    cjprint("encoder, mae_decoder  =", encoder.__class__.__name__, mae_decoder.__class__.__name__,color="green")
-    ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every)
+    ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every) if cfg.training.ema_eta > 0 else None
+    cjprint("encoder, mae_decoder, ema_encoder =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, color="green")
+
     params = list(encoder.parameters()) if mae_decoder is None else list(chain(encoder.parameters(), mae_decoder.parameters()))
     optimizer = torch.optim.AdamW(params, lr=cfg.training.lr)
     epoch_start = 1
@@ -187,6 +195,7 @@ def train(cfg: DictConfig):
         wandb.init(project=cfg.wandb.project, config=dict(cfg))
         wandb.define_metric("epoch")
         wandb.define_metric("*", step_metric="epoch")
+        wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
 
     # Training loop
     global_step = (epoch_start - 1) * len(train_dl)
@@ -247,7 +256,7 @@ def train(cfg: DictConfig):
                     viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
 
         save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag="") # optimzer gets saved with mae_decoder, not encoder
-
+        freemem()
         #scheduler.step()
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3
