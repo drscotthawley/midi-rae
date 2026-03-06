@@ -280,7 +280,7 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=
     if wandb.run is not None:
         wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"),
                       'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch': epoch}
-        if return_maps: wandb_dict = wandb_dict | {'map': wandb.Image(grid_map, caption=f"Epoch {epoch}") }
+        if return_maps: wandb_dict = wandb_dict | {'map': wandb.Image(grid_map, caption=f"Epoch {epoch}, Red=FP, Yellow=FN") }
         if img_recon_noreplace is not None:
             grid_raw = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
             wandb_dict = wandb_dict | {'raw': wandb.Image(grid_raw, caption=f"Epoch {epoch}")}

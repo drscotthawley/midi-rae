@@ -186,10 +186,15 @@ def train(cfg: DictConfig):
         for i, stage in enumerate(encoder.stages):
             encoder.stages[i] = torch.compile(stage, mode="default")
     epoch_start = 1 # temp for now
-    #scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
-    #                    **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
-    curr_learn = CurriculumSchedule(cfg)
+    if cfg.training.get('init_shift_x',-1) > 0:
+        curr_learn = CurriculumSchedule(cfg)
+        scheduler = False  # let curr_learn handle schedulers
+    else:
+        curr_learn = None
+        scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
+                               **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
     #scaler = torch.amp.GradScaler(device)
+
     
     if not(cfg.get('no_wandb', False)): 
         wandb.init(project=cfg.wandb.project, config=dict(cfg))
@@ -205,7 +210,7 @@ def train(cfg: DictConfig):
         if wandb.run is not None: wandb.log({"epoch": epoch})
         encoder.train()
         train_loss = 0
-        if cfg.training.get('init_shift_x',-1) > 0: 
+        if curr_learn is not None: 
             curr_learn.step(epoch, optimizer)
             shared_ct_dict['training'] = curr_learn(shared_ct_dict, epoch)
         for batch in tqdm(train_dl, desc=f"Epoch {epoch}/{cfg.training.epochs}"):
@@ -253,11 +258,12 @@ def train(cfg: DictConfig):
                     gc.collect()
                     
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
-                    viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
-
-        save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag="") # optimzer gets saved with mae_decoder, not encoder
+                    eval_tup =viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
+                    del eval_tup
+                    gc.collect()
+        save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag) # optimzer gets saved with mae_decoder, not encoder
         freemem()
-        #scheduler.step()
+        if scheduler is not None: scheduler.step()
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3
 #| eval: false
