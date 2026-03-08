@@ -25,15 +25,17 @@ from hydra import compose, initialize
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import hydra
+import time 
+import gc 
+from tqdm.auto import tqdm
+
 from .core import *
 from .utils import *
 from .vit import ViTEncoder, LightweightMAEDecoder
 from .swin import SwinEncoder, SwinMAEDecoder
-from .data import PRPairDataset
+from .data import PRPairDataset, ShiftedTripletDataset
 from .losses import calc_enc_loss, calc_mae_loss, calc_enc_loss_multiscale
 from .viz import make_emb_viz, viz_mae_recon
-from tqdm.auto import tqdm
-import gc
 
 # %% ../nbs/06_train_enc.ipynb #98edfbef
 #  Tuning for PyTorch and others
@@ -97,11 +99,17 @@ class CurriculumSchedule():
 def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_encoder=None, debug=False):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
+    
     img1, img2, deltas = batch['img1'].to(device, non_blocking=True), batch['img2'].to(device, non_blocking=True), batch['deltas'].to(device, non_blocking=True)
 
     enc1_fn  = ema_encoder if ema_encoder is not None else encoder
-    enc_out1 = enc1_fn(img1, mask_ratio=cfg.training.mask_ratio)
-    enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)
+    enc_out1 = enc1_fn(img1, mask_ratio=cfg.training.mask_ratio)    # with ema on, output 1 gets no gradients
+    enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)            # output 2 always  gets gradients.
+    enc_out3 = None
+    if 'img3' in batch:
+        img3, target  = batch['img3'].to(device, non_blocking=True),  batch['target'].to(device, non_blocking=True)
+        enc_out3 = encoder(img3, mae_mask=enc_out1.mae_mask)        # output 3 gets no gradients, to save VRAM
+
 
     loss_dict = {}
     recon_patches = None
@@ -116,20 +124,23 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
     if isinstance(enc_out1.patches, HierarchicalPatchState):
         z1 = [lvl.emb for lvl in enc_out1.patches.levels]
         z2 = [lvl.emb for lvl in enc_out2.patches.levels]
-        non_emptys = [(l1.non_empty, l2.non_empty) for l1, l2 in zip(enc_out1.patches.levels, enc_out2.patches.levels)]
+        z3 = [lvl.emb for lvl in enc_out3.patches.levels] if enc_out3 is not None else None
+        non_emptys = [(l1.non_empty, l2.non_empty, l3.non_empty) for l1, l2, l3 in zip(enc_out1.patches.levels, enc_out2.patches.levels, enc_out3.patches.levels)]
     else:
         z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
         z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
-        non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty)
+        z3 = enc_out3.patches.all_emb.reshape(-1, enc_out3.patches[1].dim) if enc_out3 is not None else None
+        non_emtptys =  (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty, enc_out3.patches.all_non_empty)
 
-    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, img_size=cfg.data.image_size, deltas=deltas, 
-                lambd=cfg.training.lambd, non_emptys=non_emptys, lambda_anchor=cfg.training.get('lambda_anchor',0.05))
+    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, z3, global_step, img_size=cfg.data.image_size, deltas=deltas, target=target,
+                non_emptys=non_emptys, lambd=cfg.training.lambd, 
+                lambda_anchor=cfg.training.get('lambda_anchor',0.05),  lambda_fact=cfg.training.get('lambda_fact',0.5) )
 
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('lambda_mae', 1.0) * loss_dict['mae']
     if torch.isnan(loss_dict['loss']):
         cjprint("*** NaN detected! ***", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()}, color="red")
         breakpoint()
-    return loss_dict, (z1, z2), (enc_out1, enc_out2), recon_patches
+    return loss_dict, (z1, z2, z3), (enc_out1, enc_out2, enc_out3), recon_patches
 
 # %% ../nbs/06_train_enc.ipynb #69be248f-4310-4da7-81f2-826063804f8d
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -143,10 +154,10 @@ def train(cfg: DictConfig):
     manager = mp.Manager()
     shared_ct_dict = manager.dict(OmegaConf.to_container(cfg))
     
-    train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
-    val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
-    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=8, drop_last=True, pin_memory=True, persistent_workers=True)
-    val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True)
+    train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+    val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=8, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
     # setup models
     cfm = cfg.model 
@@ -166,8 +177,9 @@ def train(cfg: DictConfig):
 
     if cfg.training.lambda_mae <=0: mae_decoder = None 
     ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every) if cfg.training.ema_eta > 0 else None
-    cjprint("encoder, mae_decoder, ema_encoder =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, color="green")
-
+    cjprint("encoder, mae_decoder, ema_encoder =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, color="cyan")
+    cjprint(f"Encoder Total, Trainable: {param_count(encoder)}",color="cyan")
+    
     params = list(encoder.parameters()) if mae_decoder is None else list(chain(encoder.parameters(), mae_decoder.parameters()))
     optimizer = torch.optim.AdamW(params, lr=cfg.training.lr)
     epoch_start = 1
@@ -225,7 +237,7 @@ def train(cfg: DictConfig):
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             optimizer.step()
             if ema_encoder is not None: ema_encoder.update(encoder)
-            train_loss += loss_dict['loss'].item()
+            train_loss += loss_dict['loss'].detach()
             
         # At end of Epoch: validation, viz, etc
         encoder.eval()
@@ -242,8 +254,9 @@ def train(cfg: DictConfig):
             
             if wandb.run is not None: 
                 wandb.log({ 
-                    "train_loss":train_loss, "train_sim":loss_dict['sim'], "train_sigreg":loss_dict['sigreg'], "train_anchor":loss_dict.get('anchor',0), 
-                    "train_mae": loss_dict.get('mae', 0),  "val_mae": val_loss_dict.get('mae', 0),
+                    "train_loss":train_loss, "train_sim":loss_dict['sim'].item(), "train_sigreg":loss_dict['sigreg'].item(), "train_anchor":loss_dict.get('anchor',0),
+                    "train_fact":loss_dict['fact'].item(), "val_fact": val_loss_dict['fact'].item(),
+                    "train_mae": loss_dict.get('mae', 0).item(),  "val_mae": val_loss_dict.get('mae', 0),
                     "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict.get('anchor',0),  
                     "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
                     "lr": optimizer.param_groups[0]['lr'], "epoch": epoch,

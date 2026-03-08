@@ -75,7 +75,7 @@ def setup_dataloaders(cfg, preencoded=False):
     return train_dl, val_dl 
 
 # %% ../nbs/09_train_dec.ipynb #b221cde1
-def setup_models(cfg, device, preencoded): 
+def setup_models(cfg, device, preencoded, verbose=True): 
     encoder = None
     if not preencoded:
         if cfg.model.get('encoder', 'vit') == 'swin':
@@ -108,7 +108,10 @@ def setup_models(cfg, device, preencoded):
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
     #encoder = torch.compile(encoder)  # takes too long, doesn't speed up much
     #decoder = torch.compile(decoder)
-    print("\n** Models:",encoder.__class__.__name__, decoder.__class__.__name__)
+    if verbose:
+        cjprint("\n** Models:",encoder.__class__.__name__, decoder.__class__.__name__, color="cyan")
+        cjprint(f"Decoder Total, Trainable: {', '.join(f'{x:,}' for x in param_count(decoder))}", color="cyan")
+    
     return encoder, decoder 
 
 # %% ../nbs/09_train_dec.ipynb #61dd1ef1

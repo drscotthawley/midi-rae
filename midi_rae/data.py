@@ -172,8 +172,8 @@ class PRPairDataset(Dataset):
         }
 
 # %% ../nbs/01_data.ipynb #13ba9ffc-51c2-4b85-b357-4e1ea53e0a23
-SCHEME_NAMES = {0: 'pitch-pitch', 1: 'time-time', 2: 'pitch-time'}
-TARGET_NAMES = {1.0: 'parallel', -1.0: 'anti-parallel', 0.0: 'orthogonal'}
+SCHEME_NAMES = {  0: 'pitch-pitch',    1: 'time-time',        2: 'pitch-time'}
+TARGET_NAMES = {1.0: 'parallel',    -1.0: 'anti-parallel',  0.0: 'orthogonal'}
 
 class ShiftedTripletDataset(AnchorDataset):
     """Piano roll triplet dataset inheriting from AnchorDataset."""
@@ -188,14 +188,18 @@ class ShiftedTripletDataset(AnchorDataset):
         self.max_shift_x, self.max_shift_y = max_shift_x, max_shift_y
         self.shared = shared
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, requested_scheme=None, requested_target=None):
         # --- sample shifts sx1, sy1, sx2, sy2 from distribution
         msx = self.shared['training']['max_shift_x'] if self.shared else self.max_shift_x
         msy = self.shared['training']['max_shift_y'] if self.shared else self.max_shift_y
         while True:
-            scheme = torch.randint(0, 3, (1,)).item()
+            scheme = torch.randint(0, 3, (1,)).item() if requested_scheme is None else int(requested_scheme)
+            if requested_target is not None and requested_target != 0: scheme = torch.randint(0, 2, (1,)).item()
             sign1 = 1 if torch.rand(1) > 0.5 else -1
-            sign2 = 1 if torch.rand(1) > 0.5 else -1
+            if requested_target is None: 
+                sign2 = 1 if torch.rand(1) > 0.5 else -1
+            else: 
+                sign2 = sign1 * int(requested_target)
             if scheme == 0:    
                 s1 = abs(sample_shift(msy, self.sigma)) or 1  # 0's are handled explicitly below according to scheme
                 s2 = abs(sample_shift(msy, self.sigma)) or 1
@@ -208,8 +212,10 @@ class ShiftedTripletDataset(AnchorDataset):
                 s1 = abs(sample_shift(msy, self.sigma)) or 1
                 s2 = abs(sample_shift(msx, self.sigma)) or 1
                 dy1, dx1, dy2, dx2 = sign1*s1, 0, 0, sign2*s2 # first one y, second one x
-            if not ((dy1==dy2) and (dx1==dx2)): break 
+            if not ((dy1==dy2) and (dx1==dx2)) and not (dx1==0 and dy1==0) and not (dx2==0 and dy2==0): break 
         target = float(np.sign(sign1 * sign2)) if scheme < 2 else 0.0   
+        if requested_target is not None and torch.abs(target-requested_target) > 1e-3: 
+            raise UserWarning(f"Warning: requested_target = {requested_target}, but got target = {target}")
         # --- Now we know what shifts we want to do, next let's construct the crops.
 
         # obtain the wider anchor, with sufficient padding later crops
@@ -228,5 +234,5 @@ class ShiftedTripletDataset(AnchorDataset):
         return {
             'img1': img, 'img2': c1, 'img3': c2,
             'deltas': torch.tensor([[dy1,dx1],[dy2,dx2]], dtype=torch.int),
-            'file_idx': anchor['file_idx'], 'scheme': scheme, 'target': target,
+            'file_idx': anchor['file_idx'], 'scheme': scheme, 'target': torch.tensor(target),
         }

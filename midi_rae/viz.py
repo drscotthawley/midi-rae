@@ -151,7 +151,7 @@ def _gather_level(enc_outs,        # list of encoder outputs
 
     if batch is None: return emb.reshape(-1, edim), non_empty, joint_non_empty,  None, None  # (BT*N, edim), (BT*N,), (BT*N,), where BT = B*n_eo    
     file_idx = batch['file_idx'].repeat(n_eo).repeat_interleave(N).to(device)
-    deltas = batch['deltas'].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
+    deltas = batch['deltas'][:, 0, :].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
     return emb.reshape(-1, edim), non_empty,  joint_non_empty, file_idx, deltas     # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,), (BT*N,2)
 
 # %% ../nbs/05_viz.ipynb #a64048f1
