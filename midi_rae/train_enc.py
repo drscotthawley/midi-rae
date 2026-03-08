@@ -187,24 +187,28 @@ def train(cfg: DictConfig):
         ckpt_path =  cfg.get('checkpoint',None)
         encoder, ckpt = load_checkpoint(encoder, ckpt_path, return_all=True)
         #optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        try: mae_decoder, ckpt = load_checkpoint(mae_decoder, ckpt_path.replace('Encoder','MAEDecoder'), return_all=True)
+        except: pass
         load_optimizer_state_partial(optimizer, ckpt['optimizer_state_dict'], device)
         epoch_start = ckpt['epoch'] + 1 # next epoch after the one completed in thecheckpoint
-        try: mae_decoder = load_checkpoint(mae_decoder, ckpt_path.replace('enc_','maedec_'), return_all=False)
-        except: pass
-
+    print("epoch_start =",epoch_start)
+    
     if cfm.get('encoder', 'vit') == 'vit': 
         encoder = torch.compile(encoder, dynamic=True)
     elif False: #  swin compilation takes a while and is fraught with difficulty :-( 
         for i, stage in enumerate(encoder.stages):
             encoder.stages[i] = torch.compile(stage, mode="default")
-    epoch_start = 1 # temp for now
     if cfg.training.get('init_shift_x',-1) > 0:
         curr_learn = CurriculumSchedule(cfg)
         scheduler = False  # let curr_learn handle schedulers
     else:
         curr_learn = None
-        scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
-                               **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
+        #scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
+        #                       **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
+    scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5)
+    for _ in range(epoch_start - 1):
+        scheduler.step()
+
     #scaler = torch.amp.GradScaler(device)
 
     
