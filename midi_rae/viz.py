@@ -138,10 +138,11 @@ def _gather_level(enc_outs,        # list of encoder outputs
     eo0     = enc_outs[0]                     # used for info that's the same for all enc_outs
     edim    = eo0.patches[lev].dim            # embedding dimensions at this level
     N       = eo0.patches[lev].num_patches    # num patch tokens at this level
-    n_eo    = len(enc_outs)                   # num encoder outs (e.g. 2)
+    n_eo = sum(eo is not None for eo in enc_outs)  # num of non_none encoder outs (e.g. 2)
     device  = eo0.patches[lev].emb.device     # assume same device for all eo's
     emb, non_empty, joint_non_empty = [], [], None
     for eo in enc_outs: 
+        if eo is None: continue
         emb.append( eo.patches[lev].emb )  
         this_ne = eo.patches[lev].non_empty.bool() 
         non_empty.append( this_ne )
@@ -151,7 +152,9 @@ def _gather_level(enc_outs,        # list of encoder outputs
 
     if batch is None: return emb.reshape(-1, edim), non_empty, joint_non_empty,  None, None  # (BT*N, edim), (BT*N,), (BT*N,), where BT = B*n_eo    
     file_idx = batch['file_idx'].repeat(n_eo).repeat_interleave(N).to(device)
-    deltas = batch['deltas'][:, 0, :].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
+    deltas = batch['deltas']
+    if deltas.dim() == 2: deltas = deltas.unsqueeze(1)
+    deltas = deltas[:, 0, :].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
     return emb.reshape(-1, edim), non_empty,  joint_non_empty, file_idx, deltas     # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,), (BT*N,2)
 
 # %% ../nbs/05_viz.ipynb #a64048f1
