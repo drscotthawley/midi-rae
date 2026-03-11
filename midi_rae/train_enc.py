@@ -32,9 +32,9 @@ from tqdm.auto import tqdm
 from .core import *
 from .utils import *
 from .vit import ViTEncoder, LightweightMAEDecoder
-from .swin import SwinEncoder, SwinMAEDecoder
+from .swin import *
 from .data import PRPairDataset, ShiftedTripletDataset
-from .losses import calc_enc_loss, calc_mae_loss, calc_enc_loss_multiscale
+from .losses import safe_mean, calc_enc_loss, calc_mae_loss, calc_enc_loss_multiscale
 from .viz import make_emb_viz, viz_mae_recon
 
 # %% ../nbs/06_train_enc.ipynb #98edfbef
@@ -96,20 +96,21 @@ class CurriculumSchedule():
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
 #@torch.compiler.disable
-def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_encoder=None, debug=False):
+def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_encoder=None, mep_model=None, debug=False):
     "Compute loss and return other exal auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
     
-    img1, img2, deltas = batch['img1'].to(device, non_blocking=True), batch['img2'].to(device, non_blocking=True), batch['deltas'].to(device, non_blocking=True)
+    img1, img2, deltas = [batch[x].to(device, non_blocking=True) for x in ['img1','img2','deltas']]
+    img3, target = None, None
+    if 'img3' in batch and cfg.training.get('lambda_fact',0) > 0:
+        img3, target  = [batch[x].to(device, non_blocking=True) for x in ['img3','target']]
 
-    enc1_fn  = ema_encoder if ema_encoder is not None else encoder
-    enc_out1 = enc1_fn(img1, mask_ratio=cfg.training.mask_ratio)    # with ema on, output 1 gets no gradients
+    enc1_fn  = ema_encoder if ema_encoder is not None else encoder   # with ema on, output 1 gets no gradients
+    enc_out1 = enc1_fn(img1, mask_ratio=(cfg.training.mask_ratio if mae_decoder is not None else 0))  
     enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)            # output 2 always  gets gradients.
     enc_out3 = None
-    if 'img3' in batch:
-        img3, target  = batch['img3'].to(device, non_blocking=True),  batch['target'].to(device, non_blocking=True)
-        enc_out3 = encoder(img3, mae_mask=enc_out1.mae_mask)        # output 3 gets no gradients, to save VRAM
-
+    if 'img3' in batch and cfg.training.get('lambda_fact',0) > 0:
+        enc_out3 = encoder(img3, mae_mask=enc_out1.mae_mask)        
 
     loss_dict = {}
     recon_patches = None
@@ -124,19 +125,39 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
     if isinstance(enc_out1.patches, HierarchicalPatchState):
         z1 = [lvl.emb for lvl in enc_out1.patches.levels]
         z2 = [lvl.emb for lvl in enc_out2.patches.levels]
-        z3 = [lvl.emb for lvl in enc_out3.patches.levels] if enc_out3 is not None else None
-        non_emptys = [(l1.non_empty, l2.non_empty, l3.non_empty) for l1, l2, l3 in zip(enc_out1.patches.levels, enc_out2.patches.levels, enc_out3.patches.levels)]
+        if enc_out3 is not None:
+            z3 = [lvl.emb for lvl in enc_out3.patches.levels]  
+            non_emptys = [(l1.non_empty, l2.non_empty, l3.non_empty) for l1, l2, l3 in zip(enc_out1.patches.levels, enc_out2.patches.levels, enc_out3.patches.levels)]
+        else:
+            z3 = None
+            l3_iter = enc_out3.patches.levels if enc_out3 is not None else [None] * len(enc_out1.patches.levels)
+            non_emptys = [(l1.non_empty, l2.non_empty, l3) for l1, l2, l3  in zip(enc_out1.patches.levels, enc_out2.patches.levels, l3_iter)]
     else:
         z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
         z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
         z3 = enc_out3.patches.all_emb.reshape(-1, enc_out3.patches[1].dim) if enc_out3 is not None else None
         non_emtptys =  (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty, enc_out3.patches.all_non_empty)
 
-    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, z3, global_step, img_size=cfg.data.image_size, deltas=deltas, target=target,
+    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, cfg.data.image_size,  z3=z3, deltas=deltas, target=target,
                 non_emptys=non_emptys, lambd=cfg.training.lambd, 
                 lambda_anchor=cfg.training.get('lambda_anchor',0.05),  lambda_fact=cfg.training.get('lambda_fact',0.5) )
 
+    if mep_model is not None and ema_encoder is not None:           # late addition: Masked Embedding Predictor, across all levels. 
+        assert mae_decoder is None, "You can either do MAE or MEP, not both -- Need to save VRAM"  # If you want to run both, run image two through the encoder again, but with no MAE mask. It'll just add to VRAM. 
+        mep_target = ema_encoder(img2)
+        emb_pred, masks = mep_model(enc_out2)  # predict from masked-input enc_out2, what the comparable embeddings are in enc_out1        
+        total_mep_loss = 0
+        for lev, (emb, mask) in enumerate(zip(emb_pred, masks)): 
+            mep_target_lvl = mep_target.patches[lev].emb.detach()    
+            mep_loss = safe_mean((emb[~mask] - mep_target_lvl[~mask])**2)  # mask=0 means masked ,  mean across each level
+            loss_dict['levels'][lev]['mep'] = mep_loss.item()          # keep per-level info for logging 
+            total_mep_loss = total_mep_loss + mep_loss
+        total_mep_loss = total_mep_loss / enc_out2.patches.num_levels  # average over levels
+        loss_dict['mep'] = total_mep_loss 
+        
     if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('lambda_mae', 1.0) * loss_dict['mae']
+    if 'mep' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('lambda_mep', 1.0) * loss_dict['mep']
+
     if torch.isnan(loss_dict['loss']):
         cjprint("*** NaN detected! ***", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()}, color="red")
         breakpoint()
@@ -153,31 +174,37 @@ def train(cfg: DictConfig):
 
     manager = mp.Manager()
     shared_ct_dict = manager.dict(OmegaConf.to_container(cfg))
-    
-    train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
-    val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+
+    if cfg.training.lambda_fact > 0: 
+        train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+        val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+    else:
+        train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+        val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
+
     train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=8, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
     val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
     # setup models
     cfm = cfg.model 
     patch_size = cfm.get('patch_size', cfm.get('patch_h', 16))
-    dim = cfm.get('dim', cfm.get('embed_dim', 256))    
+    dim = cfm.get('dim', cfm.get('embed_dim', 256))   
+    
+    mae_decoder, ema_encoder, mep_model = None, None, None
     if cfm.get('encoder', 'vit') == 'swin':
-        from midi_rae.swin import SwinEncoder
+        dims = tuple(cfm.embed_dim * 2**i for i in range(len(cfm.depths)-1, -1, -1))
         encoder = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size, patch_h=cfm.patch_h, patch_w=cfm.patch_w,
                             embed_dim=cfm.embed_dim, depths=cfm.depths, num_heads=cfm.num_heads, window_size=cfm.window_size,
                             mlp_ratio=cfm.mlp_ratio, drop_path_rate=cfm.drop_path_rate).to(device)
-        dims = tuple(cfm.embed_dim * 2**i for i in range(len(cfm.depths)-1, -1, -1))
-        mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
+        if cfg.training.lambda_mae > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
+        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims).to(device)
     else:
         encoder = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfm.patch_size, 
                            cfm.dim, cfm.depth, cfm.heads).to(device)
-        mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
-
-    if cfg.training.lambda_mae <=0: mae_decoder = None 
+        if cfg.training.lambda_mae <=0: mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
+        
     ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every) if cfg.training.ema_eta > 0 else None
-    cjprint("encoder, mae_decoder, ema_encoder =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, color="cyan")
+    cjprint("encoder, mae_decoder, ema_encoder, mep_model =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, mep_model.__class__.__name__, color="cyan")
     cjprint(f"Encoder Total, Trainable: {param_count(encoder)}",color="cyan")
     
     params = list(encoder.parameters()) if mae_decoder is None else list(chain(encoder.parameters(), mae_decoder.parameters()))
@@ -233,7 +260,7 @@ def train(cfg: DictConfig):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder)
+                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder, mep_model=mep_model)
             #scaler.scale(loss_dict['loss']).backward()
             #scaler.step(optimizer)
             #scaler.update()
@@ -249,7 +276,7 @@ def train(cfg: DictConfig):
         with torch.no_grad():
             for batch in val_dl:
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder)
+                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder, mep_model=mep_model)
                 val_loss += val_loss_dict['loss'].item()
 
             train_loss /= len(train_dl)
@@ -257,16 +284,15 @@ def train(cfg: DictConfig):
             print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
             
             if wandb.run is not None: 
-                wandb.log({ 
-                    "train_loss":train_loss, "train_sim":loss_dict['sim'].item(), "train_sigreg":loss_dict['sigreg'].item(), "train_anchor":loss_dict.get('anchor',0),
-                    "train_fact":loss_dict['fact'].item(), "val_fact": val_loss_dict['fact'].item(),
-                    "train_mae": loss_dict.get('mae', 0).item(),  "val_mae": val_loss_dict.get('mae', 0),
-                    "val_loss":val_loss, "val_sim":val_loss_dict['sim'], "val_sigreg":val_loss_dict['sigreg'], "val_anchor":val_loss_dict.get('anchor',0),  
-                    "max_shift_x":shared_ct_dict['training']['max_shift_x'], "max_shift_y":shared_ct_dict['training']['max_shift_y'],
-                    "lr": optimizer.param_groups[0]['lr'], "epoch": epoch,
-                    **{f"levels/train_{k}_L{l}": v for l, ld in enumerate(loss_dict.get('levels', [])) for k, v in ld.items()},
-                    **{f"levels/val_{k}_L{l}": v for l, ld in enumerate(val_loss_dict.get('levels', [])) for k, v in ld.items()},
-                })
+                log = {"lr": optimizer.param_groups[0]['lr'], "epoch": epoch,  "max_shift_x": shared_ct_dict['training']['max_shift_x'], "max_shift_y": shared_ct_dict['training']['max_shift_y']}
+                for prefix, ld in [("train", loss_dict), ("val", val_loss_dict)]:
+                    for k in ('loss', 'sim', 'sigreg', 'anchor', 'fact', 'mae', 'mep'):
+                        log[f"{prefix}_{k}"] = to_scalar(ld.get(k, 0))
+                    for l, lvl in enumerate(ld.get('levels', [])):
+                        for k, v in lvl.items():
+                            log[f"levels/{prefix}_{k}_L{l}"] = to_scalar(v)
+                wandb.log(log)
+                
                 if epoch % viz_every == 0:  
                     rprint("But here's some numbers  ","yellow")
                     cjprint("Sending visualization data",color="green")
