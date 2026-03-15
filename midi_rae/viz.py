@@ -210,6 +210,7 @@ def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings
     "this is the main viz routine, showing different groups of embeddings"
     if not isinstance(enc_outs, (list, tuple)): enc_outs = [enc_outs]
     device = enc_outs[0].patches[0].emb.device
+    enc_outs = [eo for eo in enc_outs if eo is not None]
     n_eo = sum(eo is not None for eo in enc_outs)  # num of non_none encoder outs (e.g. 2)
     if encoder is not None: encoder.to('cpu')
     torch.cuda.empty_cache()
