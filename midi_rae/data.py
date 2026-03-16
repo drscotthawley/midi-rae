@@ -85,7 +85,7 @@ class AnchorDataset(Dataset):
             img = Image.open(f).convert('L')  # grayscale
             img =  (np.array(img, dtype=np.uint8) > 0).astype(np.uint8) # binary uint8
             self.images.append(img)
-            self.note_weights.append(note_length_weights(img))
+            self.note_weights.append(note_length_weights(img).astype(np.float16)) # float16 saves system RAM, autocasts to bfloat16 later
         if verbose: print(f"Finished loading.")
 
     def __len__(self):
