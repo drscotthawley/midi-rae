@@ -7,6 +7,8 @@ __all__ = ['PreEncodedDataset', 'setup_dataloaders', 'setup_models', 'setup_tsta
            'train']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
+import sys
+sys.dont_write_bytecode = True  # I'm getting burned sometimes when it reuses stale PYC files.
 import os
 os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:torch._inductor"
@@ -87,9 +89,10 @@ def setup_models(cfg, device, preencoded, verbose=True):
         else:
             encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
                                  cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
+            
         encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', f'checkpoints/{encoder.__class__.__name__}__best.pt'))
         if cfg.training.get('enc_ft_lr', 0) <=0: 
-            cjprint("Freezing Encoder ❄️❄️❄️",color='blue')
+            cjprint("Freezing Encoder ❄️ ❄️ ❄️",color='blue')
             encoder.eval()  # frozen
             for p in encoder.parameters(): p.requires_grad = False
         else: 
@@ -106,6 +109,8 @@ def setup_models(cfg, device, preencoded, verbose=True):
         decoder = ViTDecoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size),
                          cfg.model.patch_size, cfg.model.dim, 
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
+
+
     #encoder = torch.compile(encoder)  # takes too long, doesn't speed up much
     #decoder = torch.compile(decoder)
     if verbose:
@@ -119,7 +124,7 @@ def setup_tstate(cfg, device, decoder, encoder=None):
     "Training_state: Losses, Optimizers, Schedulers, AMP Scalers"
     opt_enc = None #if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
     opt_dec = torch.optim.AdamW(decoder.parameters(), lr=cfg.training.dec_lr)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs, div_factor=5)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs, div_factor=4)
     scheduler_enc = None if opt_enc is None else torch.optim.lr_scheduler.OneCycleLR(opt_enc, max_lr=cfg.training.enc_ft_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs))   
     scaler_dec = torch.amp.GradScaler()
     TrainState = namedtuple('TrainState', ['opt_enc', 'opt_dec',  'scaler_dec','scheduler','scheduler_enc'])
@@ -129,12 +134,13 @@ def setup_tstate(cfg, device, decoder, encoder=None):
 def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda', allow_grad=False):
     if preencoded:
         z, pos, img = batch
-        return z.to(device), pos.to(device), img.to(device)
+        return z.to(device), pos.to(device), img.to(device), None
     elif encoder is not None:
         img = batch['img'].to(device)
+        note_weights = batch['note_weights'].to(device) if 'note_weights' in batch else None
         with (nullcontext() if allow_grad else torch.no_grad()), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 enc_out = encoder(img)
-        return enc_out, img
+        return enc_out, img, note_weights
     else: 
         raise ValueError("get_embeddings_batch: Need either preencoded data or encoder.")
 
@@ -142,19 +148,19 @@ def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda', a
 def train_step(epoch, enc_out, img_real, decoder, 
             tstate,  # named tuple containing optimizers, loss fns, scalers 
             cfg,    # config
+            note_weights=None,
             ): 
     "training step for decoder"
     decoder.train()
     tstate.opt_dec.zero_grad()
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        loss_dict = calc_dec_loss(decoder, enc_out, img_real)
-        loss_dec, loss_bce, img_recon = loss_dict['dec'], loss_dict['bce'], loss_dict['recon']
-    tstate.scaler_dec.scale(loss_dec).backward()
+        loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
+    tstate.scaler_dec.scale(loss_dict['dec']).backward()
     tstate.scaler_dec.unscale_(tstate.opt_dec)
     torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
     tstate.scaler_dec.step(tstate.opt_dec)
     tstate.scaler_dec.update()
-    return {'dec':loss_dec, 'bce':loss_bce}, img_recon.detach()
+    return loss_dict, loss_dict['recon']
 
 # %% ../nbs/09_train_dec.ipynb #198855af
 @hydra.main(version_base=None, config_path='../configs', config_name='config')
@@ -170,6 +176,10 @@ def train(cfg: DictConfig):
     tstate            = setup_tstate(cfg, device, decoder, encoder=encoder)
     patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
 
+    if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
+        decoder, ckpt = load_checkpoint(decoder, cfg.get('checkpoint',None), return_all=True)
+        tstate.opt_dec.load_state_dict(ckpt['optimizer_state_dict'])
+    
     if not(cfg.get('no_wandb', False)): 
         wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
         wandb.define_metric("epoch")
@@ -181,9 +191,9 @@ def train(cfg: DictConfig):
         train_loss = 0
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
             global_step += 1
-            enc_out, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
+            enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, preencoded, device)
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
-            losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg)
+            losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights)
             train_loss += losses['dec'].item()
         
         train_loss /= len(train_dl)
@@ -196,17 +206,17 @@ def train(cfg: DictConfig):
             val_loss = 0
             for batch in val_dl:
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    enc_out, img_real = get_embeddings_batch(batch, encoder, preencoded, device)
-                    loss_dict = calc_dec_loss(decoder, enc_out, img_real)
-                    loss_dec, loss_bce, img_recon = loss_dict['dec'], loss_dict['bce'], loss_dict['recon']
+                    enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, preencoded, device)
+                    loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
+                    loss_dec, img_recon = loss_dict['dec'], loss_dict['recon']
                 val_loss += loss_dec.item()
             val_loss /= len(val_dl) 
 
             if wandb.run is not None: 
-                wandb.log({
-                    'train_dec': train_loss,    'train_bce':losses['bce'].item(),
-                    'val_dec': val_loss,          'val_bce':float(loss_bce),
-                    'epoch': epoch,   "lr_dec": tstate.opt_dec.param_groups[0]['lr'],}) 
+                wandb.log({ 
+                    'train_dec': train_loss, 'train_bce': to_scalar(losses['bce']),      'train_mse': to_scalar(losses['mse']),
+                    'val_dec':     val_loss,   'val_bce': to_scalar(loss_dict['bce']), 'val_mse': to_scalar(loss_dict['mse']),
+                    'epoch': epoch, 'lr_dec': tstate.opt_dec.param_groups[0]['lr'],})
                 eval_tup = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
                 del eval_tup
                 gc.collect()

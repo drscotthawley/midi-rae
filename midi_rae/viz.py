@@ -13,6 +13,7 @@ import numpy as np
 import wandb
 import gc
 from torchvision.utils import make_grid
+from .utils import *
 
 # %% ../nbs/05_viz.ipynb #a164c279
 def cpu_umap_project(embeddings, n_components=3, n_neighbors=15, min_dist=0.1, random_state=42):
@@ -318,11 +319,12 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=
     if debug: print(f"mae_mask: shape={mae_mask.shape}, pct_visible={mae_mask.float().mean():.3f}")
 
     img_recon_noreplace = None
-    if recon.shape != img_real.shape:
+    if recon.shape != img_real.shape: # turn into image
         img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask)
         img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
-    else:
-        img_recon = (recon > 0.25).float()
+    
+    img_recon = binarize(recon)
+        
     evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size, return_maps=return_maps)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)

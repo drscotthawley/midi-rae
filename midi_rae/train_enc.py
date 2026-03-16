@@ -6,6 +6,8 @@
 __all__ = ['CurriculumSchedule', 'compute_batch_loss', 'train']
 
 # %% ../nbs/06_train_enc.ipynb #dc166645-c67a-4e9a-9f4b-e78fb90fc7c6
+import sys
+sys.dont_write_bytecode = True  # I'm getting burned sometimes when it reuses stale PYC files.
 import os
 os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:torch._inductor"
@@ -142,6 +144,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
                 non_emptys=non_emptys, lambd=cfg.training.lambd, 
                 lambda_anchor=cfg.training.get('lambda_anchor',0.05),  lambda_fact=cfg.training.get('lambda_fact',0.5) )
 
+    
     if mep_model is not None and ema_encoder is not None:           # late addition: Masked Embedding Predictor, across all levels. 
         assert mae_decoder is None, "You can either do MAE or MEP, not both -- Need to save VRAM"  # If you want to run both, run image two through the encoder again, but with no MAE mask. It'll just add to VRAM. 
         mep_target = ema_encoder(img2)
@@ -154,11 +157,12 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
             total_mep_loss = total_mep_loss + mep_loss
         total_mep_loss = total_mep_loss / enc_out2.patches.num_levels  # average over levels
         loss_dict['mep'] = total_mep_loss 
-        
-    if 'mae' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('lambda_mae', 1.0) * loss_dict['mae']
-    if 'mep' in loss_dict.keys(): loss_dict['loss'] += cfg.training.get('lambda_mep', 1.0) * loss_dict['mep']
 
-    if torch.isnan(loss_dict['loss']):
+        
+    if 'mae' in loss_dict.keys(): loss_dict['loss'] = loss_dict['loss'] +  cfg.training.get('lambda_mae', 1.0) * loss_dict['mae']
+    if 'mep' in loss_dict.keys(): loss_dict['loss'] = loss_dict['loss'] +  cfg.training.get('lambda_mep', 1.0) * loss_dict['mep']
+
+    if debug and torch.isnan(loss_dict['loss']):
         cjprint("*** NaN detected! ***", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()}, color="red")
         breakpoint()
     return loss_dict, (z1, z2, z3), (enc_out1, enc_out2, enc_out3), recon_patches
@@ -175,7 +179,7 @@ def train(cfg: DictConfig):
     manager = mp.Manager()
     shared_ct_dict = manager.dict(OmegaConf.to_container(cfg))
 
-    if cfg.training.lambda_fact > 0: 
+    if cfg.training.lambda_fact > 0:  # only load pairs unless you need triplets (save memory/computation)
         train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
         val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
     else:
@@ -208,6 +212,7 @@ def train(cfg: DictConfig):
     cjprint(f"Encoder Total, Trainable: {param_count(encoder)}",color="cyan")
     
     params = list(encoder.parameters()) if mae_decoder is None else list(chain(encoder.parameters(), mae_decoder.parameters()))
+    if mep_model is not None: params = list(chain(params, mep_model.parameters()))
     optimizer = torch.optim.AdamW(params, lr=cfg.training.lr)
     epoch_start = 1
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
@@ -256,6 +261,8 @@ def train(cfg: DictConfig):
         if curr_learn is not None: 
             curr_learn.step(epoch, optimizer)
             shared_ct_dict['training'] = curr_learn(shared_ct_dict, epoch)
+        if epoch==44: # TODO: this is hacky 
+            if ema_encoder is not None: ema_encoder.eta = 0.96
         for batch in tqdm(train_dl, desc=f"Epoch {epoch}/{cfg.training.epochs}"):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
@@ -284,7 +291,8 @@ def train(cfg: DictConfig):
             print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
             
             if wandb.run is not None: 
-                log = {"lr": optimizer.param_groups[0]['lr'], "epoch": epoch,  "max_shift_x": shared_ct_dict['training']['max_shift_x'], "max_shift_y": shared_ct_dict['training']['max_shift_y']}
+                log = {"lr": optimizer.param_groups[0]['lr'], 'epoch': epoch, 'ema_eta': ema_encoder.eta if ema_encoder is not None else cfg.training.get('ema_eta',0), 
+                       "max_shift_x": shared_ct_dict['training']['max_shift_x'], "max_shift_y": shared_ct_dict['training']['max_shift_y']}
                 for prefix, ld in [("train", loss_dict), ("val", val_loss_dict)]:
                     for k in ('loss', 'sim', 'sigreg', 'anchor', 'fact', 'mae', 'mep'):
                         log[f"{prefix}_{k}"] = to_scalar(ld.get(k, 0))
