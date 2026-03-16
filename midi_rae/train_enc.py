@@ -254,6 +254,7 @@ def train(cfg: DictConfig):
     global_step = (epoch_start - 1) * len(train_dl)
     viz_every = 5
     rprint("And this is training \n","yellow")
+    best_val_loss = float('inf')
     for epoch in range(epoch_start, cfg.training.epochs+1):
         if wandb.run is not None: wandb.log({"epoch": epoch})
         encoder.train()
@@ -288,7 +289,8 @@ def train(cfg: DictConfig):
 
             train_loss /= len(train_dl)
             val_loss /= len(val_dl)
-            print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f}")
+            if val_loss < best_val_loss: best_val_loss = val_loss
+            print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f} (best={best_val_loss:.3f})")
             
             if wandb.run is not None: 
                 log = {"lr": optimizer.param_groups[0]['lr'], 'epoch': epoch, 'ema_eta': ema_encoder.eta if ema_encoder is not None else cfg.training.get('ema_eta',0), 
@@ -315,6 +317,7 @@ def train(cfg: DictConfig):
         save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag) # optimzer gets saved with mae_decoder, not encoder
         freemem()
         if scheduler is not None: scheduler.step()
+    return best_val_loss
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3
 #| eval: false
@@ -322,4 +325,5 @@ if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
     cjprint(logo, color="red")
     rprint("I just met you \n","yellow")
     cjprint("Encoder training script",color="cyan") 
-    train()
+    best_metric = train()
+    print(f"FINISHED. Best metric: {best_metric:.3f}")

@@ -187,6 +187,8 @@ def train(cfg: DictConfig):
         wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
     
     global_step = 0 
+    viz_every = 10
+    best_val_loss = float('inf')
     for epoch in range(1, cfg.training.dec_epochs + 1):
         train_loss = 0
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
@@ -197,8 +199,6 @@ def train(cfg: DictConfig):
             train_loss += losses['dec'].item()
         
         train_loss /= len(train_dl)
-        print(f'Epoch {epoch}: train_loss={train_loss:.6f}')
-
         
         # validation, checkpointing, visualization e.g. reconstruction comparison
         decoder.eval() 
@@ -211,14 +211,17 @@ def train(cfg: DictConfig):
                     loss_dec, img_recon = loss_dict['dec'], loss_dict['recon']
                 val_loss += loss_dec.item()
             val_loss /= len(val_dl) 
+            if val_loss < best_val_loss: best_val_loss = val_loss
+            print(f'Epoch {epoch}: train_loss={train_loss:.6f} val_loss={val_loss:.6f}, best_val_loss={best_val_loss:.6f}')
 
             if wandb.run is not None: 
                 wandb.log({ 
                     'train_dec': train_loss, 'train_bce': to_scalar(losses['bce']),      'train_mse': to_scalar(losses['mse']),
                     'val_dec':     val_loss,   'val_bce': to_scalar(loss_dict['bce']), 'val_mse': to_scalar(loss_dict['mse']),
                     'epoch': epoch, 'lr_dec': tstate.opt_dec.param_groups[0]['lr'],})
-                eval_tup = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
-                del eval_tup
+                if epoch % viz_every == 0:
+                    eval_tup = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
+                    del eval_tup
                 gc.collect()
 
         save_checkpoint(decoder, epoch, val_loss, cfg, optimizer=tstate.opt_dec, tag=cfg.tag)
@@ -228,6 +231,7 @@ def train(cfg: DictConfig):
         if epoch > cfg.training.gan_warmup: tstate.schedulerD.step()
     
     wandb.finish()
+    return best_val_loss
 
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
@@ -235,4 +239,5 @@ if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
     cjprint(logo, color="red")
     rprint("I just met you \n","yellow")
     cjprint("Decoder training script",color="cyan") 
-    train()
+    best_metric= train()
+    print(f"FINISHED. Best metric: {best_metric:.3f}")
