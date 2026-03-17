@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Git Commands
+
+Always use `git -C /workspaces/ClaudeCode-Mar12/midi-rae <subcommand>` rather than `cd /workspaces/... && git ...`. The `cd` form triggers permission prompts; the `-C` form does not. Scripts in `scripts/` are always pre-approved — call them as `bash scripts/<name>.sh` from the repo root via `-C` or by prefixing with the full path.
+
 ## Critical: nbdev Workflow
 
 **All `.py` files in `midi_rae/` are auto-generated from notebooks in `nbs/`.** Never edit `.py` files directly — edits will be overwritten. Always edit the corresponding notebook (e.g., `nbs/06_train_enc.ipynb` → `midi_rae/train_enc.py`), then run:
