@@ -91,10 +91,10 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, tit
         # Compute target colors if available
         colors_target = None
         if target is not None:
-            target = target.cpu()
             viridis = colormaps['viridis']
             target_cmap = [f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' for c in [viridis(v) for v in [0.0, 0.5, 1.0]]]
-            colors_target = [target_cmap[t] for t in np.tile(target, group_size)]
+            target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
+            colors_target = [target_cmap[int(t)] for t in np.tile(target_np, group_size)]
         colors = colors_group  # default to group coloring
     else: raise ValueError(f"Unknown color_by: {color_by}")
 
@@ -202,9 +202,14 @@ def _gather_level(enc_outs,        # list of encoder outputs
     deltas, target = batch['deltas'], batch.get('target',None)
     if deltas.dim() == 2: deltas = deltas.unsqueeze(1)
     if target is not None: target = target.repeat(n_eo).repeat_interleave(N).to(device)
-    deltas = deltas[:, 0, :].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
+    # Assign correct deltas per encoder output: anchor=[0,0], img2=deltas[:,0,:], img3=deltas[:,1,:]
+    B = deltas.shape[0]
+    zero_d = torch.zeros(B, 2, device=device)
+    if n_eo == 1:   per_eo_d = zero_d
+    elif n_eo == 2: per_eo_d = torch.cat([zero_d, deltas[:, 0, :].to(device)], dim=0)
+    else:           per_eo_d = torch.cat([zero_d, deltas[:, 0, :].to(device), deltas[:, 1, :].to(device)], dim=0)
+    deltas = per_eo_d.repeat_interleave(N, dim=0)
     return emb.reshape(-1, edim), non_empty,  joint_non_empty, file_idx, deltas, target  # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,), (BT*N,2)
-    
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
