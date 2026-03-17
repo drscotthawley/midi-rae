@@ -1,0 +1,2 @@
+commit	host	type	best_metric	status	description
+95acc73	lecun	enc	0.564000	keep	baseline: lambda_fact=0 lambda_anchor=0 lambda_mep=1.0 ema_eta jump at epoch44
