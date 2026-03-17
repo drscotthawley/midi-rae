@@ -14,3 +14,4 @@ e19c1ef	lecun	enc	0.770839	keep	exp8: skip attraction at finest level (L5); lamb
 n/a	razer	dec	0.9978	keep	razer dec: exp9-like encoder (skip LeJEPA at L5); F1=99.78%; 100 epochs, 73 min; new best (not directly comparable to lecun)
 4f2dcaa	lecun	enc	0.679429	discard	exp10: lambda_fact=1.0 — much worse than exp9 (0.412); factorization dominates
 9a94e7a	lecun	enc	0.644883	discard	exp11: lambd curriculum 0.99→0.3 — wrong lever; SIGReg-only early epochs incoherent (high MEP loss); slightly better than exp10 but far worse than exp9
+29d648e	lecun	enc	0.706427	discard	exp12: lambda_sim curriculum 0→1 over 15 epochs, lambda_fact=1.0 — worse than exp10; lambda_fact=1.0 dominates regardless of sim schedule
