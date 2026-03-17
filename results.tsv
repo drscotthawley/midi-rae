@@ -6,3 +6,4 @@ ace04d5	lecun	enc	0.702340	keep	exp1: 25-epoch baseline with flat+cosine-tail LR
 5dd3397	lecun	enc	0.954393	discard	exp3: ema_eta=0.9 fixed (remove epoch-44 jump) — worse; EMA from start hurts sim_loss
 d74ef85	lecun	enc	0.786779	keep	exp4: lambda_fact=0.1 (reduced from 0.3) — improved
 81486b9	lecun	enc	0.758482	keep	exp5: lambda_fact=0.05 — improved further
+8864f6d	lecun	enc	0.694718	keep	exp6: lambda_fact=0.01 — improved; beats 25-epoch exp1 baseline
