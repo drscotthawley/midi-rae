@@ -53,7 +53,7 @@ preencode:
 wandb:
   project: ar-mep-swin-midi-rae
 
-encoder_ckpt: ~/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
+encoder_ckpt: /home/shawley/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
 
 
 tag: ???  # required run tag, will get prepended to wandb run name
