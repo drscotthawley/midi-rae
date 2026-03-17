@@ -227,6 +227,15 @@ Start with low-risk, high-payoff changes before architectural surgery:
 5. **Conv layers at finest Swin level** — replace the finest (highest-resolution) Swin stage with `Conv2d → GELU → Conv2d`, combined with no attraction loss at that level. The design intent: let the finest level handle local reconstruction fidelity cheaply (convs are good at this), while reserving the coarser Swin levels purely for semantic representation (attraction + factorization). This separation of concerns may improve both reconstruction *and* representation quality simultaneously, and may allow adding an even finer level cheaply.
 5. **Curriculum for factorization vs attraction** — train with only factorization loss for an initial warmup period (e.g. first 20–30 epochs), then phase in attraction loss. Motivation: factorization loss establishes the latent geometry (pitch/time orthogonal directions); if attraction loss is active too early it may distort that geometry before it forms. This is speculative but theoretically well-motivated.
 
+## Future experiment ideas
+
+### Delta-conditioned cross-view MEP
+Instead of predicting unmasked img2 embeddings from masked img2 (same image), predict **img3 embeddings from masked img2**, conditioned on the shift delta between them. The MEP model signature becomes `mep_model(enc_out2, deltas)` → predicted embeddings of img3.
+
+**Motivation**: Current MEP is a masked reconstruction task — useful but not directly tied to the pitch/time shift structure. Cross-view MEP with delta conditioning explicitly trains the model to answer "if I shift by delta, what does the representation look like?" This directly incentivizes factorized pitch/time directions in latent space, rather than relying on the factorization loss alone to produce them as an emergent property.
+
+**Implementation notes**: Delta conditioning could be a learned linear projection of the delta vector added to the MEP query embeddings (similar to positional encodings). Requires the triplet dataset (img2, img3, deltas) to be available during MEP — which it already is when `lambda_fact > 0`.
+
 ## Open questions
 
 - **Does factorization loss actually help?** It's off in the baseline. Turning it on is the first test.
