@@ -2,6 +2,27 @@
 
 This is an autonomous experiment loop for the midi-rae project. The agent modifies training code and configs, launches runs on a remote GPU machine, waits for results, and iterates.
 
+## Key Findings
+
+### Skip LeJEPA at finest Swin level (L5) — 2026-03-17
+
+**Finding**: Disabling the entire LeJEPA loss (attraction + SIGReg + factorization) at the finest Swin hierarchy level (L5) is a major win. Config: `skip_lejepa_levels: [5]`.
+
+**Results** (25-epoch enc runs on lecun, lambda_fact=0.1):
+- Without skip (exp4): enc val_loss = 0.787, dec F1 = ~99.2% (baseline)
+- With skip (exp9): enc val_loss = 0.412, dec F1 = **99.66%**
+
+**Why it works**: At L5, each patch is only 4×4 pixels. Attraction loss at this scale pulls together patches that are locally similar but semantically meaningless — the signal is too noisy to be useful. SIGReg at L5 is also enormously expensive (204,800 patches) and may be regularizing away useful local structure. Removing all LeJEPA supervision at L5 lets the finest level learn freely from the Swin hierarchy connections and MEP alone, which is apparently sufficient and better.
+
+**Implication**: Do NOT apply LeJEPA loss at the finest Swin level. This should be the default going forward. There is no need to replace L5 with a CNN block or modify the patch embedding — the architecture is fine; the problem was over-constraining L5 with inappropriate loss signals.
+
+**Also noted**: Skipping LeJEPA at L5 reduces training time by ~30% (SIGReg on 204,800 patches was the dominant cost).
+
+**Config setting to always include**:
+```yaml
+skip_lejepa_levels: [5]   # disable entire LeJEPA loss at finest Swin level
+```
+
 ## Machines
 
 | Host | VRAM | Availability | Default config |
