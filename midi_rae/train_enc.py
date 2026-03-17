@@ -178,7 +178,7 @@ def train(cfg: DictConfig):
     manager = mp.Manager()
     shared_ct_dict = manager.dict(OmegaConf.to_container(cfg))
 
-    if cfg.training.get('lambda_fact',0) > 0:  # only load pairs unless you need triplets (save memory/computation)
+    if cfg.training.lambda_fact > 0:  # only load pairs unless you need triplets (save memory/computation)
         train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
         val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
     else:
@@ -199,12 +199,12 @@ def train(cfg: DictConfig):
         encoder = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size, patch_h=cfm.patch_h, patch_w=cfm.patch_w,
                             embed_dim=cfm.embed_dim, depths=cfm.depths, num_heads=cfm.num_heads, window_size=cfm.window_size,
                             mlp_ratio=cfm.mlp_ratio, drop_path_rate=cfm.drop_path_rate).to(device)
-        if cfg.training.get('lambda_mae',0) > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
-        if cfg.training.get('lambda_mep',0) > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims).to(device)
+        if cfg.training.lambda_mae > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
+        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims).to(device)
     else:
         encoder = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfm.patch_size, 
                            cfm.dim, cfm.depth, cfm.heads).to(device)
-        if cfg.training.get('lambda_mae',0) >0: mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
+        if cfg.training.lambda_mae <=0: mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
         
     ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every) if cfg.training.ema_eta > 0 else None
     cjprint("encoder, mae_decoder, ema_encoder, mep_model =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, mep_model.__class__.__name__, color="cyan")
@@ -234,9 +234,22 @@ def train(cfg: DictConfig):
         scheduler = False  # let curr_learn handle schedulers
     else:
         curr_learn = None
-        #scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5, 
-        #                       **({'last_epoch': epoch_start-1} if epoch_start > 1 else {}))
-    scheduler = OneCycleLR(optimizer, max_lr=cfg.training.lr, steps_per_epoch=1, epochs=cfg.training.epochs, div_factor=5)
+
+    # Flat + cosine-tail LR schedule: warmup -> flat -> cosine decay in last tail_epochs.
+    # Decouples LR from total epoch count, making early stopping valid at any epoch.
+    epochs = cfg.training.epochs
+    lr = cfg.training.lr
+    warmup_epochs = cfg.training.get('lr_warmup_epochs', 3)
+    tail_epochs   = cfg.training.get('lr_tail_epochs', 10)
+    def lr_lambda(epoch):  # epoch is 0-indexed here (scheduler calls with step count)
+        if epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        elif epoch < epochs - tail_epochs:
+            return 1.0
+        else:
+            progress = (epoch - (epochs - tail_epochs)) / tail_epochs
+            return 0.5 * (1 + __import__('math').cos(__import__('math').pi * progress))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     for _ in range(epoch_start - 1):
         scheduler.step()
 
@@ -316,6 +329,7 @@ def train(cfg: DictConfig):
         save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag) # optimzer gets saved with mae_decoder, not encoder
         freemem()
         if scheduler is not None: scheduler.step()
+    print(f"FINISHED. Best metric: {best_val_loss:.6f}")
     return best_val_loss
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3

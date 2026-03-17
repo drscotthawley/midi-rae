@@ -26,11 +26,26 @@ To begin a new autoresearch session, work with the user to:
 6. **Initialize results.tsv**: Create `results.tsv` with just the header row (see format below).
 7. **Confirm and go**.
 
+## Project context
+
+midi-rae is a **representation autoencoder for MIDI piano roll images**, designed to learn a structured latent space that captures musical semantics — particularly repeated motifs, and pitch/time shift structure. The architecture is a Swin Transformer-based encoder trained with LeJEPA (attraction + SIGReg factorization), MEP, and EMA.
+
+The ultimate goal is a latent space good enough to support a **generative model** (flow matching or diffusion) trained directly in that space. A good latent space means:
+- Repeated motifs cluster together
+- Pitch shifts and time shifts correspond to structured, separable directions (factorization)
+- The geometry is smooth enough for a generative model to learn
+
+Val loss is a proxy for encoder quality, not a direct measure of latent structure richness. Keep this in mind when evaluating results — a small val_loss improvement that destroys latent structure geometry is not a win.
+
+**The RAE philosophy**: The encoder is trained *without* a reconstruction objective, using only internal consistency requirements (attraction, factorization, MEP). The goal is representations rich enough that reconstruction works well *as a byproduct* — not because we optimized for it. Training end-to-end for reconstruction would maximize F1 but destroy the representation quality. The decoder F1 (~99.2% baseline) is a sanity check that the representations are usable, not the optimization target.
+
+**What we actually care about**: latent space quality — do repeated motifs cluster? Are pitch/time shifts encoded in separable, structured directions? Is the geometry smooth enough for a future generative model? Val_loss is a proxy for this; it is assumed (but not proven) to correlate with representation quality.
+
 ## Scope and goals
 
 **Focus: encoder training only** (`train_enc`, `nbs/06_train_enc.ipynb`).
 
-**Primary goal**: minimize `best_metric` (validation loss) on the encoder. Downstream, the best encoder should also produce the best decoder scores — but encoder val loss is the working proxy metric.
+**Primary goal**: minimize `best_metric` (validation loss) on the encoder. Downstream, the best encoder should also produce the best decoder scores — but encoder val loss is the working proxy metric. Be aware that val_loss alone does not fully capture latent space quality.
 
 **Active objectives** — all of these should remain active (non-zero lambda) in every run:
 - **LeJEPA attraction loss** — core; do not disable
@@ -173,3 +188,28 @@ LOOP FOREVER:
 **Cross-machine comparisons**: Do not compare `best_metric` values across different machines. Always baseline on the same machine you're experimenting on.
 
 **Simplicity criterion**: A small improvement that adds significant complexity may not be worth keeping. A simplification that achieves equal or better results is always worth keeping.
+
+## Suggested experiment order
+
+Start with low-risk, high-payoff changes before architectural surgery:
+
+1. **Switch to flat + cosine-tail LR schedule, then re-baseline** — one-cycle normalizes its LR trajectory to total epochs, so early stopping is unreliable. A warmup → flat → short cosine tail (e.g. last 10 epochs) decouples LR from epoch count. `ReduceLROnPlateau` is another option. **Important**: after switching schedules, run a fresh 25-epoch baseline *before* making any other changes — results are not comparable across schedules. Only then use the tiered strategy: **25 epochs to screen** ideas (~50 min, 4x throughput), **50 to confirm**, **100 for final**. Do not compare 25-epoch flat-schedule results against the 100-epoch one-cycle baseline.
+2. **Enable factorization loss** (`lambda_fact > 0`, e.g. 0.1–0.5) — currently off; enabling it switches to `ShiftedTripletDataset`. Low risk, likely impactful.
+3. **Fix EMA eta schedule** — currently `ema_eta=1e-5` with a hardcoded jump to 0.96 at epoch 44. Replace with a cleaner schedule or fixed value ≥ 0.9. Note: lower eta = faster EMA update; 0.96+ means the EMA model changes slowly (more stable target).
+3. **Tune lambda_mep, lambd** — the attraction/SIGReg balance and MEP weight are currently at defaults; sweep these.
+4. **Disable attraction loss at finest Swin level** — the finest level captures local texture; applying attraction loss there may be counterproductive (pulls locally-similar but semantically-different patches together). Try `skip_attraction_levels=[0]` or equivalent. Can be done independently of the conv change.
+5. **Conv layers at finest Swin level** — replace the finest (highest-resolution) Swin stage with `Conv2d → GELU → Conv2d`, combined with no attraction loss at that level. The design intent: let the finest level handle local reconstruction fidelity cheaply (convs are good at this), while reserving the coarser Swin levels purely for semantic representation (attraction + factorization). This separation of concerns may improve both reconstruction *and* representation quality simultaneously, and may allow adding an even finer level cheaply.
+5. **Curriculum for factorization vs attraction** — train with only factorization loss for an initial warmup period (e.g. first 20–30 epochs), then phase in attraction loss. Motivation: factorization loss establishes the latent geometry (pitch/time orthogonal directions); if attraction loss is active too early it may distort that geometry before it forms. This is speculative but theoretically well-motivated.
+
+## Open questions
+
+- **Does factorization loss actually help?** It's off in the baseline. Turning it on is the first test.
+- **What is the right EMA eta?** The code jumps from 1e-5 → 0.96 at epoch 44. Is this optimal? Should it ramp gradually? Should it start high?
+- **Attraction loss at finest level**: Should it be disabled? The finest level captures local texture — attraction loss there may conflate locally-similar but semantically-different patches.
+- **Conv vs attention at finest level**: Does replacing the finest Swin stage with conv layers improve results? Does it allow adding a finer level?
+- **Curriculum ordering of losses**: Does training factorization-first (then adding attraction) produce better latent geometry than training both simultaneously?
+- **lambda_anchor**: Currently 0. Is there value in a small L2 penalty on empty patch embeddings?
+- **LR schedule**: One-cycle normalizes to total epochs, making early stopping unreliable. Would a flat+cosine-tail or ReduceLROnPlateau schedule allow valid early stopping at 25 epochs, giving 4x throughput?
+- **Epochs**: 100 epochs (~3.5 hrs) for final runs; with a flat LR schedule, 25 epochs (~50 min) may be sufficient to discriminate between ideas — 4x more experiments in the same wall time. Use a tiered strategy: 25 epochs to screen, 50 to confirm, 100 for final.
+- **Val_loss vs decoder F1 correlation**: Is encoder val_loss actually predictive of decoder F1? Worth verifying by running the decoder on a few encoder checkpoints with different val_losses. If the correlation is weak, we need a better proxy metric.
+- **Can decoder F1 exceed 99.2%?** This is the baseline with the current encoder. Does a better encoder push this higher, or is the decoder bottleneck elsewhere?

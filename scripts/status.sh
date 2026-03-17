@@ -33,15 +33,15 @@ elif grep -q "FINISHED\. Best metric" "\$LOG"; then
     echo "Result: \$RESULT"
     echo ""
     echo "--- Last 5 lines of run.log ---"
-    tail -n 5 "\$LOG"
+    tr '\r' '\n' < "\$LOG" | grep -vE '[0-9]+it/s|%\|' | grep -v '^\s*$' | tail -5
 elif [ -z "\$MAIN_PID" ]; then  # not running and no FINISHED line = crash
     echo "Result: CRASHED"
     echo ""
     echo "--- Traceback (or last 50 lines) ---"
-    grep -A 999 "Traceback" "\$LOG" 2>/dev/null || tail -n 50 "\$LOG"
+    grep -A 999 "Traceback" "\$LOG" 2>/dev/null || tr '\r' '\n' < "\$LOG" | grep -vE '[0-9]+it/s|%\|' | tail -50
 else
     echo "--- Last 5 lines of run.log ---"
-    tail -n 5 "\$LOG"
+    tr '\r' '\n' < "\$LOG" | grep -vE '[0-9]+it/s|%\|' | grep -v '^\s*$' | tail -5
 fi
 ENDSSH
 echo ""

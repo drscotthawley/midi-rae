@@ -35,7 +35,7 @@ training:
   lambda_mep:  1.0        # masked embedding predictor
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
   lambda_anchor: 0.0      # L2 loss on empty patch embeddings
-  lambda_fact: 0.0        # factorization loss
+  lambda_fact: 0.3        # factorization loss
 
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 10000 # 500
@@ -50,7 +50,7 @@ preencode:
   num_passes: 10          # number of passes through the dataset
 
 wandb:
-  project: mep-swin-midi-rae
+  project: ar-mep-swin-midi-rae
 
 encoder_ckpt: checkpoints/SwinEncoder_MoreMEP_best.pt # for decoder usage
 
