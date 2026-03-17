@@ -18,12 +18,22 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 
 **Also noted**: Skipping LeJEPA at L5 reduces training time by ~30% (SIGReg on 204,800 patches was the dominant cost).
 
+**Decoder cross-validation (razer, 2026-03-17)**: An exp9-like encoder run on razer (RTX 2070, 16 GB, codebase not fully in sync with lecun) produced a decoder F1 of **99.78%** in 100 epochs / 73 minutes. Not directly comparable to the lecun dec1 result (99.66%) due to different GPU/CUDA, but corroborates that the skip-L5-LeJEPA architecture generalizes across hardware and produces strong decoders.
+
 **MEP finding**: It is unnecessary to run MEP on the raw patch embedding outputs. Including only the 6 Swin stage outputs (L0–L5) in MEP supervision is sufficient — the finest MEP target is L5 (output of stage 0), which has already been through one round of Swin processing. When L5 has no LeJEPA losses, MEP alone provides sufficient supervision at that level. The raw patch embeddings remain completely unsupervised and the system works well — the Swin hierarchy provides all the structure needed above them.
 
 **Config setting to always include**:
 ```yaml
 skip_lejepa_levels: [5]   # disable entire LeJEPA loss at finest Swin level
 ```
+
+### SIGReg alone produces incoherent embeddings — exp11 evidence — 2026-03-17
+
+**Observation**: exp11 (lambd curriculum: 0.99→0.3, meaning ~99% SIGReg in early epochs) showed very low SIGReg loss but significantly higher MEP loss compared to runs with attraction active.
+
+**Interpretation**: SIGReg alone pushes each patch embedding independently toward a Gaussian — it produces the right *distribution* but no local *coherence*. Without attraction or factorization, there is no relationship between neighboring or shifted patches. MEP's job is to predict masked patch embeddings from unmasked ones; if embeddings are uncorrelated, MEP has nothing to latch onto and its loss rises.
+
+**Implication**: The higher MEP loss under SIGReg-only is direct evidence that attraction/factorization are what create the predictable local structure that MEP exploits. This retroactively validates the exp12 design: keeping `lambd=0.3` fixed (so factorization is always active at 70%) and only ramping `lambda_sim` (attraction) from 0→1. Factorization builds pitch/time structure from epoch 1; MEP can predict into that structure; attraction is introduced once the geometry is established.
 
 ## Machines
 
@@ -62,7 +72,7 @@ Val loss is a proxy for encoder quality, not a direct measure of latent structur
 
 **The RAE philosophy**: The encoder is trained *without* a reconstruction objective, using only internal consistency requirements (attraction, factorization, MEP). The goal is representations rich enough that reconstruction works well *as a byproduct* — not because we optimized for it. Training end-to-end for reconstruction would maximize F1 but destroy the representation quality. The decoder F1 is a sanity check that the representations are usable, not the optimization target.
 
-**Decoder F1 threshold**: 99.6% F1 is considered acceptable for downstream use — reconstructions at this level are visually error-free in practice. The previous informal target of 99.7% has been relaxed. Current best: 99.66% (exp9 encoder, dec1 decoder).
+**Decoder F1 threshold**: 99.6% F1 is considered acceptable for downstream use — reconstructions at this level are visually error-free in practice. Current best: 99.78% (exp9-like encoder on razer, 100 epochs, 73 min). lecun best: 99.66% (exp9 encoder, dec1). Note: razer and lecun results are not directly comparable due to different GPU/CUDA versions.
 
 **What we actually care about**: latent space quality — do repeated motifs cluster? Are pitch/time shifts encoded in separable, structured directions? Is the geometry smooth enough for a future generative model? Val_loss is a proxy for this; it is assumed (but not proven) to correlate with representation quality.
 
