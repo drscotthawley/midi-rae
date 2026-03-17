@@ -60,7 +60,7 @@ class AnchorDataset(Dataset):
     "piano roll pair dataset"
     def __init__(self, 
             image_dataset_dir='~/datasets/POP909_images_basic/', 
-            crop_size=128, 
+            crop_size=128,  # int for square of tuple for rectangle 
             split='train',
             val_fraction=0.1,
             seed=42,
@@ -70,6 +70,7 @@ class AnchorDataset(Dataset):
             pad_x=(0,0), # (left, right) : crop wider to (crop_sizw-pad_x[0], crop_size+pad_x[1])
             ):
         self.crop_size, self.aug_y_max, self.sigma, self.pad_x = crop_size, aug_y_max, sigma, pad_x
+        if isinstance(self.crop_size, int): self.crop_size = (self.crop_size, self.crop_size)
         
         # Load and split filenames
         all_filenames = glob(os.path.join(os.path.expanduser(image_dataset_dir), '**/*.png'), recursive=True)
@@ -105,10 +106,17 @@ class AnchorDataset(Dataset):
         # cropping in x 
         h, w = img.shape
         pad_x = pad_x if pad_x is not None else self.pad_x 
-        min_loc, max_loc = 0+pad_x[0], w - self.crop_size - pad_x[1]
+        min_loc, max_loc = 0+pad_x[0], w - self.crop_size[1] - pad_x[1]
         loc = random.randint(min_loc, max_loc)      
-        img = img[:, loc-pad_x[0]: loc + self.crop_size+pad_x[1]]  # crop horizontally
-        note_weights = note_weights[:, loc-pad_x[0]: loc + self.crop_size+pad_x[1]]  # crop horizontally
+        img = img[:, loc-pad_x[0]: loc + self.crop_size[1]+pad_x[1]]  # crop horizontally
+        note_weights = note_weights[:, loc-pad_x[0]: loc + self.crop_size[1]+pad_x[1]]  # crop horizontally
+
+        # optional: additional cropping in y: 
+        if self.crop_size[0] < img.shape[0]: 
+            mid, hc = img.shape[0]//2,  self.crop_size[0]//2
+            img = img[mid-hc: mid+hc, :]
+            note_weights = note_weights[mid-hc: mid+hc, :]
+
         return {
             'img': img.unsqueeze(0),  # add channel dim: (1, 128+pad_x[0], 128+pad_x[1])
             'file_idx': file_idx,
