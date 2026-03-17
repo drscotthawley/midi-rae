@@ -33,28 +33,15 @@ elif grep -q "FINISHED\. Best metric" "\$LOG"; then
     echo "Result: \$RESULT"
     echo ""
     echo "--- Last 5 lines of run.log ---"
-    grep -v 'it/s\]' "\$LOG" | tail -n 5
-elif [ -z "\$MAIN_PID" ]; then  # not running and no FINISHED line
-    EXIT_CODE_FILE="\$RUN_DIR/exit_code"
-    if [ ! -f "\$EXIT_CODE_FILE" ]; then
-        echo "Result: KILLED (no exit_code file — process was externally terminated)"
-        echo ""
-        echo "--- Last 5 lines of run.log ---"
-        grep -v 'it/s\]' "\$LOG" | tail -n 5
-    elif [ "\$(cat \$EXIT_CODE_FILE)" != "0" ]; then
-        echo "Result: CRASHED (exit code \$(cat \$EXIT_CODE_FILE))"
-        echo ""
-        echo "--- Traceback (or last 50 lines) ---"
-        grep -A 999 "Traceback" "\$LOG" 2>/dev/null || grep -v 'it/s\]' "\$LOG" | tail -n 50
-    else
-        echo "Result: UNKNOWN (exit 0 but no FINISHED line)"
-        echo ""
-        echo "--- Last 5 lines of run.log ---"
-        grep -v 'it/s\]' "\$LOG" | tail -n 5
-    fi
+    tail -n 5 "\$LOG"
+elif [ -z "\$MAIN_PID" ]; then  # not running and no FINISHED line = crash
+    echo "Result: CRASHED"
+    echo ""
+    echo "--- Traceback (or last 50 lines) ---"
+    grep -A 999 "Traceback" "\$LOG" 2>/dev/null || tail -n 50 "\$LOG"
 else
     echo "--- Last 5 lines of run.log ---"
-    grep -v 'it/s\]' "\$LOG" | tail -n 5
+    tail -n 5 "\$LOG"
 fi
 ENDSSH
 echo ""

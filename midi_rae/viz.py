@@ -13,6 +13,7 @@ import numpy as np
 import wandb
 import gc
 from torchvision.utils import make_grid
+from .utils import *
 
 # %% ../nbs/05_viz.ipynb #a164c279
 def cpu_umap_project(embeddings, n_components=3, n_neighbors=15, min_dist=0.1, random_state=42):
@@ -68,51 +69,96 @@ def pca_project(embeddings, **kwargs):
         except: return cpu_pca_project(embeddings, **kwargs)
     return cpu_pca_project(embeddings, **kwargs)
 
-# %% ../nbs/05_viz.ipynb #1c5d9cc8
+# %% ../nbs/05_viz.ipynb #90b3ab53-51c5-440f-b266-87fd86da39bd
 @torch.no_grad()
-def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, title='Embeddings', debug=False):
-    "3D scatter plot of embeddings. color_by: 'none', 'file', or 'pair'"
+def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, title='Embeddings', target=None, debug=False):
+    "3D scatter plot of embeddings. color_by: 'none', 'file', 'pairs', or 'triplets'"
     import plotly.graph_objects as go
+    from matplotlib import colormaps
+
     if coords is None: return None
     n = len(coords)
-    if debug: print(" plot_embeddings_3d: n =",n)
+    if debug: print(" plot_embeddings_3d: n =",n, "color_by =",color_by,", target =",target)
     
     if color_by == 'none':     colors = ['blue'] * n
     elif color_by == 'file':   colors = file_idx.tolist() if file_idx is not None else ['blue'] * n
-    elif color_by == 'pairs':
-        n_pairs = n // 2
-        pair_colors = [f'rgb({np.random.randint(0,256)},{np.random.randint(0,256)},{np.random.randint(0,256)})' for _ in range(n_pairs)]
-        colors = [pair_colors[i % n_pairs] for i in range(n)]  # pairs separated by num_tokens 
+    elif color_by in ['pairs','triplets']:
+        group_size = 2 if color_by=='pairs' else 3
+        n_groups = n // group_size
+        # Always compute group colors (random per group)
+        group_colors = [f'rgb({np.random.randint(0,256)},{np.random.randint(0,256)},{np.random.randint(0,256)})' for _ in range(n_groups)]
+        colors_group = [group_colors[i % n_groups] for i in range(n)]
+        # Compute target colors if available
+        colors_target = None
+        if target is not None:
+            viridis = colormaps['viridis']
+            target_cmap = [f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' for c in [viridis(v) for v in [0.0, 0.5, 1.0]]]
+            colors_target = [target_cmap[t] for t in np.tile(target, group_size)]
+        colors = colors_group  # default to group coloring
     else: raise ValueError(f"Unknown color_by: {color_by}")
 
     hover_text = [f"file_id: {int(fid)}, deltas: {ds.cpu().numpy()}" for fid, ds in zip(file_idx,deltas)] if (file_idx is not None) and (deltas is not None) else None
-    if color_by == 'pairs':
-        hover_text = [f"pair {i%n_pairs}" for i in range(n)] if hover_text is None else [f"{s}, pair {i%n_pairs}" for i, s in enumerate(hover_text)]
-
+    if color_by in ['pairs','triplets']:
+        hover_text = [f"group {i%n_groups}" for i in range(n)] if hover_text is None else [f"{s}, group {i%n_groups}" for i, s in enumerate(hover_text)]
     
-    fig = go.Figure(data=[go.Scatter3d(
-        x=coords[:,0], y=coords[:,1], z=coords[:,2],
-        mode='markers', 
-        marker=dict(size=4, color=colors, colorscale='Viridis' if color_by != 'pairs' else None, opacity=0.8),
-        hovertext=hover_text, hoverinfo='x+y+z+text' if hover_text else 'x+y+z'
-    )])
+    scatter_kwargs = dict(mode='markers', hoverinfo='x+y+z+text' if hover_text else 'x+y+z')
+    if color_by == 'triplets':
+        fig = go.Figure()
+        # Trace 0: anchor points
+        fig.add_trace(go.Scatter3d(x=coords[:n_groups,0], y=coords[:n_groups,1], z=coords[:n_groups,2],
+            marker=dict(size=4.5, color='black', opacity=0.8, symbol='circle-open'), showlegend=False,
+            hovertext=hover_text[:n_groups] if hover_text else None, name='anchors', **scatter_kwargs))
+        # Trace 1: non-anchor points
+        fig.add_trace(go.Scatter3d(x=coords[n_groups:,0], y=coords[n_groups:,1], z=coords[n_groups:,2],
+            marker=dict(size=4, color=colors[n_groups:], opacity=0.8), showlegend=False,
+            hovertext=hover_text[n_groups:] if hover_text else None, name='others', **scatter_kwargs))
+        # Trace 2: connecting lines
+        anchors, seconds, thirds = coords[:n_groups], coords[n_groups:2*n_groups], coords[2*n_groups:]
+        seg = np.empty((n_groups * 6, 3))
+        seg[0::6], seg[1::6], seg[2::6] = anchors, seconds, np.nan
+        seg[3::6], seg[4::6], seg[5::6] = anchors, thirds,  np.nan
+        fig.add_trace(go.Scatter3d(x=seg[:,0], y=seg[:,1], z=seg[:,2], mode='lines',
+            line=dict(color='grey', width=1.5), opacity=0.6, showlegend=False, hoverinfo='skip', name='lines'))
+
+        # Interactive buttons
+        buttons = [
+            dict(label='Lines: Show', method='restyle', args=[{'visible': True}, [2]]),
+            dict(label='Lines: Hide', method='restyle', args=[{'visible': False}, [2]]),
+        ]
+        if colors_target is not None:
+            buttons = [
+                dict(label='Color: Group',  method='restyle', args=[
+                    {'marker.color': [['black'] * n_groups, colors_group[n_groups:]]}, [0, 1]]),
+                dict(label='Color: Target', method='restyle', args=[
+                    {'marker.color': [colors_target[:n_groups], colors_target[n_groups:]]}, [0, 1]]),
+            ] + buttons
+        fig.update_layout(updatemenus=[dict(
+            type='buttons', direction='down', x=-0.05, y=0.7, xanchor='left', yanchor='top',
+            showactive=True, buttons=buttons
+        )])
+    else:
+        fig = go.Figure(data=[go.Scatter3d(x=coords[:,0], y=coords[:,1], z=coords[:,2],
+            marker=dict(size=4, color=colors, opacity=0.8, colorscale='Viridis' if color_by not in ['pairs','triplets'] else None),
+            hovertext=hover_text, **scatter_kwargs)])
+
     title = title + f', n={n}'
     fig.update_layout(title=title, margin=dict(l=0, r=0, b=0, t=30))
     return fig
 
+
 # %% ../nbs/05_viz.ipynb #f1feb8ca
 @torch.no_grad()
-def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True, file_idx=None, deltas=None):
+def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True,  **kwargs):
     "visualize embeddings, projected"
     if zs is None:  return {} # 'pca':pca_fig, 'umap':umap_fig} if umap_fig is not None else {'pca':pca_fig}
     umap_fig, pca_fig = None, None
     if do_umap:
         coords = umap_project(zs)
-        umap_fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}', file_idx=file_idx, deltas=deltas)
+        umap_fig = plot_embeddings_3d(coords, title=title+f' (UMAP), epoch {epoch}', **kwargs)
     if torch.cuda.is_available(): torch.cuda.synchronize() # cleanup before PCA or else you get CUDA errors
     gc.collect()
     coords = pca_project(zs)
-    pca_fig = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}', file_idx=file_idx, deltas=deltas)
+    pca_fig = plot_embeddings_3d(coords, title=title+f' (PCA), epoch {epoch}', **kwargs)
     if wandb.run is not None: 
         if do_umap and umap_fig is not None:
             wandb.log({f"{title} UMAP": wandb.Html(umap_fig.to_html()), f"{title} PCA": wandb.Html(pca_fig.to_html())})
@@ -123,12 +169,11 @@ def _make_emb_viz(zs, epoch=-1, title='Embeddings', do_umap=True, file_idx=None,
     return {'pca':pca_fig, 'umap':umap_fig} if umap_fig is not None else {'pca':pca_fig}
 
 # %% ../nbs/05_viz.ipynb #b618d453
-def _subsample(data, indices, deltas, max_points, debug=False):
-    "Subsample data and indices together, in pairs"
-    perm1 = torch.randperm(len(data)//2)[:max_points//2]
-    perm2 = perm1 + len(data)//2
-    perm = torch.cat([perm1,perm2])
-    return data[perm], indices[perm], deltas[perm]
+def _subsample(data, indices, deltas, max_points, group_size=2, target=None, debug=False):
+    "Subsample data and indices together, in groups"
+    base_perm = torch.randperm(len(data)//group_size)[:max_points//group_size]
+    perm = torch.cat([base_perm + i * len(data)//group_size for i in range(group_size)])
+    return data[perm], indices[perm], deltas[perm],  target[base_perm] if (target is not None) else None
 
 # %% ../nbs/05_viz.ipynb #eceafaa0-dad6-43cd-ab67-7abbe8d13ab8
 def _gather_level(enc_outs,        # list of encoder outputs
@@ -150,29 +195,37 @@ def _gather_level(enc_outs,        # list of encoder outputs
     emb, non_empty = torch.cat(emb, dim=0), torch.cat(non_empty, dim=0)      # cat along batch dim
     non_empty, joint_non_empty = non_empty.flatten(), joint_non_empty.repeat(n_eo,1).flatten()
 
-    if batch is None: return emb.reshape(-1, edim), non_empty, joint_non_empty,  None, None  # (BT*N, edim), (BT*N,), (BT*N,), where BT = B*n_eo    
+    if batch is None: return emb.reshape(-1, edim), non_empty, joint_non_empty,  None, None, None  # (BT*N, edim), (BT*N,), (BT*N,), where BT = B*n_eo    
+    
     file_idx = batch['file_idx'].repeat(n_eo).repeat_interleave(N).to(device)
-    deltas = batch['deltas']
+    deltas, target = batch['deltas'], batch.get('target',None)
     if deltas.dim() == 2: deltas = deltas.unsqueeze(1)
+    if target is not None: target = target.repeat(n_eo).repeat_interleave(N).to(device)
     deltas = deltas[:, 0, :].repeat(n_eo, 1).repeat_interleave(N, dim=0).to(device)
-    return emb.reshape(-1, edim), non_empty,  joint_non_empty, file_idx, deltas     # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,), (BT*N,2)
+    return emb.reshape(-1, edim), non_empty,  joint_non_empty, file_idx, deltas, target  # (BT*N, edim), (BT*N,), (BT*N,), (BT*N,), (BT*N,2)
+    
 
 # %% ../nbs/05_viz.ipynb #a64048f1
 @torch.no_grad()
-def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings', max_points=5000, do_umap=False, debug=False):
+def make_emb_viz(enc_outs, epoch=-1, encoder=None, batch=None, title='Embeddings', max_points=5000, do_umap=False, debug=False, color_by=None):
     "this is the main viz routine, showing different groups of embeddings"
     if not isinstance(enc_outs, (list, tuple)): enc_outs = [enc_outs]
     device = enc_outs[0].patches[0].emb.device
+    enc_outs = [eo for eo in enc_outs if eo is not None]
+    n_eo = sum(eo is not None for eo in enc_outs)  # num of non_none encoder outs (e.g. 2)
     if encoder is not None: encoder.to('cpu')
     torch.cuda.empty_cache()
     figs = [] 
     for lev in range(enc_outs[0].patches.num_levels):
-        emb, non_empty, joint_non_empty, file_idx, deltas = _gather_level(enc_outs, lev, batch=batch)
+        emb, non_empty, joint_non_empty, file_idx, deltas, target = _gather_level(enc_outs, lev, batch=batch)
         lev_figs = {}
         for mask, label in [(joint_non_empty, 'joint_non_empty'), (~non_empty, 'empty')]:
             if not mask.any(): continue
-            rnd_emb, rnd_fi, rnd_d = _subsample(emb[mask], file_idx[mask], deltas[mask], max_points)
-            lev_figs[label] = _make_emb_viz(rnd_emb.cpu(), epoch=epoch, title=f'{label} Level {lev} (dim={emb.shape[-1]}), {title}', file_idx=rnd_fi, deltas=rnd_d, do_umap=do_umap)
+            rnd_emb, rnd_fi, rnd_d, rnd_t = _subsample(emb[mask], file_idx[mask], deltas[mask], max_points, group_size=len(enc_outs), target=target[mask] if target is not None else None)
+            color_by = ['none','pairs','triplets'][n_eo-1] if color_by is None else color_by
+            if label=='empty': rnd_t = None
+            lev_figs[label] = _make_emb_viz(rnd_emb.cpu(), epoch=epoch, title=f'{label} Level {lev} (dim={emb.shape[-1]}), {title}', 
+                                            file_idx=rnd_fi, deltas=rnd_d, target=rnd_t, do_umap=do_umap, color_by=color_by)
         figs.append(lev_figs)
     if encoder is not None: encoder.to(device)
     return figs
@@ -266,11 +319,12 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=
     if debug: print(f"mae_mask: shape={mae_mask.shape}, pct_visible={mae_mask.float().mean():.3f}")
 
     img_recon_noreplace = None
-    if recon.shape != img_real.shape:
+    if recon.shape != img_real.shape: # turn into image
         img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask)
         img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
-    else:
-        img_recon = (recon > 0.25).float()
+    
+    img_recon = binarize(recon)
+        
     evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size, return_maps=return_maps)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
     grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)

@@ -64,10 +64,7 @@ cat > /tmp/midi_rae_run.sh << EOF
 #!/bin/bash
 source ~/envs/midi-rae/bin/activate
 cd ${RUN_DIR}
-(
-  PYTHONPATH=${RUN_DIR} python -m midi_rae.train_${TYPE} --config-name ${CONFIG} ++tag=${RUN_TAG} > ${RUN_DIR}/run.log 2>&1
-  echo \$? > ${RUN_DIR}/exit_code
-) &
+PYTHONPATH=${RUN_DIR} nohup python -m midi_rae.train_${TYPE} --config-name ${CONFIG} ++tag=${RUN_TAG} > ${RUN_DIR}/run.log 2>&1 &
 echo \$!
 EOF
 

@@ -371,7 +371,7 @@ class SwinDecoder(nn.Module):
 class SwinMaskedEmbeddingPredictor(nn.Module):
     """Perceiver-style hierarchical embedding predictor (I-JEPA-inspired).
     
-    Summarizes each hierarchy level into a bottleneck token via cross-attention,
+    Summarizes each hierarchy level into bottleneck tokens via cross-attention,
     mixes across levels with self-attention, then predicts target embeddings
     at all positions via reverse cross-attention. Loss should be computed
     externally on masked positions only, e.g.:
@@ -383,33 +383,47 @@ class SwinMaskedEmbeddingPredictor(nn.Module):
     Flow: Mask → Summarize → Mix → Predict
     """
     def __init__(self, dims=(256, 128, 64, 32, 16, 8), summary_dim=128,
-                 mix_depth=2, heads=4, mask_ratio=0.4, mr_level_fac=1.25):
+                 n_summaries=None, mix_depth=2, heads=4, mask_ratio=0.4, mr_level_fac=1.25):
         super().__init__()
         n_levels = len(dims)
         self.n_levels, self.mask_ratio, self.mr_level_fac = n_levels, mask_ratio, mr_level_fac
 
-        # Per-level learned mask tokens — stand in for masked positions in attention,
-        # serving as the safeguard: attention always has N_i tokens to work with
+        # Default: 1 summary token at coarsest, doubling each finer level
+        if n_summaries is None:
+            n_summaries = tuple(2**i for i in range(n_levels))
+        self.n_summaries = n_summaries
+        total_summaries = sum(n_summaries)
+
+        # Per-level learned mask tokens
         self.mask_tokens = nn.ParameterList([nn.Parameter(torch.randn(d) * 0.02) for d in dims])
 
         # --- Step 1: Summarize (per-level cross-attention) ---
         self.kv_projs = nn.ModuleList([nn.Linear(d, summary_dim) for d in dims])
-        self.summary_queries = nn.Parameter(torch.randn(n_levels, 1, summary_dim) * 0.02)
+        self.summary_queries = nn.ParameterList([
+            nn.Parameter(torch.randn(ns, summary_dim) * 0.02)
+            for ns in n_summaries
+        ])
         self.summary_attn = nn.ModuleList([
             nn.MultiheadAttention(summary_dim, heads, batch_first=True)
             for _ in range(n_levels)
         ])
 
-        # --- Step 2: Mix (self-attention across level summaries) ---
-        self.level_emb = nn.Parameter(torch.randn(1, n_levels, summary_dim) * 0.02)
+        # --- Step 2: Mix (self-attention across all level summaries) ---
+        self.level_emb = nn.ParameterList([
+            nn.Parameter(torch.randn(1, ns, summary_dim) * 0.02)
+            for ns in n_summaries
+        ])
         self.mix = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(summary_dim, heads, dim_feedforward=summary_dim * 4,
                                        batch_first=True, norm_first=True),
             num_layers=mix_depth, enable_nested_tensor=False)
 
         # --- Step 3: Predict (reverse cross-attention + output projection) ---
-        self.pos_proj = nn.Linear(2, summary_dim)       # grid coords → query basis
-        self.pred_level_emb = nn.Parameter(torch.randn(n_levels, 1, summary_dim) * 0.02)
+        self.pos_proj = nn.Linear(2, summary_dim)
+        self.pred_level_emb = nn.ParameterList([
+            nn.Parameter(torch.randn(1, 1, summary_dim) * 0.02)
+            for _ in range(n_levels)
+        ])
         self.pred_attn = nn.ModuleList([
             nn.MultiheadAttention(summary_dim, heads, batch_first=True)
             for _ in range(n_levels)
@@ -458,27 +472,27 @@ class SwinMaskedEmbeddingPredictor(nn.Module):
             torch.ones(lv.emb.shape[:2], dtype=torch.bool, device=device) for lv in levels]
         self.mask_ratio = old_ratio
 
-        # Step 1: Summarize — masked positions get learned mask tokens,
-        # so attention always has N_i tokens (no empty-sequence edge cases)
+        # Step 1: Summarize
         summaries = []
         for i, lv in enumerate(levels):
             emb = lv.emb.clone()
-            emb[~masks[i]] = self.mask_tokens[i]                       # mask token safeguard
-            kv = self.kv_projs[i](emb)                                 # (B, N_i, summary_dim)
-            q = self.summary_queries[i].expand(B, -1, -1)              # (B, 1, summary_dim)
-            s, _ = self.summary_attn[i](q, kv, kv)                     # (B, 1, summary_dim)
-            summaries.append(s)
-        summaries = torch.cat(summaries, dim=1) + self.level_emb       # (B, n_levels, summary_dim)
+            emb[~masks[i]] = self.mask_tokens[i]
+            kv = self.kv_projs[i](emb)                                     # (B, N_i, summary_dim)
+            q = self.summary_queries[i].unsqueeze(0).expand(B, -1, -1)     # (B, ns_i, summary_dim)
+            s, _ = self.summary_attn[i](q, kv, kv)                         # (B, ns_i, summary_dim)
+            summaries.append(s + self.level_emb[i])                         # add per-level embedding
+
+        summaries = torch.cat(summaries, dim=1)                             # (B, total_summaries, summary_dim)
 
         # Step 2: Cross-level mixing
-        summaries = self.mix(summaries)                                 # (B, n_levels, summary_dim)
+        summaries = self.mix(summaries)                                     # (B, total_summaries, summary_dim)
 
         # Step 3: Predict at all positions
         preds = []
         for i, lv in enumerate(levels):
-            q = self.pos_proj(lv.pos.float())                          # (N_i, summary_dim)
+            q = self.pos_proj(lv.pos.float())                              # (N_i, summary_dim)
             q = q.unsqueeze(0).expand(B, -1, -1) + self.pred_level_emb[i]
-            p, _ = self.pred_attn[i](q, summaries, summaries)          # (B, N_i, summary_dim)
-            preds.append(self.out_projs[i](p))                         # (B, N_i, D_i)
+            p, _ = self.pred_attn[i](q, summaries, summaries)              # (B, N_i, summary_dim)
+            preds.append(self.out_projs[i](p))                             # (B, N_i, D_i)
         return preds, masks
 
