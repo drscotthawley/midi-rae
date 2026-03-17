@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['PreEncodedDataset', 'setup_dataloaders', 'setup_models', 'setup_tstate', 'get_embeddings_batch', 'train_step',
-           'train']
+           'train', 'train_dec_main']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
 import sys
@@ -163,7 +163,6 @@ def train_step(epoch, enc_out, img_real, decoder,
     return loss_dict, loss_dict['recon']
 
 # %% ../nbs/09_train_dec.ipynb #198855af
-@hydra.main(version_base=None, config_path='../configs', config_name='config')
 def train(cfg: DictConfig):
     dict_test = dict(cfg) # force resolution of required fields (e.g. tag=???)
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
@@ -235,9 +234,14 @@ def train(cfg: DictConfig):
 
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
-if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
+@hydra.main(version_base=None, config_path='../configs', config_name='config')
+def train_dec_main(cfg: DictConfig):
     cjprint(logo, color="red")
     rprint("I just met you \n","yellow")
     cjprint("Decoder training script",color="cyan") 
     best_metric= train()
     print(f"FINISHED. Best metric: {best_metric:.3f}")
+    
+if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
+    train_dec_main()
+
