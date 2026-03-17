@@ -1,5 +1,5 @@
 data:
-  path: /home/shawley/datasets/POP909_images_basic  # adjust path as needed
+  path: ~/datasets/POP909_images_basic  # adjust path as needed
   image_size: 128
   in_channels: 1
 
@@ -36,7 +36,7 @@ training:
   lambda_fact: 0.0        # factorization loss
 
   dec_batch_size: 360     # decoder-training batch size
-  dec_epochs: 1000 # 500
+  dec_epochs: 10000 # 500
   dec_lr: 2e-3
   pos_weight: 2.5
   gan_warmup: 100000      # number of epochs before adversarial training starts
@@ -44,7 +44,7 @@ training:
 
 
 preencode:
-  output_dir: /home/shawley/datasets/POP909_encoded
+  output_dir: ~/datasets/POP909_encoded
   num_passes: 10          # number of passes through the dataset
 
 wandb:
