@@ -60,7 +60,7 @@ class AnchorDataset(Dataset):
     "piano roll pair dataset"
     def __init__(self, 
             image_dataset_dir='~/datasets/POP909_images_basic/', 
-            crop_size=128,  # int for square of tuple for rectangle 
+            crop_size=(128,128),  # int for square of tuple for rectangle 
             split='train',
             val_fraction=0.1,
             seed=42,
@@ -70,7 +70,6 @@ class AnchorDataset(Dataset):
             pad_x=(0,0), # (left, right) : crop wider to (crop_sizw-pad_x[0], crop_size+pad_x[1])
             ):
         self.crop_size, self.aug_y_max, self.sigma, self.pad_x = crop_size, aug_y_max, sigma, pad_x
-        if isinstance(self.crop_size, int): self.crop_size = (self.crop_size, self.crop_size)
         
         # Load and split filenames
         all_filenames = glob(os.path.join(os.path.expanduser(image_dataset_dir), '**/*.png'), recursive=True)
@@ -92,7 +91,11 @@ class AnchorDataset(Dataset):
     def __len__(self):
         return self.actual_len * 100  # arbitrary large number for epoch length
 
-    def __getitem__(self, idx, pad_x=None):
+    def __getitem__(self, idx, pad_x=None, crop_size=None):
+        if crop_size is None: crop_size = self.crop_size
+        if isinstance(crop_size, int): crop_size = (crop_size, crop_size)
+        if pad_x is None: pad_x = self.pad_x 
+
         # ignore idx, just randomly sample
         file_idx = random.randint(0, self.actual_len - 1)
         img = torch.from_numpy( self.images[file_idx] ).float()
@@ -105,15 +108,14 @@ class AnchorDataset(Dataset):
         
         # cropping in x 
         h, w = img.shape
-        pad_x = pad_x if pad_x is not None else self.pad_x 
-        min_loc, max_loc = 0+pad_x[0], w - self.crop_size[1] - pad_x[1]
+        min_loc, max_loc = 0+pad_x[0], w - crop_size[1] - pad_x[1]
         loc = random.randint(min_loc, max_loc)      
-        img = img[:, loc-pad_x[0]: loc + self.crop_size[1]+pad_x[1]]  # crop horizontally
-        note_weights = note_weights[:, loc-pad_x[0]: loc + self.crop_size[1]+pad_x[1]]  # crop horizontally
+        img = img[:, loc-pad_x[0]: loc + crop_size[1]+pad_x[1]]  # crop horizontally
+        note_weights = note_weights[:, loc-pad_x[0]: loc + crop_size[1]+pad_x[1]]  # crop horizontally
 
         # optional: additional cropping in y: 
-        if self.crop_size[0] < img.shape[0]: 
-            mid, hc = img.shape[0]//2,  self.crop_size[0]//2
+        if crop_size[0] < img.shape[0]: 
+            mid, hc = img.shape[0]//2,  crop_size[0]//2
             img = img[mid-hc: mid+hc, :]
             note_weights = note_weights[mid-hc: mid+hc, :]
 
