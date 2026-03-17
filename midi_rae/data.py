@@ -259,9 +259,9 @@ class ShiftedTripletDataset(AnchorDataset):
         img = anchor['img']  # (1, H, crop_size + 2*sx)  <-- note the extra "1," for what follows!
         
         # crops in x
-        c1 = img[:,:, pad_x[0]+dx1: pad_x[0]+dx1+self.crop_size]
-        c2 = img[:,:, pad_x[0]+dx2: pad_x[0]+dx2+self.crop_size]
-        img = img[:,:,pad_x[0]:     pad_x[0]+self.crop_size]       # crop anchor to final size
+        c1 = img[:,:, pad_x[0]+dx1: pad_x[0]+dx1+self.crop_size[1]]
+        c2 = img[:,:, pad_x[0]+dx2: pad_x[0]+dx2+self.crop_size[1]]
+        img = img[:,:,pad_x[0]:     pad_x[0]+self.crop_size[1]]       # crop anchor to final size
 
         # shift c1 and c2 images in y 
         c1 = shift_no_wrap(c1, shifts=dy1, dims=1) 
