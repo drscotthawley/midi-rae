@@ -179,7 +179,7 @@ def train(cfg: DictConfig):
     manager = mp.Manager()
     shared_ct_dict = manager.dict(OmegaConf.to_container(cfg))
 
-    if cfg.training.lambda_fact > 0:  # only load pairs unless you need triplets (save memory/computation)
+    if cfg.training.get('lambda_fact',O) > 0:  # only load pairs unless you need triplets (save memory/computation)
         train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
         val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
     else:
