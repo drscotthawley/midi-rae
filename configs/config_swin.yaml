@@ -20,9 +20,7 @@ training:
   batch_size: 300         # encoder batch size
   lr: 1e-3                # used to be 2e-4 but then we removed gradients from z1
   epochs: 25
-  lambd: 0.3              # lejepa attraction-vs-sigreg weight (final value)
-  lambd_init: 0.99        # curriculum: start lambd here, decay to lambd over lambd_curriculum_epochs
-  lambd_curriculum_epochs: 15  # epochs over which lambd decays from lambd_init to lambd
+  lambd: 0.3              # lejepa attraction-vs-sigreg weight
   max_shift_x: 12         
   max_shift_y: 12
   #init_shift_x: 1        # enable curriculum learning, starting with this value
@@ -38,6 +36,8 @@ training:
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
   lambda_anchor: 0.0      # L2 loss on empty patch embeddings
   lambda_fact: 1.0        # factorization loss
+  lambda_sim: 1.0         # attraction loss weight (ramped from 0 if lambda_sim_curriculum_epochs > 0)
+  lambda_sim_curriculum_epochs: 15  # epochs to ramp lambda_sim from 0 → lambda_sim
 
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 100 # 500
