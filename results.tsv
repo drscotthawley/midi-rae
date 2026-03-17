@@ -1,3 +1,4 @@
 commit	host	type	best_metric	status	description
 95acc73	lecun	enc	0.564000	keep	baseline (100 epochs, one-cycle LR): lambda_fact=0 lambda_anchor=0 lambda_mep=1.0 ema_eta jump at epoch44
 ace04d5	lecun	enc	0.702340	keep	exp1: 25-epoch baseline with flat+cosine-tail LR (new schedule reference point)
+6f2df52	lecun	enc	0.000000	crash	exp2: lambda_fact=0.3 — crashed: ShiftedTripletDataset tuple crop_size bug (fixed)
