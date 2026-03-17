@@ -4,3 +4,4 @@ ace04d5	lecun	enc	0.702340	keep	exp1: 25-epoch baseline with flat+cosine-tail LR
 6f2df52	lecun	enc	0.000000	crash	exp2: lambda_fact=0.3 — crashed: ShiftedTripletDataset tuple crop_size bug (fixed)
 9cae484	lecun	enc	0.906429	keep	exp2 retry: lambda_fact=0.3 enabled (new baseline; not comparable to exp1 — loss fn changed)
 5dd3397	lecun	enc	0.954393	discard	exp3: ema_eta=0.9 fixed (remove epoch-44 jump) — worse; EMA from start hurts sim_loss
+d74ef85	lecun	enc	0.786779	keep	exp4: lambda_fact=0.1 (reduced from 0.3) — improved
