@@ -12,9 +12,9 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 - Without skip (exp4): enc val_loss = 0.787, dec F1 = ~99.2% (baseline)
 - With skip (exp9): enc val_loss = 0.412, dec F1 = **99.66%**
 
-**Why it works**: At L5, each patch is only 4×4 pixels. Attraction loss at this scale pulls together patches that are locally similar but semantically meaningless — the signal is too noisy to be useful. SIGReg at L5 is also enormously expensive (204,800 patches) and may be regularizing away useful local structure. Removing all LeJEPA supervision at L5 lets the finest level learn freely from the Swin hierarchy connections and MEP alone, which is apparently sufficient and better.
+**Why it works**: The finest-level patches are essentially a **discrete vocabulary of musical primitives** (individual notes, rests, partial note edges). SIGReg was forcing these into a Gaussian distribution — a fundamentally wrong prior for discrete/categorical data. Attraction loss compounds this by collapsing the vocabulary, pulling together patches with similar local pixel patterns regardless of musical context. Removing LeJEPA at L5 lets the discrete vocabulary organize itself naturally, shaped only by the Swin hierarchy connections and MEP. MEP is an appropriate objective at this level — it asks "predict the local patch content" without imposing a distributional prior. The hierarchy and output count are unchanged (still 6 levels); the finest level embeddings are still there, just no longer distorted by inappropriate supervision.
 
-**Implication**: Do NOT apply LeJEPA loss at the finest Swin level. This should be the default going forward. There is no need to replace L5 with a CNN block or modify the patch embedding — the architecture is fine; the problem was over-constraining L5 with inappropriate loss signals.
+**Implication**: Do NOT apply LeJEPA loss at the finest Swin level. This is now hardcoded in `calc_enc_loss_multiscale` (`if lev < n_levels - 1`). There is no need to replace L5 with a CNN block or modify the patch embedding — the architecture is fine; the problem was imposing a Gaussian prior on what is naturally a discrete vocabulary.
 
 **Also noted**: Skipping LeJEPA at L5 reduces training time by ~30% (SIGReg on 204,800 patches was the dominant cost).
 
