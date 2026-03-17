@@ -200,12 +200,12 @@ def train(cfg: DictConfig):
         encoder = SwinEncoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size, patch_h=cfm.patch_h, patch_w=cfm.patch_w,
                             embed_dim=cfm.embed_dim, depths=cfm.depths, num_heads=cfm.num_heads, window_size=cfm.window_size,
                             mlp_ratio=cfm.mlp_ratio, drop_path_rate=cfm.drop_path_rate).to(device)
-        if cfg.training.lambda_mae > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
-        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims).to(device)
+        if cfg.training.get('lambda_mae',0) > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
+        if cfg.training.get('lambda_mep',0) > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims).to(device)
     else:
         encoder = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfm.patch_size, 
                            cfm.dim, cfm.depth, cfm.heads).to(device)
-        if cfg.training.lambda_mae <=0: mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
+        if cfg.training.get('lambda_mae',0) >0: mae_decoder = LightweightMAEDecoder(patch_size=patch_size, dim=dim).to(device)
         
     ema_encoder = EMAModel(encoder, eta=cfg.training.ema_eta, update_every=cfg.training.ema_update_every) if cfg.training.ema_eta > 0 else None
     cjprint("encoder, mae_decoder, ema_encoder, mep_model =", encoder.__class__.__name__, mae_decoder.__class__.__name__, ema_encoder.__class__.__name__, mep_model.__class__.__name__, color="cyan")
