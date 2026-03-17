@@ -91,6 +91,7 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, tit
         # Compute target colors if available
         colors_target = None
         if target is not None:
+            target = target.cpu()
             viridis = colormaps['viridis']
             target_cmap = [f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' for c in [viridis(v) for v in [0.0, 0.5, 1.0]]]
             colors_target = [target_cmap[t] for t in np.tile(target, group_size)]
