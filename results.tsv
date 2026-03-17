@@ -9,3 +9,4 @@ d74ef85	lecun	enc	0.786779	keep	exp4: lambda_fact=0.1 (reduced from 0.3) — imp
 8864f6d	lecun	enc	0.694718	keep	exp6: lambda_fact=0.01 — improved; beats 25-epoch exp1 baseline
 34f4c5a	lecun	enc	0.723947	discard	exp7: lambda_fact=0.001 — worse than exp6; too small for meaningful factorization
 e19c1ef	lecun	enc	0.770839	keep	exp8: skip attraction at finest level (L5); lambda_fact=0.1 — improved over exp4 baseline
+0702d45	lecun	enc	0.411613	keep	exp9: skip entire LeJEPA at finest level (L5); lambda_fact=0.1 — massive improvement
