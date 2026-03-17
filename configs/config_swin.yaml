@@ -20,7 +20,9 @@ training:
   batch_size: 300         # encoder batch size
   lr: 1e-3                # used to be 2e-4 but then we removed gradients from z1
   epochs: 25
-  lambd: 0.3              # lejepa attraction-vs-sigreg weight
+  lambd: 0.3              # lejepa attraction-vs-sigreg weight (final value)
+  lambd_init: 0.99        # curriculum: start lambd here, decay to lambd over lambd_curriculum_epochs
+  lambd_curriculum_epochs: 15  # epochs over which lambd decays from lambd_init to lambd
   max_shift_x: 12         
   max_shift_y: 12
   #init_shift_x: 1        # enable curriculum learning, starting with this value
