@@ -18,6 +18,8 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 
 **Also noted**: Skipping LeJEPA at L5 reduces training time by ~30% (SIGReg on 204,800 patches was the dominant cost).
 
+**MEP finding**: It is unnecessary to run MEP on the raw patch embedding outputs. Including only the 6 Swin stage outputs (L0–L5) in MEP supervision is sufficient — the finest MEP target is L5 (output of stage 0), which has already been through one round of Swin processing. When L5 has no LeJEPA losses, MEP alone provides sufficient supervision at that level. The raw patch embeddings remain completely unsupervised and the system works well — the Swin hierarchy provides all the structure needed above them.
+
 **Config setting to always include**:
 ```yaml
 skip_lejepa_levels: [5]   # disable entire LeJEPA loss at finest Swin level
