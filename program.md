@@ -56,6 +56,7 @@ Val loss is a proxy for encoder quality, not a direct measure of latent structur
 **Hard constraints**:
 - `lambda_mae = 0` always — MAE is completely off for all runs, no exceptions
 - No other lambda may be set to zero — use a small value instead if you want to de-emphasize a loss term
+- `lambda_fact >= 0.001` minimum, but **do not optimize by reducing lambda_fact** — lower values approach removing factorization entirely, which defeats the research objective. The goal is to keep factorization alive and find other ways to reduce val_loss. Use lambda_fact >= 0.1 for meaningful factorization signal.
 - Keep the Swin hierarchy (multi-scale structure)
 
 **Fair game** (neither required nor forbidden):
