@@ -71,7 +71,7 @@ if [[ -n "$CKPT_SRC" ]]; then
     scp "${CKPT_HOST}:${CKPT_PATH}" "/tmp/${CKPT_FILE}"
     scp "/tmp/${CKPT_FILE}" "${HOST}:${RUN_DIR}/checkpoints/${CKPT_FILE}"
     rm -f "/tmp/${CKPT_FILE}"
-    CKPT_OVERRIDE="++encoder_ckpt=${RUN_DIR}/checkpoints/${CKPT_FILE}"
+    CKPT_OVERRIDE="++encoder_ckpt=checkpoints/${CKPT_FILE}"
     echo "Checkpoint staged at ${RUN_DIR}/checkpoints/${CKPT_FILE}"
 fi
 
