@@ -18,4 +18,5 @@ n/a	razer	dec	0.9978	keep	razer dec: exp9-like encoder (skip LeJEPA at L5); F1=9
 cf09121	lecun	enc	0.902788	discard	exp13: lambda_sim=0 (no attraction), factorization+SIGReg only — worst yet; ablation confounded by lambda_fact=1.0
 8c8d9e2	lecun	enc	0.504859	keep	exp14: lambd=0.2, lambda_fact=0.5, lambda_sim=1.0 — second best; better equipartition between structural losses and SIGReg
 8204602	lecun	enc	0.381771	keep	exp15: same as exp14 but 100 epochs (LR schedule scaled) — new best; structural losses plateaued ~epoch 30, SIGReg dominated after
-4d1c5ae	lecun	enc	0.336328	keep	exp16: sigreg_prefac 0.5→0.1 (5x weaker SIGReg) — new best; weaker SIGReg gave structural losses more room
+4d1c5ae	lecun	enc	0.319758	keep	exp16: sigreg_prefac 0.5→0.1 (5x weaker SIGReg) — new best; weaker SIGReg gave structural losses more room
+09fff8a	lecun	enc	0.324717	discard	exp17: delta_mep=True (MEP predicts shifted image; FiLM-conditioned on delta) — slightly worse than exp16; MEP learns but structural losses not improved

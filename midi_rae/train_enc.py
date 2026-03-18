@@ -98,74 +98,85 @@ class CurriculumSchedule():
 
 # %% ../nbs/06_train_enc.ipynb #d3f6162a
 #@torch.compiler.disable
-def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_encoder=None, mep_model=None, debug=False):
-    "Compute loss and return other exal auxiliary variables (for train or val)"
+def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_encoder=None, mep_model=None, debug=False, loss_weights=None):
+    "Compute loss and return other auxiliary variables (for train or val)"
     device = next(encoder.parameters()).device
-    
+    lw = loss_weights or {
+        'lambd':        cfg.training.lambd,
+        'lambda_fact':  cfg.training.get('lambda_fact',  0.5),
+        'lambda_anchor':cfg.training.get('lambda_anchor',0.05),
+        'lambda_sim':   cfg.training.get('lambda_sim',   1.0),
+        'lambda_mep':   cfg.training.get('lambda_mep',   1.0),
+        'lambda_mae':   cfg.training.get('lambda_mae',   0.0),
+    }
+
     img1, img2, deltas = [batch[x].to(device, non_blocking=True) for x in ['img1','img2','deltas']]
     img3, target = None, None
-    if 'img3' in batch and cfg.training.get('lambda_fact',0) > 0:
+    use_delta_mep = cfg.training.get('delta_mep', False)
+    if 'img3' in batch and (lw.get('lambda_fact', 0) > 0 or use_delta_mep):
         img3, target  = [batch[x].to(device, non_blocking=True) for x in ['img3','target']]
 
-    enc1_fn  = ema_encoder if ema_encoder is not None else encoder   # with ema on, output 1 gets no gradients
-    enc_out1 = enc1_fn(img1, mask_ratio=(cfg.training.mask_ratio if mae_decoder is not None else 0))  
-    enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)            # output 2 always  gets gradients.
+    enc1_fn  = ema_encoder if ema_encoder is not None else encoder
+    enc_out1 = enc1_fn(img1, mask_ratio=(cfg.training.mask_ratio if mae_decoder is not None else 0))
+    enc_out2 = encoder(img2, mae_mask=enc_out1.mae_mask)
     enc_out3 = None
-    if 'img3' in batch and cfg.training.get('lambda_fact',0) > 0:
-        enc_out3 = encoder(img3, mae_mask=enc_out1.mae_mask)        
+    if 'img3' in batch and (lw.get('lambda_fact', 0) > 0 or use_delta_mep):
+        enc_out3 = encoder(img3, mae_mask=enc_out1.mae_mask)
 
     loss_dict = {}
     recon_patches = None
-    if mae_decoder is not None: # recon at finest scale
-        eo = enc_out2.patches[-1] # readibility/convenience variable
-        recon_patches = mae_decoder(enc_out2) 
+    if mae_decoder is not None:
+        recon_patches = mae_decoder(enc_out2)
         if debug:
             for i, lv in enumerate(enc_out2.patches.levels):
                 print(f"level {i}: {lv.emb.isnan().any()}, min={lv.emb.min():.4f}, max={lv.emb.max():.4f}")
-        loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2, lambda_visible=cfg.training.get('lambda_visible',0.1)) # created here. 
+        loss_dict['mae'] = calc_mae_loss(recon_patches, img2, enc_out2, lambda_visible=cfg.training.get('lambda_visible',0.1))
 
     if isinstance(enc_out1.patches, HierarchicalPatchState):
         z1 = [lvl.emb for lvl in enc_out1.patches.levels]
         z2 = [lvl.emb for lvl in enc_out2.patches.levels]
-        if enc_out3 is not None:
-            z3 = [lvl.emb for lvl in enc_out3.patches.levels]  
+        if enc_out3 is not None and lw.get('lambda_fact', 0) > 0:
+            z3 = [lvl.emb for lvl in enc_out3.patches.levels]
             non_emptys = [(l1.non_empty, l2.non_empty, l3.non_empty) for l1, l2, l3 in zip(enc_out1.patches.levels, enc_out2.patches.levels, enc_out3.patches.levels)]
         else:
             z3 = None
-            l3_iter = enc_out3.patches.levels if enc_out3 is not None else [None] * len(enc_out1.patches.levels)
-            non_emptys = [(l1.non_empty, l2.non_empty, l3) for l1, l2, l3  in zip(enc_out1.patches.levels, enc_out2.patches.levels, l3_iter)]
+            l3_iter = [None] * len(enc_out1.patches.levels)
+            non_emptys = [(l1.non_empty, l2.non_empty, l3) for l1, l2, l3 in zip(enc_out1.patches.levels, enc_out2.patches.levels, l3_iter)]
     else:
         z1 = enc_out1.patches.all_emb.reshape(-1, enc_out1.patches[1].dim)
         z2 = enc_out2.patches.all_emb.reshape(-1, enc_out2.patches[1].dim)
         z3 = enc_out3.patches.all_emb.reshape(-1, enc_out3.patches[1].dim) if enc_out3 is not None else None
-        non_emtptys =  (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty, enc_out3.patches.all_non_empty)
+        non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty, enc_out3.patches.all_non_empty)
 
-    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, cfg.data.image_size,  z3=z3, deltas=deltas, target=target,
-                non_emptys=non_emptys, lambd=cfg.training.lambd, 
-                lambda_anchor=cfg.training.get('lambda_anchor',0.05),  lambda_fact=cfg.training.get('lambda_fact',0.5) )
+    loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, cfg.data.image_size, z3=z3, deltas=deltas, target=target,
+                non_emptys=non_emptys, loss_weights=lw)
 
-    
-    if mep_model is not None and ema_encoder is not None:           # late addition: Masked Embedding Predictor, across all levels. 
-        assert mae_decoder is None, "You can either do MAE or MEP, not both -- Need to save VRAM"  # If you want to run both, run image two through the encoder again, but with no MAE mask. It'll just add to VRAM. 
-        mep_target = ema_encoder(img2)
-        emb_pred, masks = mep_model(enc_out2)  # predict from masked-input enc_out2, what the comparable embeddings are in enc_out1        
+    if mep_model is not None and ema_encoder is not None:
+        assert mae_decoder is None, "You can either do MAE or MEP, not both -- Need to save VRAM"
+        if use_delta_mep and enc_out3 is not None:
+            mep_target = ema_encoder(img3)  # target is shifted image
+            mep_deltas = (deltas[:,1] - deltas[:,0]).float()  # relative shift img2→img3
+            emb_pred, masks = mep_model(enc_out2, deltas=mep_deltas)
+        else:
+            mep_target = ema_encoder(img2)
+            emb_pred, masks = mep_model(enc_out2)
         total_mep_loss = 0
-        for lev, (emb, mask) in enumerate(zip(emb_pred, masks)): 
-            mep_target_lvl = mep_target.patches[lev].emb.detach()    
-            mep_loss = safe_mean((emb[~mask] - mep_target_lvl[~mask])**2)  # mask=0 means masked ,  mean across each level
-            loss_dict['levels'][lev]['mep'] = mep_loss.item()          # keep per-level info for logging 
+        for lev, (emb, mask) in enumerate(zip(emb_pred, masks)):
+            mep_target_lvl = mep_target.patches[lev].emb.detach()
+            mep_loss = safe_mean((emb[~mask] - mep_target_lvl[~mask])**2)
+            loss_dict['levels'][lev]['mep'] = mep_loss.item()
             total_mep_loss = total_mep_loss + mep_loss
-        total_mep_loss = total_mep_loss / enc_out2.patches.num_levels  # average over levels
-        loss_dict['mep'] = total_mep_loss 
+        total_mep_loss = total_mep_loss / enc_out2.patches.num_levels
+        loss_dict['mep'] = total_mep_loss
 
-        
-    if 'mae' in loss_dict.keys(): loss_dict['loss'] = loss_dict['loss'] +  cfg.training.get('lambda_mae', 1.0) * loss_dict['mae']
-    if 'mep' in loss_dict.keys(): loss_dict['loss'] = loss_dict['loss'] +  cfg.training.get('lambda_mep', 1.0) * loss_dict['mep']
+    if 'mae' in loss_dict: loss_dict['loss'] = loss_dict['loss'] + lw.get('lambda_mae', 0.0) * loss_dict['mae']
+    if 'mep' in loss_dict: loss_dict['loss'] = loss_dict['loss'] + lw.get('lambda_mep', 1.0) * loss_dict['mep']
 
     if debug and torch.isnan(loss_dict['loss']):
         cjprint("*** NaN detected! ***", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()}, color="red")
         breakpoint()
     return loss_dict, (z1, z2, z3), (enc_out1, enc_out2, enc_out3), recon_patches
+
 
 # %% ../nbs/06_train_enc.ipynb #69be248f-4310-4da7-81f2-826063804f8d
 def train(cfg: DictConfig):
@@ -178,15 +189,16 @@ def train(cfg: DictConfig):
     manager = mp.Manager()
     shared_ct_dict = manager.dict(OmegaConf.to_container(cfg))
 
-    if cfg.training.lambda_fact > 0:  # only load pairs unless you need triplets (save memory/computation)
+    if cfg.training.lambda_fact > 0 or cfg.training.get('delta_mep', False):  # triplets needed for factorization or delta-MEP
         train_ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
         val_ds   = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
     else:
         train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
         val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
 
-    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=8, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-    val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    nw = cfg.training.get("num_workers", (8, 4))
+    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=nw[0], drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=nw[1], drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
     # setup models
     cfm = cfg.model 
@@ -200,7 +212,7 @@ def train(cfg: DictConfig):
                             embed_dim=cfm.embed_dim, depths=cfm.depths, num_heads=cfm.num_heads, window_size=cfm.window_size,
                             mlp_ratio=cfm.mlp_ratio, drop_path_rate=cfm.drop_path_rate).to(device)
         if cfg.training.lambda_mae > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
-        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims).to(device)
+        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims, n_summaries=(1,2,4,8,32,64)).to(device)
     else:
         encoder = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfm.patch_size, 
                            cfm.dim, cfm.depth, cfm.heads).to(device)
@@ -236,31 +248,35 @@ def train(cfg: DictConfig):
         curr_learn = None
 
     # Flat + cosine-tail LR schedule: warmup -> flat -> cosine decay in last tail_epochs.
-    # Decouples LR from total epoch count, making early stopping valid at any epoch.
     epochs = cfg.training.epochs
     lr = cfg.training.lr
     warmup_epochs = cfg.training.get('lr_warmup_epochs', 3)
     tail_epochs   = cfg.training.get('lr_tail_epochs', 10)
-    def lr_lambda(epoch):  # epoch is 0-indexed here (scheduler calls with step count)
-        if epoch < warmup_epochs:
-            return (epoch + 1) / warmup_epochs
-        elif epoch < epochs - tail_epochs:
-            return 1.0
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs: return (epoch + 1) / warmup_epochs
+        elif epoch < epochs - tail_epochs: return 1.0
         else:
             progress = (epoch - (epochs - tail_epochs)) / tail_epochs
             return 0.5 * (1 + __import__('math').cos(__import__('math').pi * progress))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    for _ in range(epoch_start - 1):
-        scheduler.step()
+    for _ in range(epoch_start - 1): scheduler.step()
 
-    #scaler = torch.amp.GradScaler(device)
-
-    
     if not(cfg.get('no_wandb', False)): 
         wandb.init(project=cfg.wandb.project, config=dict(cfg))
         wandb.define_metric("epoch")
         wandb.define_metric("*", step_metric="epoch")
-        wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
+        wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
+
+    # loss_weights: built once, lambda_sim updated in-place each epoch via curriculum
+    lambda_sim_epochs = cfg.training.get('lambda_sim_curriculum_epochs', 0)
+    loss_weights = {
+        'lambd':         cfg.training.lambd,
+        'lambda_fact':   cfg.training.get('lambda_fact',   1.0),
+        'lambda_anchor': cfg.training.get('lambda_anchor', 0.0),
+        'lambda_sim':    0.0 if lambda_sim_epochs > 0 else cfg.training.get('lambda_sim', 1.0),
+        'lambda_mep':    cfg.training.get('lambda_mep',    1.0),
+        'lambda_mae':    cfg.training.get('lambda_mae',    0.0),
+    }
 
     # Training loop
     global_step = (epoch_start - 1) * len(train_dl)
@@ -276,14 +292,14 @@ def train(cfg: DictConfig):
             shared_ct_dict['training'] = curr_learn(shared_ct_dict, epoch)
         if epoch==44: # TODO: this is hacky 
             if ema_encoder is not None: ema_encoder.eta = 0.96
+        if lambda_sim_epochs > 0:
+            loss_weights['lambda_sim'] = min(1.0, (epoch - 1) / lambda_sim_epochs)
+
         for batch in tqdm(train_dl, desc=f"Epoch {epoch}/{cfg.training.epochs}"):
             global_step += 1
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder, mep_model=mep_model)
-            #scaler.scale(loss_dict['loss']).backward()
-            #scaler.step(optimizer)
-            #scaler.update()
+                loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder, mep_model=mep_model, loss_weights=loss_weights)
             loss_dict['loss'].backward()
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             optimizer.step()
@@ -296,7 +312,7 @@ def train(cfg: DictConfig):
         with torch.no_grad():
             for batch in val_dl:
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder, mep_model=mep_model)
+                    val_loss_dict, zs, enc_outs, recon_patches = compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=mae_decoder, ema_encoder=ema_encoder, mep_model=mep_model, loss_weights=loss_weights)
                 val_loss += val_loss_dict['loss'].item()
 
             train_loss /= len(train_dl)
@@ -305,7 +321,9 @@ def train(cfg: DictConfig):
             print(f"Epoch {epoch}/{cfg.training.epochs}: train_loss={train_loss:.3f} val_loss={val_loss:.3f} (best={best_val_loss:.3f})")
             
             if wandb.run is not None: 
-                log = {"lr": optimizer.param_groups[0]['lr'], 'epoch': epoch, 'ema_eta': ema_encoder.eta if ema_encoder is not None else cfg.training.get('ema_eta',0), 
+                log = {"lr": optimizer.param_groups[0]['lr'], 'epoch': epoch,
+                       'ema_eta': ema_encoder.eta if ema_encoder is not None else cfg.training.get('ema_eta',0),
+                       'lambda_sim': loss_weights['lambda_sim'],
                        "max_shift_x": shared_ct_dict['training']['max_shift_x'], "max_shift_y": shared_ct_dict['training']['max_shift_y']}
                 for prefix, ld in [("train", loss_dict), ("val", val_loss_dict)]:
                     for k in ('loss', 'sim', 'sigreg', 'anchor', 'fact', 'mae', 'mep'):
@@ -323,13 +341,12 @@ def train(cfg: DictConfig):
                     gc.collect()
                     
                 if (mae_decoder is not None) and (epoch % (max(1,viz_every//5)) == 0):
-                    eval_tup =viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
+                    eval_tup = viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
                     del eval_tup
                     gc.collect()
-        save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag) # optimzer gets saved with mae_decoder, not encoder
+        save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag)
         freemem()
         if scheduler is not None: scheduler.step()
-    print(f"FINISHED. Best metric: {best_val_loss:.6f}")
     return best_val_loss
 
 # %% ../nbs/06_train_enc.ipynb #dc55b9c3
@@ -340,7 +357,7 @@ def train_enc_main(cfg: DictConfig):
     rprint("I just met you \n","yellow")
     cjprint("Encoder training script",color="cyan") 
     best_metric = train(cfg)
-    print(f"FINISHED. Best metric: {best_metric:.3f}")
+    print(f"FINISHED. Best metric: {best_metric:.6f}")
     
 if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
     train_enc_main()

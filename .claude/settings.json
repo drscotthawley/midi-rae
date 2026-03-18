@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash scripts/launch.sh:*)",
+      "Bash(bash scripts/wait.sh:*)",
+      "Bash(bash scripts/status.sh:*)",
+      "Bash(bash scripts/is_gpu_free.sh:*)",
+      "Bash(git*)",
+      "Bash(python scripts/read_nb.py*)",
+      "Bash(python scripts/edit_nb.py*)",
+      "Bash(python scripts/check_wandb.py*)"
+    ]
+  }
+}
