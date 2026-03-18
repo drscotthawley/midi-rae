@@ -190,9 +190,10 @@ def train(cfg: DictConfig):
         train_ds = PRPairDataset(image_dataset_dir=cfg.data.path, split='train', max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
         val_ds   = PRPairDataset(image_dataset_dir=cfg.data.path, split='val',  max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y, shared=shared_ct_dict) 
 
-    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=8, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-    val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-
+    nw = cfg.training.get('num_workers', (8, 4))
+    train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, num_workers=nw[0], drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, num_workers=nw[1], drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    
     # setup models
     cfm = cfg.model 
     patch_size = cfm.get('patch_size', cfm.get('patch_h', 16))
