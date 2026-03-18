@@ -15,3 +15,7 @@ n/a	razer	dec	0.9978	keep	razer dec: exp9-like encoder (skip LeJEPA at L5); F1=9
 4f2dcaa	lecun	enc	0.679429	discard	exp10: lambda_fact=1.0 — much worse than exp9 (0.412); factorization dominates
 9a94e7a	lecun	enc	0.644883	discard	exp11: lambd curriculum 0.99→0.3 — wrong lever; SIGReg-only early epochs incoherent (high MEP loss); slightly better than exp10 but far worse than exp9
 29d648e	lecun	enc	0.706427	discard	exp12: lambda_sim curriculum 0→1 over 15 epochs, lambda_fact=1.0 — worse than exp10; lambda_fact=1.0 dominates regardless of sim schedule
+cf09121	lecun	enc	0.902788	discard	exp13: lambda_sim=0 (no attraction), factorization+SIGReg only — worst yet; ablation confounded by lambda_fact=1.0
+8c8d9e2	lecun	enc	0.504859	keep	exp14: lambd=0.2, lambda_fact=0.5, lambda_sim=1.0 — second best; better equipartition between structural losses and SIGReg
+8204602	lecun	enc	0.381771	keep	exp15: same as exp14 but 100 epochs (LR schedule scaled) — new best; structural losses plateaued ~epoch 30, SIGReg dominated after
+4d1c5ae	lecun	enc	0.336328	keep	exp16: sigreg_prefac 0.5→0.1 (5x weaker SIGReg) — new best; weaker SIGReg gave structural losses more room
