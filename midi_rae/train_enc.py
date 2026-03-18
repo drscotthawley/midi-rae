@@ -351,7 +351,7 @@ def train_enc_main(cfg: DictConfig):
     rprint("I just met you \n","yellow")
     cjprint("Encoder training script",color="cyan") 
     best_metric = train(cfg)
-    print(f"FINISHED. Best metric: {best_metric:.3f}")
+    print(f"FINISHED. Best metric: {best_metric:.6f}")
     
 if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
     train_enc_main()
