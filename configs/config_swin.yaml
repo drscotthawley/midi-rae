@@ -1,5 +1,5 @@
 data:
-  path: /home/shawley/datasets/POP909_images_basic  # adjust path as needed
+  path: ~/datasets/POP909_images_basic  # adjust path as needed
   image_size: 128
   in_channels: 1
 
@@ -38,6 +38,7 @@ training:
   lambda_fact: 0.5        # factorization loss
   lambda_sim: 1.0         # attraction loss weight
   lambda_sim_curriculum_epochs: 0  # no curriculum; lambda_sim stays fixed
+  delta_mep: false               # if true, MEP predicts shifted image embeddings conditioned on deltas
 
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 100 # 500
