@@ -21,3 +21,4 @@ cf09121	lecun	enc	0.902788	discard	exp13: lambda_sim=0 (no attraction), factoriz
 4d1c5ae	lecun	enc	0.319758	keep	exp16: sigreg_prefac 0.5→0.1 (5x weaker SIGReg) — new best; weaker SIGReg gave structural losses more room
 09fff8a	lecun	enc	0.324717	discard	exp17: delta_mep=True (MEP predicts shifted image; FiLM-conditioned on delta) — slightly worse than exp16; MEP learns but structural losses not improved
 adaee92	lecun	enc	0.322111	discard	exp18: n_summaries=(1,2,4,8,32,64) for MEP L4 capacity — slightly worse than exp16; capacity not the bottleneck
+cd62fb0	lecun	enc	0.141786	keep	exp19: n_skip_finest_levels=2 (skip L4+L5 LeJEPA) — massive improvement; halved val_loss vs exp16; mirrors exp9 L5 breakthrough

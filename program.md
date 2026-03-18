@@ -27,6 +27,14 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 skip_lejepa_levels: [5]   # disable entire LeJEPA loss at finest Swin level
 ```
 
+### exp15 loss curve reinterpretation — 2026-03-18
+
+**Observation**: val_sigreg in exp15 (blue line) drops sharply early then rises back in later epochs. Previously interpreted as SIGReg dominating — actually the opposite: the structural losses (sim, fact) were *pushing back against* SIGReg in later epochs, causing it to rise. val_mep kept descending steadily through all 100 epochs — MEP was never the problem. val_loss also kept improving through epoch 100.
+
+**Implication**: exp15 may have been fine as-is, and lowering `sigreg_prefac` further (exp16) might not help — or could hurt if SIGReg is already being held in check by structural losses. Wait for exp16 result before concluding.
+
+**Also**: MEP descending through epoch 100 suggests the prediction task may have been too easy (same-image, no EMA target challenge). Delta-conditioned MEP (predicting shifted image embeddings) is a harder, more meaningful task.
+
 ### SIGReg alone produces incoherent embeddings — exp11 evidence — 2026-03-17
 
 **Observation**: exp11 (lambd curriculum: 0.99→0.3, meaning ~99% SIGReg in early epochs) showed very low SIGReg loss but significantly higher MEP loss compared to runs with attraction active.
@@ -82,11 +90,16 @@ Val loss is a proxy for encoder quality, not a direct measure of latent structur
 
 **Primary goal**: minimize `best_metric` (validation loss) on the encoder. Downstream, the best encoder should also produce the best decoder scores — but encoder val loss is the working proxy metric. Be aware that val_loss alone does not fully capture latent space quality.
 
+**Role of each component** — clear separation of concerns:
+- **SIGReg** — anti-collapse; prevents embedding space from degenerating. Keep on.
+- **Attraction + factorization losses** — geometry; encode pitch/time shift structure. Keep on.
+- **MEP** — prediction quality; drives representation richness. Keep on.
+- **EMA** — generalization boost only; NOT needed for collapse prevention (SIGReg handles that). Defer EMA tuning until main dynamics are understood. Do not add EMA complexity until simpler levers are exhausted.
+
 **Active objectives** — all of these should remain active (non-zero lambda) in every run:
 - **LeJEPA attraction loss** — core; do not disable
 - **SIGReg / factorization loss** — keep on
-- **MEP loss** — keep on; target EMA eta of ≥ 0.9 (currently may be lower — increasing it is a valid experiment)
-- **EMA** — keep on
+- **MEP loss** — keep on
 
 **Hard constraints**:
 - `lambda_mae = 0` always — MAE is completely off for all runs, no exceptions
@@ -101,6 +114,8 @@ Val loss is a proxy for encoder quality, not a direct measure of latent structur
 - Architecture changes within the Swin framework
 
 **Promising architectural idea to try**: replace the finest (lowest) level of the Swin hierarchy with lightweight conv layers (e.g. `Conv2d → GELU → Conv2d`) and optionally disable the attraction loss at that level. This might allow adding an even finer level to the hierarchy.
+
+**Decoder robustness idea (for latent generative model prep)**: during decoder training, randomly mask some fraction of the encoder embeddings before passing them to the decoder, and train the decoder to reconstruct despite the missing embeddings. Motivation: a flow matching or diffusion generative model trained in the latent space will produce imperfect samples — the decoder needs to be robust to small inaccuracies in the embeddings it receives, not just trained on perfect encoder outputs. Masked decoder training is an explicit way to build in that robustness.
 
 ## What you can modify
 
