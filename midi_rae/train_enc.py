@@ -148,8 +148,9 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
         z3 = enc_out3.patches.all_emb.reshape(-1, enc_out3.patches[1].dim) if enc_out3 is not None else None
         non_emptys = (enc_out1.patches.all_non_empty, enc_out2.patches.all_non_empty, enc_out3.patches.all_non_empty)
 
+    n_skip = cfg.training.get('n_skip_finest_levels', 1)
     loss_dict = loss_dict | calc_enc_loss_multiscale(z1, z2, global_step, cfg.data.image_size, z3=z3, deltas=deltas, target=target,
-                non_emptys=non_emptys, loss_weights=lw)
+                non_emptys=non_emptys, loss_weights=lw, n_skip_finest=n_skip)
 
     if mep_model is not None and ema_encoder is not None:
         assert mae_decoder is None, "You can either do MAE or MEP, not both -- Need to save VRAM"
@@ -176,7 +177,6 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
         cjprint("*** NaN detected! ***", {k: v.item() if hasattr(v, 'item') else v for k, v in loss_dict.items()}, color="red")
         breakpoint()
     return loss_dict, (z1, z2, z3), (enc_out1, enc_out2, enc_out3), recon_patches
-
 
 # %% ../nbs/06_train_enc.ipynb #69be248f-4310-4da7-81f2-826063804f8d
 def train(cfg: DictConfig):

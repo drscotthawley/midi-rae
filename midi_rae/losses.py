@@ -87,25 +87,22 @@ def factorization_loss(z_anchor, z_crop1, z_crop2, targets):
     return safe_mean((cos - targets) ** 2)
 
 # %% ../nbs/03_losses.ipynb #624570b6
-def LeJEPA(z1, z2, global_step, z3=None, valids=None, target=None, lambd=0.5, deltas=None, psize=None, sigreg_on_both=True, sigreg_prefac=0.5, lambda_fact=0.5): 
-    "Main LeJEPA loss function"
-    # design decision! z2 is the only thing that will ever explicitly get gradients on it. z1 & z3, no.
-    sigreg = SIGReg(z2, global_step ) * sigreg_prefac  # SIGREG is expensive even with chunking. Leave Z3 out and Z1 out of it.
+def LeJEPA(z1, z2, global_step, z3=None, valids=None, target=None, deltas=None, psize=None, sigreg_on_both=True, sigreg_prefac=0.1, loss_weights=None): 
+    "Main LeJEPA loss function."
+    lw = loss_weights or {}
+    lambd       = lw.get('lambd',       0.5)
+    lambda_fact = lw.get('lambda_fact', 0.5)
+    lambda_sim  = lw.get('lambda_sim',  1.0)
+    sigreg = SIGReg(z2, global_step) * sigreg_prefac
     if z3 is not None:   
-        #sim = attraction_loss(z1[valids[0]], z2[valids[0]], deltas=deltas[valids[0],0], psize=psize)
-        sim = attraction_loss(z1, z2, deltas=deltas[:,0] if deltas is not None else None, psize=psize)
-
-        #sim = 0.5 * (sim + attraction_loss(z1[valids[1]], z3[valids[1]], deltas=deltas[valids[1],1], psize=psize) )
+        sim  = attraction_loss(z1, z2, deltas=deltas[:,0] if deltas is not None else None, psize=psize)
         fact = factorization_loss(z1, z2, z3, target)
-        return {'loss': (1-lambd)*(sim + lambda_fact*fact) + lambd*sigreg, 
-                'sim':sim.detach(), 'sigreg':sigreg.detach(), 'fact':fact.detach()}
+        return {'loss': (1-lambd)*(lambda_sim*sim + lambda_fact*fact) + lambd*sigreg,
+                'sim': sim.detach(), 'sigreg': sigreg.detach(), 'fact': fact.detach()}
     else:
-        if False and valids is not None:
-            sim = attraction_loss(z1[valids[0]], z2[valids[0]], deltas=deltas[valids[0], 0], psize=psize)
-        else: 
-            sim = attraction_loss(z1, z2, deltas=deltas, psize=psize) 
-        
-    return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.detach(), 'sigreg':sigreg.detach()}
+        sim = attraction_loss(z1, z2, deltas=deltas, psize=psize)
+    return {'loss': (1-lambd)*lambda_sim*sim + lambd*sigreg, 'sim': sim.detach(), 'sigreg': sigreg.detach()}
+
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
@@ -113,49 +110,55 @@ def anchor_loss(z1, z2):
     return safe_mean( z1.square() ) + safe_mean( z2.square() )
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
-def calc_enc_loss(z1, z2, global_step, z3=None, deltas=None, target=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.05, lambda_fact=0.5, psize=None):
+def calc_enc_loss(z1, z2, global_step, z3=None, deltas=None, target=None, non_emptys=(None,None), psize=None, loss_weights=None):
     "Main loss function for Encoder"
+    lw = loss_weights or {}
     non_empty1, non_empty2, non_empty3 = non_emptys
     joint_ne2 = (non_empty1 & non_empty2).view(-1).bool()
     joint_ne3 = (non_empty1 & non_empty3).view(-1).bool() if non_empty3 is not None else None
-    loss_dict = LeJEPA( z1, z2, global_step, z3=z3, valids=(joint_ne2, joint_ne3), deltas=deltas, target=target, lambd=lambd, lambda_fact=lambda_fact, psize=psize )
+    loss_dict = LeJEPA(z1, z2, global_step, z3=z3, valids=(joint_ne2, joint_ne3), deltas=deltas, target=target, psize=psize, loss_weights=lw)
+    lambda_anchor = lw.get('lambda_anchor', 0.05)
     if lambda_anchor > 0:
         loss_dict['anchor'] = anchor_loss(z1[~non_empty1.view(-1).bool()], z2[~non_empty2.view(-1).bool()])
         loss_dict['loss'] = loss_dict['loss'] + lambda_anchor * loss_dict['anchor'] 
     return loss_dict
 
+
 # %% ../nbs/03_losses.ipynb #3f4e797d-27b0-44de-be77-e68469aff268
 @torch.compiler.disable
 def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None, target=None,
-                             lambd=0.5, non_emptys=None, lambda_anchor=0.05, lambda_fact=0.5, lambda_mep=0.0, mep_model=None, debug=False):
-    """Compute encoder loss at each hierarchy level of the Swin encoder. really really this time"""
+                             non_emptys=None, loss_weights=None, n_skip_finest=1, debug=False):
+    """Compute encoder loss at each hierarchy level of the Swin encoder."""
+    lw = loss_weights or {}
     if not isinstance(z1, list):  # regular ViT
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
         return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(),
-                             lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
+                             non_emptys=non_emptys, loss_weights=lw)
     total = {}
     n_levels = len(z1)
-    a_sum = a_count = 0.0
     level_losses = []
     z3_iter = z3 if z3 is not None else [None] * len(z1)
     for lev, (z1_l, z2_l, z3_l, ne) in enumerate(zip(z1, z2, z3_iter, non_emptys)):
-        if debug: print(f"mutliscale loss, Level {lev}:") 
-        B, N, D = z1_l.shape
-        grid = int(N ** 0.5)  # TODO: assumes square images
-        psize = (img_size // grid, img_size // grid)
-        z1_flat, z2_flat, z3_flat  =  z1_l.reshape(-1, D).float(), z2_l.reshape(-1, D).float(), None
-        ne_flat           = list( x.reshape(-1).bool()     for x in (ne[0], ne[1]))  # non-emptys
-        if z3_l is not None: 
-            z3_flat  = z3_l.reshape(-1, D).float() 
-            ne_flat.append(ne[2].reshape(-1).bool()) 
-        else: ne_flat.append(None)
-        d_expanded = deltas.repeat_interleave(N, dim=0).float() if deltas is not None else None
-        t_expanded = target.repeat_interleave(N, dim=0).float() if target is not None else None
-        ld = calc_enc_loss(z1_flat, z2_flat, global_step, z3=z3_flat, deltas=d_expanded, target=t_expanded,
-                           lambd=lambd, non_emptys=ne_flat, lambda_anchor=lambda_anchor, lambda_fact=lambda_fact, psize=psize)
+        if lev < n_levels - n_skip_finest:  # skip LeJEPA loss on finest n_skip_finest levels
+            if debug: print(f"mutliscale loss, Level {lev}:")
+            B, N, D = z1_l.shape
+            grid = int(N ** 0.5)
+            psize = (img_size // grid, img_size // grid)
+            z1_flat, z2_flat, z3_flat = z1_l.reshape(-1, D).float(), z2_l.reshape(-1, D).float(), None
+            ne_flat = list(x.reshape(-1).bool() for x in (ne[0], ne[1]))
+            if z3_l is not None:
+                z3_flat = z3_l.reshape(-1, D).float()
+                ne_flat.append(ne[2].reshape(-1).bool())
+            else: ne_flat.append(None)
+            d_expanded = deltas.repeat_interleave(N, dim=0).float() if deltas is not None else None
+            t_expanded = target.repeat_interleave(N, dim=0).float() if target is not None else None
+            ld = calc_enc_loss(z1_flat, z2_flat, global_step, z3=z3_flat, deltas=d_expanded, target=t_expanded,
+                               non_emptys=ne_flat, psize=psize, loss_weights=lw)
+        else:
+            ld = {'loss': torch.tensor(0.0, device=z1_l.device, dtype=z1_l.dtype)}  # dummy for skipped levels
         level_losses.append({k: v.detach() if hasattr(v, 'item') else v for k, v in ld.items()})
         for k, v in ld.items(): total[k] = total.get(k, 0) + v
-    
+
     if not total: return {'loss': torch.tensor(0.0, device=deltas.device)}
     total = {k: v / n_levels for k, v in total.items()}
     total['levels'] = level_losses
