@@ -19,7 +19,7 @@ model:
 training:
   batch_size: 300         # encoder batch size
   lr: 1e-3                # used to be 2e-4 but then we removed gradients from z1
-  epochs: 100
+  epochs: 200
   lambd: 0.2              # lejepa attraction-vs-sigreg weight
   max_shift_x: 12         
   max_shift_y: 12
@@ -30,8 +30,8 @@ training:
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
   ema_eta: 1e-5
   ema_update_every: 1
-  lr_warmup_epochs: 12   # flat+cosine-tail schedule: warmup epochs
-  lr_tail_epochs: 40     # flat+cosine-tail schedule: cosine decay epochs at end
+  lr_warmup_epochs: 24   # flat+cosine-tail schedule: warmup epochs
+  lr_tail_epochs: 80     # flat+cosine-tail schedule: cosine decay epochs at end
   lambda_mep:  1.0        # masked embedding predictor
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
   lambda_anchor: 0.0      # L2 loss on empty patch embeddings
