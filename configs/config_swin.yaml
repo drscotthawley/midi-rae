@@ -20,7 +20,7 @@ training:
   batch_size: 300         # encoder batch size
   lr: 1e-3                # used to be 2e-4 but then we removed gradients from z1
   epochs: 100
-  lambd: 0.3              # lejepa attraction-vs-sigreg weight
+  lambd: 0.2              # lejepa attraction-vs-sigreg weight
   max_shift_x: 12         
   max_shift_y: 12
   #init_shift_x: 1        # enable curriculum learning, starting with this value
@@ -29,14 +29,18 @@ training:
   mask_ratio: 0.5         # between levels, ma
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
   ema_eta: 1e-5
-  ema_update_every: 1 
+  ema_update_every: 1
+  lr_warmup_epochs: 12   # flat+cosine-tail schedule: warmup epochs
+  lr_tail_epochs: 40     # flat+cosine-tail schedule: cosine decay epochs at end
   lambda_mep:  1.0        # masked embedding predictor
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
   lambda_anchor: 0.0      # L2 loss on empty patch embeddings
-  lambda_fact: 0.0        # factorization loss
+  lambda_fact: 0.5        # factorization loss
+  lambda_sim: 1.0         # attraction loss weight
+  lambda_sim_curriculum_epochs: 0  # no curriculum; lambda_sim stays fixed
 
   dec_batch_size: 360     # decoder-training batch size
-  dec_epochs: 10000 # 500
+  dec_epochs: 100 # 500
   dec_lr: 2e-3
   pos_weight: 2.5
   gan_warmup: 100000      # number of epochs before adversarial training starts
@@ -44,13 +48,13 @@ training:
 
 
 preencode:
-  output_dir: ~/datasets/POP909_encoded
+  output_dir: /home/shawley/datasets/POP909_encoded
   num_passes: 10          # number of passes through the dataset
 
 wandb:
-  project: mep-swin-midi-rae
+  project: ar-mep-swin-midi-rae
 
-encoder_ckpt: checkpoints/SwinEncoder_MoreMEP_best.pt # for decoder usage
+encoder_ckpt: ~/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
 
 
 tag: ???  # required run tag, will get prepended to wandb run name
