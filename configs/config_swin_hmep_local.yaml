@@ -11,6 +11,7 @@ training:
   hmep_lr: 1e-4
   n_fine_levels: 2
   num_workers: [6, 2]
+  steps_per_epoch: 1000
 
 use_preencoded: true
 
