@@ -32,3 +32,18 @@ n/a	lecun	enc	0.118586	keep	exp23_deltamep: 100 epochs, lambda_mep=0.2, delta_me
 e73841c	razer-docker	dec	0.004077	keep	dec_baseline: no masking (exp22 encoder) — val_loss=0.004077; F1=99.4%; clean baseline for masked decoder comparison
 n/a	razer-docker	dec	0.012373	keep	dec_masked_v2: per-patch learnable mask tokens (emb_mask_ratio=0.4, exp22 encoder) — val_loss=0.012373; F1≈97.87%; proper MAE-style masking (vs whole-level zeroing in dec_masked)
 n/a	lecun	enc	0.097081	keep	exp25: lambda_mep=0.1, delta_mep=False, 100 epochs — best encoder result yet; beats exp24 (0.118586) and exp22 (0.101)
+
+# --- Post-training encoder evaluations (eval_enc.sh / eval_encoder.py) ---
+# Metrics from scripts/eval_encoder.py run on val set (CPU, lecun).
+# SVD: n90=dims needed for 90% variance; spectral_snr=eigengap ratio (G2G §7.3).
+# Factorization: parallel=cos-sim same-pitch pairs; anti=cos-sim antipitch pairs; cross≈0 (pitch⊥time).
+# Equivariance R²: r2_pitch=pitch-shift R²; r2_time=time-shift R²; r2_cross_pt=pitch→time leakage.
+# Key levels: L0=coarsest (256-dim), L5=finest (8-dim). All runs on lecun unless noted.
+#
+# run	L0_n90	L0_snr	L0_parallel	L0_r2_pitch	L0_r2_cross_pt	L1_r2_pitch	notes
+eval	exp16_l9hXFF	13	1.39	0.887	0.986	0.0003	0.984	baseline: no MEP, n_skip=0; L4 n90=10 (not collapsed)
+eval	exp19_oXRhPM	13	1.14	0.919	0.985	0.009	0.985	n_skip_finest=2 introduced; L0 parallel +3.5% vs exp16
+eval	exp20_r0PD8b	15	1.31	0.908	0.964	0.064	0.966	200 epochs; L1 cross_pt=0.161 (pitch-time leakage at L1)
+eval	exp23_deltamep_hHkNan	14	1.16	0.911	0.990	0.083	0.988	lambda_mep=0.2, delta_mep=True; strong pitch R² but cross_pt leakage at L1-L2
+eval	exp24_Lcbvz8	14	1.08	0.920	0.987	0.052	0.986	lambda_mep=0.2, delta_mep=True; L1 cross_pt=0.196 (highest leakage)
+eval	exp25_edckd7	15	1.33	0.919	0.978	0.007	0.976	lambda_mep=0.1, delta_mep=False; L0 cross_pt=0.007 (cleanest separation); L5 snr=3.35 (best fine-level spike)

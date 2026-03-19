@@ -8,7 +8,10 @@
       "Bash(git*)",
       "Bash(python scripts/read_nb.py:*)",
       "Bash(python scripts/edit_nb.py:*)",
-      "Bash(python scripts/check_wandb.py:*)"
+      "Bash(python scripts/check_wandb.py:*)",
+      "Bash(nbdev-export*)",
+      "Bash(python scripts/eval_encoder.py:*)",
+      "Bash(bash scripts/eval_enc.sh:*)"
     ]
   }
 }
