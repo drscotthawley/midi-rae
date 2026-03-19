@@ -29,11 +29,16 @@ if command -v nvidia-smi &>/dev/null; then
         exit 0
     else
         echo "GPU ${GPU_IDX}: BUSY (${total_mib} MiB in use)"
+        all_gone=true
         while IFS=',' read -r pid mem name; do
             pid="${pid// /}"
             cmdline=$(ps -p "$pid" -o cmd= 2>/dev/null || echo "(process gone)")
             echo "  PID $pid |$mem | $cmdline"
+            [[ "$cmdline" != "(process gone)" ]] && all_gone=false
         done <<< "$apps"
+        if $all_gone; then
+            echo "  (all processes gone but VRAM not released — run: pkill -f python)"
+        fi
         exit 1
     fi
 fi

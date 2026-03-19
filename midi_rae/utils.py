@@ -119,6 +119,7 @@ def save_checkpoint(model, epoch, val_loss, cfg, optimizer=None, save_every=25, 
 def load_checkpoint(model, ckpt_path:str, return_all=False, weights_only=False, strict=False):
     "loads a model (and maybe other things) from a checkpoint file"
     device = next(model.parameters()).device
+    ckpt_path = os.path.expanduser(ckpt_path)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=weights_only)
     ckpt['model_state_dict'] = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}
     model.load_state_dict(ckpt['model_state_dict'], strict=strict)
