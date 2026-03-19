@@ -49,3 +49,4 @@ eval	exp23_deltamep_hHkNan	14	1.16	0.911	0.990	0.083	0.988	lambda_mep=0.2, delta
 eval	exp24_Lcbvz8	14	1.08	0.920	0.987	0.052	0.986	lambda_mep=0.2, delta_mep=True; L1 cross_pt=0.196 (highest leakage)
 eval	exp25_edckd7	15	1.33	0.919	0.978	0.007	0.976	lambda_mep=0.1, delta_mep=False; L0 cross_pt=0.007 (cleanest separation); L5 snr=3.35 (best fine-level spike)
 eval	exp22_ibfFI9	16	1.32	0.911	0.974	0.112	0.975	razer; lambda_mep=0.1, n_skip=2; L0 cross_pt=0.112 (high leakage vs exp25=0.007) yet dec F1=99.4% — factorization loss hurts reconstruction
+eval	exp26_z1olvN	15	1.34	0.881	0.920	0.076	0.949	lambda_fact=0, lambda_mep=0.1, delta_mep=False; enc val_loss=0.0335 (3x better than exp25); lower r2_pitch but better reconstruction capacity
