@@ -47,7 +47,8 @@ training:
   pos_weight: 2.5
   gan_warmup: 100000      # number of epochs before adversarial training starts
   enc_ft_lr: -1           # lr for fine-tuning enc via end-to-end training w/ decoder
-  emb_mask_prob: 0.15     # per-level prob of zeroing embeddings (except L0) for robustness training
+  emb_mask_ratio: 0.4     # finest-level patch mask ratio for robustness training (0=disabled, L0 never masked)
+  emb_mask_level_fac: 1.25  # ratio divisor per coarser level (mirrors MEP; finer levels masked more)
 
 
 preencode:
