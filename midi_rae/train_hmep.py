@@ -126,9 +126,10 @@ def train_hmep(cfg: DictConfig):
     # --- Optimizer ---
     epochs = cfg.training.get('hmep_epochs', 50)
     lr     = cfg.training.get('hmep_lr', 1e-4)
+    steps_per_epoch = cfg.training.get('steps_per_epoch', None)
     opt    = torch.optim.AdamW(hmep.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        opt, max_lr=lr, steps_per_epoch=len(train_dl), epochs=epochs)
+        opt, max_lr=lr, steps_per_epoch=steps_per_epoch or len(train_dl), epochs=epochs)
 
     if not cfg.get('no_wandb', False):
         wandb.init(project='hmep-'+cfg.wandb.project, config=dict(cfg))
@@ -139,7 +140,10 @@ def train_hmep(cfg: DictConfig):
     for epoch in range(1, epochs + 1):
         hmep.train()
         train_loss = 0.0
-        for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{epochs}'):
+        n_train = 0
+        for i, batch in enumerate(tqdm(train_dl, desc=f'Epoch {epoch}/{epochs}',
+                                       total=steps_per_epoch or len(train_dl))):
+            if steps_per_epoch and i >= steps_per_epoch: break
             if use_preencoded:
                 enc_out = emb_levels_to_enc_out(batch, pos_cache, device)
             else:
@@ -153,10 +157,11 @@ def train_hmep(cfg: DictConfig):
             opt.step()
             scheduler.step()
             train_loss += loss.item()
+            n_train += 1
             global_step += 1
             if wandb.run is not None:
                 wandb.log({'train_loss_step': loss.item(), 'lr': scheduler.get_last_lr()[0]}, step=global_step)
-        train_loss /= len(train_dl)
+        train_loss /= n_train
 
         hmep.eval()
         val_loss, val_per_level = 0.0, {}
