@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Start of Session
 
-**Always read `program.md` at the start of every session.** It contains the autoresearch loop rules, experiment log, launch procedures, and the commit-before-launch requirement. Skipping it causes rule violations.
+**Always read `program.md` at the start of every session, and again immediately after context compaction.** It contains the autoresearch loop rules, experiment log, launch procedures, and the commit-before-launch requirement. Skipping it causes rule violations.
 
 ## Git Commands
 
