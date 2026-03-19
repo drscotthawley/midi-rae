@@ -290,7 +290,7 @@ def train(cfg: DictConfig):
                     'val_dec':     val_loss,   'val_bce': to_scalar(loss_dict['bce']), 'val_mse': to_scalar(loss_dict['mse']),
                     'epoch': epoch, 'lr_dec': tstate.opt_dec.param_groups[0]['lr'],})
             if epoch % viz_every == 0:
-                clean_evals = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
+                *_, clean_evals = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
                 log_extra = {'F1_clean': clean_evals['f1'], 'epoch': epoch}
                 if cfg.training.get('emb_mask_ratio', 0.0) > 0:
                     masked_enc = mask_enc_out(enc_out,
@@ -300,7 +300,7 @@ def train(cfg: DictConfig):
                                              mask_tokens=mask_tokens)
                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                         m_ld = calc_dec_loss(decoder, masked_enc, img_real, pos_weight=cfg.training.get('pos_weight', 1.0))
-                    masked_evals = viz_mae_recon(m_ld['recon'], img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
+                    *_, masked_evals = viz_mae_recon(m_ld['recon'], img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
                     log_extra['F1_masked'] = masked_evals['f1']
                     print(f"  F1_clean={clean_evals['f1']:.4f}  F1_masked={masked_evals['f1']:.4f}")
                     del masked_evals
