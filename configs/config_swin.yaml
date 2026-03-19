@@ -47,6 +47,7 @@ training:
   pos_weight: 2.5
   gan_warmup: 100000      # number of epochs before adversarial training starts
   enc_ft_lr: -1           # lr for fine-tuning enc via end-to-end training w/ decoder
+  emb_mask_prob: 0.15     # per-level prob of zeroing embeddings (except L0) for robustness training
 
 
 preencode:

@@ -1,0 +1,10 @@
+defaults:
+  - config_swin
+  - _self_
+
+training:
+  batch_size: 250
+  num_workers: [4, 2]
+
+encoder_ckpt: ~/runs/midi-rae/exp22_ibfFI9/checkpoints/SwinEncoder_exp22_ibfFI9_best.pt
+

@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['PreEncodedDataset', 'setup_dataloaders', 'setup_models', 'setup_tstate', 'get_embeddings_batch', 'train_step',
-           'train']
+           'mask_enc_out', 'train', 'train_dec_main']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
 import sys
@@ -145,14 +145,15 @@ def get_embeddings_batch(batch, encoder=None, preencoded=False, device='cuda', a
         raise ValueError("get_embeddings_batch: Need either preencoded data or encoder.")
 
 # %% ../nbs/09_train_dec.ipynb #928a8d39
-def train_step(epoch, enc_out, img_real, decoder, 
-            tstate,  # named tuple containing optimizers, loss fns, scalers 
+def train_step(epoch, enc_out, img_real, decoder,
+            tstate,  # named tuple containing optimizers, loss fns, scalers
             cfg,    # config
             note_weights=None,
-            ): 
+            ):
     "training step for decoder"
     decoder.train()
     tstate.opt_dec.zero_grad()
+    enc_out = mask_enc_out(enc_out, mask_prob=cfg.training.get('emb_mask_prob', 0.0))
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
     tstate.scaler_dec.scale(loss_dict['dec']).backward()
@@ -162,8 +163,26 @@ def train_step(epoch, enc_out, img_real, decoder,
     tstate.scaler_dec.update()
     return loss_dict, loss_dict['recon']
 
+# %% ../nbs/09_train_dec.ipynb #j42woyqwn0a
+def mask_enc_out(enc_out, mask_prob=0.0):
+    """Randomly zero out level embeddings (except L0) for decoder robustness training.
+    Motivation: the generative model will produce imperfect or missing fine-level embeddings;
+    the decoder should reconstruct well despite that.
+    mask_prob: per-level probability of zeroing (0 = disabled). L0 is never masked.
+    """
+    if mask_prob <= 0: return enc_out
+    new_levels = []
+    for i, lvl in enumerate(enc_out.patches.levels):
+        if i > 0 and torch.rand(1).item() < mask_prob:
+            emb = torch.zeros_like(lvl.emb)
+        else:
+            emb = lvl.emb
+        new_levels.append(PatchState(emb=emb, pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask))
+    return EncoderOutput(
+        patches=HierarchicalPatchState(levels=new_levels),
+        full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
+
 # %% ../nbs/09_train_dec.ipynb #198855af
-@hydra.main(version_base=None, config_path='../configs', config_name='config')
 def train(cfg: DictConfig):
     dict_test = dict(cfg) # force resolution of required fields (e.g. tag=???)
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
@@ -187,7 +206,7 @@ def train(cfg: DictConfig):
         wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
     
     global_step = 0 
-    viz_every = 10
+    viz_every = 2
     best_val_loss = float('inf')
     for epoch in range(1, cfg.training.dec_epochs + 1):
         train_loss = 0
@@ -235,9 +254,13 @@ def train(cfg: DictConfig):
 
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
-if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
+@hydra.main(version_base=None, config_path='../configs', config_name='config')
+def train_dec_main(cfg: DictConfig):
     cjprint(logo, color="red")
     rprint("I just met you \n","yellow")
     cjprint("Decoder training script",color="cyan") 
-    best_metric= train()
-    print(f"FINISHED. Best metric: {best_metric:.6f}")
+    best_metric = train(cfg)
+    print(f"FINISHED. Best metric: {best_metric:.3f}")
+    
+if __name__ == "__main__" and "ipykernel" not in __import__("sys").modules:
+    train_dec_main()
