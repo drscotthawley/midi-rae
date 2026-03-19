@@ -95,9 +95,11 @@ def train_hmep(cfg: DictConfig):
     val_ds   = AnchorDataset(image_dataset_dir=cfg.data.path, split='val',
                              aug_y_max=cfg.training.max_shift_y)
     train_dl = DataLoader(train_ds, batch_size=cfg.training.batch_size, shuffle=True,
-                          num_workers=nw[0], pin_memory=(device=='cuda'))
+                          num_workers=nw[0], pin_memory=(device=='cuda'),
+                          persistent_workers=(nw[0] > 0))
     val_dl   = DataLoader(val_ds,   batch_size=cfg.training.batch_size, shuffle=False,
-                          num_workers=nw[1], pin_memory=(device=='cuda'))
+                          num_workers=nw[1], pin_memory=(device=='cuda'),
+                          persistent_workers=(nw[1] > 0))
 
     # --- Optimizer ---
     epochs = cfg.training.get('hmep_epochs', 50)
