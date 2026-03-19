@@ -14,66 +14,77 @@ import hydra
 from tqdm.auto import tqdm
 from pathlib import Path
 
+from .data import ShiftedTripletDataset
+from .swin import SwinEncoder
 from .vit import ViTEncoder
-from .data import PRPairDataset  # we'll use use img2 and ignore img1
+from .utils import load_checkpoint
 
 # %% ../nbs/08_preencode.ipynb #8e40339b
-@hydra.main(version_base=None, config_path="../configs", config_name="config")
+@hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def preencode(cfg: DictConfig):
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     print(f"device = {device}")
-    
-    # Load encoder from checkpoint
-    ckpt_path = cfg.get('encoder_ckpt', 'checkpoints/enc_best.pt')
-    print(f"Loading encoder from {ckpt_path}")
-    
-    model = ViTEncoder(
-        cfg.data.in_channels, 
-        (cfg.data.image_size, cfg.data.image_size), 
-        cfg.model.patch_size,
-        cfg.model.dim, 
-        cfg.model.depth, 
-        cfg.model.heads
-    ).to(device)
-    
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    state_dict = {k.replace('_orig_mod.', ''): v for k, v in ckpt['model_state_dict'].items()}
-    model.load_state_dict(state_dict, strict=False)
-    model.eval()
-    
-    # Output directory
-    output_dir = Path(cfg.get('preencode', {}).get('output_dir', 'preencoded/'))
+
+    # Load encoder
+    ckpt_path = cfg.get('encoder_ckpt', 'checkpoints/SwinEncoder__best.pt')
+    if cfg.model.get('encoder', 'vit') == 'swin':
+        encoder = SwinEncoder(
+            img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+            patch_h=cfg.model.patch_h, patch_w=cfg.model.patch_w,
+            embed_dim=cfg.model.embed_dim, depths=cfg.model.depths,
+            num_heads=cfg.model.num_heads, window_size=cfg.model.window_size,
+            mlp_ratio=cfg.model.mlp_ratio, drop_path_rate=cfg.model.drop_path_rate,
+        ).to(device)
+    else:
+        encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size,
+                             cfg.model.patch_size, cfg.model.dim,
+                             cfg.model.depth, cfg.model.heads).to(device)
+    encoder = load_checkpoint(encoder, ckpt_path)
+    encoder.eval()
+
+    output_dir = Path(cfg.preencode.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Saving embeddings to {output_dir}")
-    
+    num_passes   = cfg.preencode.get('num_passes', 10)
+    batch_size   = cfg.preencode.get('batch_size', 1024)   # large batch; inference only
+    batches_per_chunk = cfg.preencode.get('batches_per_chunk', 10)
+    print(f"output_dir={output_dir}, num_passes={num_passes}, batch_size={batch_size}, batches_per_chunk={batches_per_chunk}")
+
     for split in ['train', 'val']:
-        print(f"\nProcessing {split} split...")
-        ds = PRPairDataset(split=split, max_shift_x=cfg.training.max_shift_x, max_shift_y=cfg.training.max_shift_y)
-        dl = DataLoader(ds, batch_size=cfg.training.batch_size, num_workers=4, shuffle=False)
-        
-        num_chunks = cfg.preencode.num_passes # chunk = 1 pass thru ds
-        for chunk in range(1,num_chunks+1):
-            chunk_embeddings = []
-            chunk_images = []  # optionally save original images too for reconstruction comparison
-            with torch.no_grad():
-                for batch in tqdm(dl, desc=f"Encoding {split}, Chunk {chunk}/{num_chunks}"):
-                    img = batch['img2'].to(device)  # img2 come from wider distribution than img1, ignore img1
-                    z, non_empty = model(img, return_cls_only=False)  # (B, 65, 768)
-                    chunk_embeddings.append(z.cpu())
-                    chunk_images.append(img.cpu())
-            
-            # Concatenate and save
-            embeddings = torch.cat(chunk_embeddings, dim=0)
-            images = torch.cat(chunk_images, dim=0)
-            
-            save_path = output_dir / f"{split}_embeddings_{chunk}.pt"
-            torch.save({
-                'embeddings': embeddings,
-                'images': images,  # for reconstruction loss computation
-            }, save_path)
-            print(f"Saved {len(embeddings)} embeddings to {save_path}")
-            print(f"  embeddings shape: {embeddings.shape}")
-            print(f"  images shape: {images.shape}")
+        print(f"\n=== {split} split ===")
+        ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split=split,
+                                   max_shift_x=cfg.training.max_shift_x,
+                                   max_shift_y=cfg.training.max_shift_y)
+        chunk_idx = 0
+        for pass_num in range(1, num_passes + 1):
+            dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=False)
+            buf = []   # accumulate batches_per_chunk batches before saving
+            for batch_num, batch in enumerate(tqdm(dl, desc=f"{split} pass {pass_num}/{num_passes}")):
+                with torch.no_grad():
+                    enc1 = encoder(batch['img1'].to(device))
+                    enc2 = encoder(batch['img2'].to(device))
+                    enc3 = encoder(batch['img3'].to(device))
+                rec = {
+                    'emb1': [lvl.emb.cpu() for lvl in enc1.patches.levels],
+                    'emb2': [lvl.emb.cpu() for lvl in enc2.patches.levels],
+                    'emb3': [lvl.emb.cpu() for lvl in enc3.patches.levels],
+                    'img1': batch['img1'].bool(), 'img2': batch['img2'].bool(), 'img3': batch['img3'].bool(),
+                    'deltas': batch['deltas'], 'scheme': batch['scheme'],
+                    'target': batch['target'], 'file_idx': batch['file_idx'],
+                }
+                buf.append(rec)
+                if len(buf) >= batches_per_chunk:
+                    save_path = output_dir / f"{split}_chunk{chunk_idx:05d}.pt"
+                    torch.save(buf, save_path)
+                    print(f"  saved {save_path} ({len(buf)} batches)")
+                    buf = []
+                    chunk_idx += 1
+            if buf:   # save any remaining partial chunk
+                save_path = output_dir / f"{split}_chunk{chunk_idx:05d}.pt"
+                torch.save(buf, save_path)
+                print(f"  saved {save_path} ({len(buf)} batches, partial)")
+                buf = []
+                chunk_idx += 1
+    print("\nPre-encoding complete.")
 
 
 # %% ../nbs/08_preencode.ipynb #c159f875
