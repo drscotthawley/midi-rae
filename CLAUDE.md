@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Start of Session
+
+**Always read `program.md` at the start of every session.** It contains the autoresearch loop rules, experiment log, launch procedures, and the commit-before-launch requirement. Skipping it causes rule violations.
+
 ## Git Commands
 
 Always use `git -C /workspaces/ClaudeCode-Mar12/midi-rae <subcommand>` rather than `cd /workspaces/... && git ...`. The `cd` form triggers permission prompts; the `-C` form does not. Scripts in `scripts/` are always pre-approved — call them as `bash scripts/<name>.sh` from the repo root via `-C` or by prefixing with the full path.
@@ -18,13 +22,15 @@ nbdev_prepare   # compiles notebooks → modules, runs tests, cleans notebooks
 
 To compile without running tests:
 ```bash
-nbdev_export    # notebooks → .py only
+nbdev-export    # notebooks → .py only  ← CORRECT (hyphen, not underscore)
 ```
+
+**IMPORTANT:** The command is `nbdev-export` (hyphen), NOT `nbdev_export` (underscore). Never use `nbdev_export` — it is an old alias and should not be used.
 
 To run tests:
 ```bash
-nbdev_test      # runs all notebook tests
-nbdev_test --path nbs/03_losses.ipynb   # single notebook
+nbdev-test      # runs all notebook tests
+nbdev-test --path nbs/03_losses.ipynb   # single notebook
 ```
 
 ## Training Commands
