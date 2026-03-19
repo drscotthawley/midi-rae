@@ -26,3 +26,4 @@ cd62fb0	lecun	enc	0.141786	keep	exp19: n_skip_finest_levels=2 (skip L4+L5 LeJEPA
 n/a	razer	enc	0.152350	keep	exp20r: 100 epochs, n_skip_finest=2, lambd=0.1 — cross-machine (not directly comparable to lecun); lambd=0.1 vs 0.2 effect unclear
 n/a	razer	enc	0.101000	keep	exp22: 100 epochs, lambda_mep=0.1, n_skip_finest=2 — best razer enc result; MEP weights not saved
 n/a	lecun	enc	0.118586	keep	exp23_deltamep: 100 epochs, lambda_mep=0.2, delta_mep=True — delta MEP first run on lecun; MEP weights not saved (code fix not deployed in time)
+13a7d6e	razer-docker	dec	0.011558	keep	dec_masked: masked embedding decoder (emb_mask_prob=0.15, exp22 encoder) — val_loss=0.011558; F1 not yet evaluated
