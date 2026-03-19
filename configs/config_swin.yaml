@@ -19,7 +19,7 @@ model:
 training:
   batch_size: 300         # encoder batch size
   lr: 1e-3                # used to be 2e-4 but then we removed gradients from z1
-  epochs: 200
+  epochs: 100
   lambd: 0.2              # lejepa attraction-vs-sigreg weight
   max_shift_x: 12         
   max_shift_y: 12
@@ -51,10 +51,26 @@ training:
 
 preencode:
   output_dir: /home/shawley/datasets/POP909_encoded
-  num_passes: 10          # number of passes through the dataset
+  num_passes: 3           # number of passes through the dataset
 
+flow:
+  embedding_glob: /home/shawley/datasets/POP909_pca/train_chunk*_pca20.pt
+  checkpoint_dir: checkpoints/flow
+  h_dim: 512
+  n_layers: 4
+  n_epochs: 500
+  lr: 1e-3
+  batch_size: 4096
+  steps_per_epoch: 1000
+  warp_s: 0.5
+  save_every: 10
+  eval_every: 10
+  source_df: [null, null, null, 3.0, 3.0, 3.0]  # per-level: null=Gaussian (coarse), 3.0=Student-t (fine)
+  source_scales: [8.0, 4.0, 2.0, 0.5, 0.1, 0.05]  # per-level scale factors
+  
 wandb:
   project: ar-mep-swin-midi-rae
+  flow_project: midi-rae-flow
 
 encoder_ckpt: ~/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
 

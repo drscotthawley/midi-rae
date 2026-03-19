@@ -1,0 +1,7 @@
+defaults:
+  - config_swin
+  - _self_
+
+training:
+  lambda_mep: 0.2
+  delta_mep: true

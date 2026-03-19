@@ -344,7 +344,7 @@ def train(cfg: DictConfig):
                     eval_tup = viz_mae_recon(recon_patches, batch['img2'], enc_out=enc_outs[-1], epoch=epoch, patch_size=patch_size, return_maps=True)
                     del eval_tup
                     gc.collect()
-        save_checkpoint((mae_decoder, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag)
+        save_checkpoint((mep_model, encoder), epoch, val_loss, cfg, optimizer=optimizer, tag=cfg.tag)
         freemem()
         if scheduler is not None: scheduler.step()
     return best_val_loss
