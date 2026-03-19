@@ -1,0 +1,6 @@
+defaults:
+  - config_swin_razer
+  - _self_
+
+training:
+  emb_mask_prob: 0.0   # no masking — baseline: decoder trained on perfect encoder outputs
