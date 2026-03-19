@@ -4,10 +4,10 @@
 # and launches with PYTHONPATH pointing at that snapshot.
 #
 # Usage:
-#   ./scripts/launch.sh <host> <enc|dec> <config> <tag> [ckpt_host:ckpt_path]
+#   ./scripts/launch.sh <host> <enc|dec|hmep> <config> <tag> [ckpt_host:ckpt_path]
 #
 #   host          — SSH host (as defined in ~/.ssh/config)
-#   type          — "enc" or "dec"
+#   type          — "enc", "dec", or "hmep"
 #   config        — config name without .yaml (e.g. config_swin_razer)
 #   tag           — short descriptive label (e.g. "dec1"); a 6-char random suffix is appended
 #   ckpt_host:path — (optional) source of encoder checkpoint for decoder runs,
@@ -20,16 +20,16 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-HOST="${1:?Usage: $0 <host> <enc|dec> <config> <tag> [ckpt_host:ckpt_path]}"
-TYPE="${2:?Usage: $0 <host> <enc|dec> <config> <tag> [ckpt_host:ckpt_path]}"
-CONFIG="${3:?Usage: $0 <host> <enc|dec> <config> <tag> [ckpt_host:ckpt_path]}"
-TAG="${4:?Usage: $0 <host> <enc|dec> <config> <tag> [ckpt_host:ckpt_path]}"
+HOST="${1:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [ckpt_host:ckpt_path]}"
+TYPE="${2:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [ckpt_host:ckpt_path]}"
+CONFIG="${3:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [ckpt_host:ckpt_path]}"
+TAG="${4:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [ckpt_host:ckpt_path]}"
 CKPT_SRC="${5:-}"  # optional: host:remote_path
 
 SSH="ssh -o ClearAllForwardings=yes"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" ]]; then
-    echo "Error: type must be 'enc' or 'dec', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" ]]; then
+    echo "Error: type must be 'enc', 'dec', or 'hmep', got '${TYPE}'"
     exit 1
 fi
 
