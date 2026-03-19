@@ -1,0 +1,6 @@
+defaults:
+  - config_swin_razer
+  - _self_
+
+training:
+  dec_epochs: 200

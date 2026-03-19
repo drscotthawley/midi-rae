@@ -1,0 +1,18 @@
+defaults:
+  - config_swin
+  - _self_
+
+data:
+  path: ~/datasets/POP909_images_basic
+
+training:
+  batch_size: 64
+  hmep_epochs: 50
+  hmep_lr: 1e-4
+  n_fine_levels: 2
+  num_workers: [2, 1]
+
+encoder_ckpt: ~/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt
+hmep_init_ckpt: ~/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinMaskedEmbeddingPredictor_exp24_Lcbvz8_best.pt
+
+no_wandb: true
