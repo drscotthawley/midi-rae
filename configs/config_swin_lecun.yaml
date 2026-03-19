@@ -3,5 +3,5 @@ defaults:
   - _self_
 
 training:
-  lambda_mep: 0.2
-  delta_mep: true
+  lambda_mep: 0.1
+  delta_mep: false
