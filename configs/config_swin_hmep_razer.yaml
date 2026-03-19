@@ -1,0 +1,16 @@
+defaults:
+  - config_swin_razer
+  - _self_
+
+training:
+  hmep_epochs: 200
+  hmep_lr: 1e-4
+  n_fine_levels: 2
+  steps_per_epoch: 1000
+
+use_preencoded: true
+
+preencode:
+  output_dir: ~/datasets/POP909_encoded
+
+encoder_ckpt: ~/runs/midi-rae/exp22_ibfFI9/checkpoints/SwinEncoder_exp22_ibfFI9_best.pt
