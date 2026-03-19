@@ -100,9 +100,9 @@ def LeJEPA(z1, z2, global_step, z3=None, valids=None, target=None, deltas=None, 
         return {'loss': (1-lambd)*(lambda_sim*sim + lambda_fact*fact) + lambd*sigreg,
                 'sim': sim.detach(), 'sigreg': sigreg.detach(), 'fact': fact.detach()}
     else:
-        sim = attraction_loss(z1, z2, deltas=deltas, psize=psize)
+        _d = deltas[:,0] if (deltas is not None and deltas.dim() == 3) else deltas
+        sim = attraction_loss(z1, z2, deltas=_d, psize=psize)
     return {'loss': (1-lambd)*lambda_sim*sim + lambd*sigreg, 'sim': sim.detach(), 'sigreg': sigreg.detach()}
-
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
