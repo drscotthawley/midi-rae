@@ -2,6 +2,11 @@
 
 This is an autonomous experiment loop for the midi-rae project. The agent modifies training code and configs, launches runs on a remote GPU machine, waits for results, and iterates.
 
+## Pending To-Dos (user action required)
+
+- [ ] **Finish setting up Tailscale on razer** (so razer-docker is accessible for launching/monitoring runs)
+- [ ] **Standardize CUDA versions across lecun and razer** — lecun is on CUDA 12.8 / PyTorch 2.10.0 / cuDNN 9.1; razer is believed to be on CUDA 13.1. Update lecun while physically present at work (safer in case something goes wrong). Goal: reduce cross-machine FP divergence for ablation comparability.
+
 ## Key Findings
 
 ### Equivariance eval baseline — exp19 (2026-03-19)

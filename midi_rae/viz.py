@@ -83,11 +83,11 @@ def delta_scheme(deltas, n_groups=None):
         return np.where(h.sum(-1)==0, 2, np.where(h[:,1]==0, 0, np.where(h[:,0]==0, 1, 3)))
     if n_groups is not None:    # (3*N, 2): flat [anchors, img2s, img3s]
         d2, d3 = d[n_groups:2*n_groups], d[2*n_groups:3*n_groups]
+        if len(d3) == 0: return np.zeros(len(d), dtype=int)
         h = d2 * d3
         scheme = np.where(h.sum(-1)==0, 2, np.where(h[:,1]==0, 0, np.where(h[:,0]==0, 1, 3)))
         return np.concatenate([scheme, scheme, scheme])
     return (d[:,0]!=0).astype(int) + 2*(d[:,1]!=0).astype(int)  # per-point fallback
-
 
 # %% ../nbs/05_viz.ipynb #90b3ab53-51c5-440f-b266-87fd86da39bd
 @torch.no_grad()
