@@ -31,3 +31,4 @@ n/a	lecun	enc	0.118586	keep	exp23_deltamep: 100 epochs, lambda_mep=0.2, delta_me
 586cdf8	lecun	enc	0.118586	keep	exp24: lambda_mep=0.2, delta_mep=True, 100 epochs — same metric as exp23 (0.118586) but MEP weights now saved (save_checkpoint fix)
 e73841c	razer-docker	dec	0.004077	keep	dec_baseline: no masking (exp22 encoder) — val_loss=0.004077; F1=99.4%; clean baseline for masked decoder comparison
 n/a	razer-docker	dec	0.012373	keep	dec_masked_v2: per-patch learnable mask tokens (emb_mask_ratio=0.4, exp22 encoder) — val_loss=0.012373; F1≈97.87%; proper MAE-style masking (vs whole-level zeroing in dec_masked)
+n/a	lecun	enc	0.097081	keep	exp25: lambda_mep=0.1, delta_mep=False, 100 epochs — best encoder result yet; beats exp24 (0.118586) and exp22 (0.101)

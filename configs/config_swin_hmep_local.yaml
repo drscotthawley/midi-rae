@@ -10,9 +10,12 @@ training:
   hmep_epochs: 50
   hmep_lr: 1e-4
   n_fine_levels: 2
-  num_workers: [2, 1]
+  num_workers: [6, 2]
+
+use_preencoded: true
+
+preencode:
+  output_dir: ~/datasets/POP909_encoded
 
 encoder_ckpt: ~/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt
 hmep_init_ckpt: ~/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinMaskedEmbeddingPredictor_exp24_Lcbvz8_best.pt
-
-no_wandb: true

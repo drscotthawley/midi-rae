@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['PreEncodedDataset', 'setup_dataloaders', 'setup_models', 'setup_tstate', 'get_embeddings_batch', 'train_step',
-           'mask_enc_out', 'train', 'train_dec_main']
+           'MaskTokens', 'mask_enc_out', 'train', 'train_dec_main']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
 import sys
@@ -120,10 +120,11 @@ def setup_models(cfg, device, preencoded, verbose=True):
     return encoder, decoder 
 
 # %% ../nbs/09_train_dec.ipynb #61dd1ef1
-def setup_tstate(cfg, device, decoder, encoder=None):
+def setup_tstate(cfg, device, decoder, encoder=None, extra_params=None):
     "Training_state: Losses, Optimizers, Schedulers, AMP Scalers"
     opt_enc = None #if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
-    opt_dec = torch.optim.AdamW(decoder.parameters(), lr=cfg.training.dec_lr)
+    dec_params = list(decoder.parameters()) + (extra_params or [])
+    opt_dec = torch.optim.AdamW(dec_params, lr=cfg.training.dec_lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs, div_factor=4)
     scheduler_enc = None if opt_enc is None else torch.optim.lr_scheduler.OneCycleLR(opt_enc, max_lr=cfg.training.enc_ft_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs))   
     scaler_dec = torch.amp.GradScaler()
@@ -149,13 +150,16 @@ def train_step(epoch, enc_out, img_real, decoder,
             tstate,  # named tuple containing optimizers, loss fns, scalers
             cfg,    # config
             note_weights=None,
+            mask_tokens=None,
             ):
     "training step for decoder"
     decoder.train()
     tstate.opt_dec.zero_grad()
     enc_out = mask_enc_out(enc_out,
-                           mask_prob=cfg.training.get('emb_mask_prob', 0.0),
-                           zero_levels=cfg.training.get('zero_levels', None))
+                           mask_ratio=cfg.training.get('emb_mask_ratio', 0.0),
+                           mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
+                           zero_levels=cfg.training.get('zero_levels', None),
+                           mask_tokens=mask_tokens)
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
     tstate.scaler_dec.scale(loss_dict['dec']).backward()
@@ -166,20 +170,37 @@ def train_step(epoch, enc_out, img_real, decoder,
     return loss_dict, loss_dict['recon']
 
 # %% ../nbs/09_train_dec.ipynb #j42woyqwn0a
-def mask_enc_out(enc_out, mask_prob=0.0, zero_levels=None):
-    """Randomly zero out level embeddings for decoder robustness training.
-    mask_prob:   per-level probability of zeroing L1-L5 (0 = disabled). L0 never randomly masked.
-    zero_levels: list of level indices to always zero (e.g. [5] to ablate finest level entirely).
-    Motivation: generative model produces imperfect/missing embeddings; decoder must be robust.
+class MaskTokens(nn.Module):
+    "Learnable per-level mask tokens for decoder robustness training."
+    def __init__(self, dims):
+        super().__init__()
+        self.tokens = nn.ParameterList([nn.Parameter(torch.randn(d)) for d in dims])
+
+def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, zero_levels=None, mask_tokens=None):
+    """Per-patch masking of encoder embeddings for decoder robustness training.
+    mask_ratio:   finest-level fraction of patches to mask (0 = disabled). L0 never masked.
+    mr_level_fac: ratio divisor per coarser level (mirrors MEP; finer levels masked more).
+    zero_levels:  list of level indices to always mask entirely (ablation use).
+    mask_tokens:  MaskTokens module; masked positions get learned token instead of zeros.
     """
-    if mask_prob <= 0 and not zero_levels: return enc_out
+    if mask_ratio <= 0 and not zero_levels: return enc_out
     zero_levels = set(zero_levels or [])
+    n_levels = len(enc_out.patches.levels)
     new_levels = []
     for i, lvl in enumerate(enc_out.patches.levels):
-        if i in zero_levels or (i > 0 and mask_prob > 0 and torch.rand(1).item() < mask_prob):
-            emb = torch.zeros_like(lvl.emb)
-        else:
+        B, N, D = lvl.emb.shape
+        tok = mask_tokens.tokens[i].view(1, 1, D) if mask_tokens is not None else None
+        if i in zero_levels:
+            emb = tok.expand(B, N, D).clone() if tok is not None else torch.zeros_like(lvl.emb)
+        elif i == 0 or mask_ratio <= 0:
             emb = lvl.emb
+        else:
+            ratio = mask_ratio / (mr_level_fac ** (n_levels - 1 - i))
+            visible = torch.rand(B, N, device=lvl.emb.device) >= ratio  # True = keep
+            if tok is not None:
+                emb = torch.where(visible.unsqueeze(-1), lvl.emb, tok.expand(B, N, D))
+            else:
+                emb = lvl.emb * visible.unsqueeze(-1)
         new_levels.append(PatchState(emb=emb, pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask))
     return EncoderOutput(
         patches=HierarchicalPatchState(levels=new_levels),
@@ -192,23 +213,31 @@ def train(cfg: DictConfig):
     cjprint(f"config file: {HydraConfig.get().job.config_name}\nconfig: {cfg}\ndevice = {device}",color="green")
     set_seed()
     preencoded = cfg.get('preencoded', False)
-    
+
     train_dl, val_dl  = setup_dataloaders(cfg, preencoded)
-    encoder, decoder  = setup_models(cfg, device, preencoded) 
-    tstate            = setup_tstate(cfg, device, decoder, encoder=encoder)
+    encoder, decoder  = setup_models(cfg, device, preencoded)
     patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
+
+    mask_tokens = None
+    if cfg.training.get('emb_mask_ratio', 0.0) > 0 or cfg.training.get('zero_levels', None):
+        n_levels = len(cfg.model.depths)
+        dims = [cfg.model.embed_dim * (2 ** (n_levels - 1 - i)) for i in range(n_levels)]
+        mask_tokens = MaskTokens(dims).to(device)
+
+    tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
+                          extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
 
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
         decoder, ckpt = load_checkpoint(decoder, cfg.get('checkpoint',None), return_all=True)
         tstate.opt_dec.load_state_dict(ckpt['optimizer_state_dict'])
-    
-    if not(cfg.get('no_wandb', False)): 
+
+    if not(cfg.get('no_wandb', False)):
         wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
         wandb.define_metric("epoch")
         wandb.define_metric("*", step_metric="epoch")
         wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
-    
-    global_step = 0 
+
+    global_step = 0
     viz_every = 2
     best_val_loss = float('inf')
     for epoch in range(1, cfg.training.dec_epochs + 1):
@@ -217,13 +246,13 @@ def train(cfg: DictConfig):
             global_step += 1
             enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, preencoded, device)
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
-            losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights)
+            losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
-        
+
         train_loss /= len(train_dl)
-        
+
         # validation, checkpointing, visualization e.g. reconstruction comparison
-        decoder.eval() 
+        decoder.eval()
         with torch.no_grad():
             val_loss = 0
             for batch in val_dl:
@@ -232,26 +261,40 @@ def train(cfg: DictConfig):
                     loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
                     loss_dec, img_recon = loss_dict['dec'], loss_dict['recon']
                 val_loss += loss_dec.item()
-            val_loss /= len(val_dl) 
+            val_loss /= len(val_dl)
             if val_loss < best_val_loss: best_val_loss = val_loss
             print(f'Epoch {epoch}: train_loss={train_loss:.6f} val_loss={val_loss:.6f}, best_val_loss={best_val_loss:.6f}')
 
-            if wandb.run is not None: 
-                wandb.log({ 
+            if wandb.run is not None:
+                wandb.log({
                     'train_dec': train_loss, 'train_bce': to_scalar(losses['bce']),      'train_mse': to_scalar(losses['mse']),
                     'val_dec':     val_loss,   'val_bce': to_scalar(loss_dict['bce']), 'val_mse': to_scalar(loss_dict['mse']),
                     'epoch': epoch, 'lr_dec': tstate.opt_dec.param_groups[0]['lr'],})
-                if epoch % viz_every == 0:
-                    eval_tup = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
-                    del eval_tup
-                gc.collect()
+            if epoch % viz_every == 0:
+                clean_evals = viz_mae_recon(img_recon, img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
+                log_extra = {'F1_clean': clean_evals['f1'], 'epoch': epoch}
+                if cfg.training.get('emb_mask_ratio', 0.0) > 0:
+                    masked_enc = mask_enc_out(enc_out,
+                                             mask_ratio=cfg.training.get('emb_mask_ratio', 0.0),
+                                             mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
+                                             zero_levels=cfg.training.get('zero_levels', None),
+                                             mask_tokens=mask_tokens)
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        m_ld = calc_dec_loss(decoder, masked_enc, img_real, pos_weight=cfg.training.get('pos_weight', 1.0))
+                    masked_evals = viz_mae_recon(m_ld['recon'], img_real, epoch=epoch, patch_size=patch_size, return_maps=True)
+                    log_extra['F1_masked'] = masked_evals['f1']
+                    print(f"  F1_clean={clean_evals['f1']:.4f}  F1_masked={masked_evals['f1']:.4f}")
+                    del masked_evals
+                if wandb.run is not None: wandb.log(log_extra)
+                del clean_evals
+            gc.collect()
 
         save_checkpoint(decoder, epoch, val_loss, cfg, optimizer=tstate.opt_dec, tag=cfg.tag)
         freemem()
         tstate.scheduler.step()
         if tstate.scheduler_enc is not None: tstate.scheduler_enc.step()
         if epoch > cfg.training.gan_warmup: tstate.schedulerD.step()
-    
+
     wandb.finish()
     return best_val_loss
 

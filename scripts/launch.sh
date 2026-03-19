@@ -29,6 +29,10 @@ EXTRA_OVERRIDES="$*"  # all remaining args passed directly to Hydra
 
 SSH="ssh -o ClearAllForwardings=yes"
 
+# Hydra's grammar treats ~ as its delete operator, so expand ~ to the remote $HOME
+REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
+EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
+
 if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" ]]; then
     echo "Error: type must be 'enc', 'dec', or 'hmep', got '${TYPE}'"
     exit 1
