@@ -4,6 +4,25 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 
 ## Key Findings
 
+### Equivariance eval baseline — exp19 (2026-03-19)
+
+First run of `scripts/eval_encoder.py` on exp19 checkpoint (n_skip_finest=2, 100 epochs, lecun).
+
+**SVD (effective dims for 90% variance)**:
+- L0 (coarsest): 13 dims, top-1 explains 16% — nicely compressed
+- L1–L3: 18–22 dims, top-1 8–11%
+- L4–L5 (LeJEPA skipped): only 6 and 3 dims, top-1 49% and 75% — barely using capacity, MEP-only supervision
+
+**Factorization cosines** (cross ≈0 good, parallel ≈+1, anti ≈-1):
+- Cross terms ≈0.000–0.007 at all levels — near-perfect pitch/time orthogonality
+- Parallel/anti structure degrades at L4/L5, with L5 anti going positive (0.23) — expected, no LeJEPA there
+
+**R² equivariance** (pitch/time shift magnitude linearly encoded):
+- `r2_pitch`: L0=**0.986**, L1=**0.986**, L2=0.935, L3=0.761, L4=0.425, L5≈0 — pitch equivariance excellent at coarse levels
+- `r2_time`: **≈0.0 at all levels** — time shift magnitude not linearly encoded anywhere
+
+**Why r2_time≈0 is expected, not a bug**: Time shifts cause notes to appear/disappear at crop boundaries — the two crops contain partially *different content*, not just a translation of the same content. The model cannot form a consistent "time shift magnitude" vector because the information isn't preserved across the shift. Pitch shifts are clean (whole roll slides up/down, same notes visible). This asymmetry is fundamental to the data structure, not a training failure. The cross terms ≈0 still confirm the time direction is orthogonal to pitch.
+
 ### Skip LeJEPA at finest Swin level (L5) — 2026-03-17
 
 **Finding**: Disabling the entire LeJEPA loss (attraction + SIGReg + factorization) at the finest Swin hierarchy level (L5) is a major win. Config: `skip_lejepa_levels: [5]`.
@@ -45,13 +64,15 @@ skip_lejepa_levels: [5]   # disable entire LeJEPA loss at finest Swin level
 
 ## Machines
 
-| Host | VRAM | Availability | Default config |
-|------|------|--------------|----------------|
-| `lecun` | 24 GB | Always reachable (external server) | `config_swin` |
-| `razer` | 16 GB | Home only — unreachable when user is away | `config_swin_razer` |
-| `oryx`  | 8 GB  | Home only — unreachable when user is away | TBD |
+| Host | GPU | VRAM | Speed | Availability | Default config |
+|------|-----|------|-------|--------------|----------------|
+| `lecun` | RTX 4090 | 24 GB | ~90s/epoch | Always reachable (external server) | `config_swin` |
+| `razer-docker` | RTX 4090 Max-Q | 16 GB | ~90s/epoch | Home only | `config_swin_razer` |
+| `oryxpro` | RTX 2070 | 8 GB | ~5min/epoch | Home only | `config_swin_oryxpro` |
 
-**Default to `lecun` for all autonomous runs.** The home machines (`razer`, `oryx`) are only available when the user is at home. Do not attempt to launch on them unless the user confirms they are reachable.
+**Default to `lecun` for all autonomous runs.** The home machines (`razer`, `oryxpro`) are only available when the user is at home. Do not attempt to launch on them unless the user confirms they are reachable.
+
+**oryxpro is ~4x slower than lecun/razer** — use it for smoke tests, OOM checks, and decoder runs only. Not suitable for full screening runs.
 
 Because different machines have different GPU architectures and CUDA versions, results are not directly comparable across machines. Each machine needs its own baseline. The home machines may also require smaller batch sizes to fit in VRAM — machine-specific configs handle this.
 
@@ -83,6 +104,36 @@ Val loss is a proxy for encoder quality, not a direct measure of latent structur
 **Decoder F1 threshold**: 99.6% F1 is considered acceptable for downstream use — reconstructions at this level are visually error-free in practice. Current best: 99.78% (exp9-like encoder on razer, 100 epochs, 73 min). lecun best: 99.66% (exp9 encoder, dec1). Note: razer and lecun results are not directly comparable due to different GPU/CUDA versions.
 
 **What we actually care about**: latent space quality — do repeated motifs cluster? Are pitch/time shifts encoded in separable, structured directions? Is the geometry smooth enough for a future generative model? Val_loss is a proxy for this; it is assumed (but not proven) to correlate with representation quality.
+
+## Generative model plan
+
+### Latent space structure (from exp19 eval)
+PCA on each level's embeddings reveals effective dimensionality (90% variance):
+- L0 (coarsest/CLS): **13 dims** — remarkably compressed; 128×128=16,384 pixels → 13 numbers
+- L1–L3: 18–22 dims each
+- L4–L5: 6 and 3 dims (LeJEPA-skipped, MEP-only)
+
+### Generation strategies
+
+**Option A — L0-only flat generation** (simplest starting point):
+1. PCA(13) on training set L0 embeddings; save transform
+2. Train small MLP flow model in 13-dim space
+3. Generate → inverse PCA → 256-dim L0 → feed to decoder with L1-L5 zeroed/mean
+
+Useful as a lower bound: if L0-only decoding is already decent, the encoder is doing heavy lifting. If it's terrible, robustness training is needed before cascaded generation.
+
+**Option B — Joint multi-level generation**:
+Concatenate PCA projections of all levels into one vector (~13+20+20+18 ≈ 70 dims for L0-L3) and train a single flow model in the joint space. No error accumulation, still tractable for a small MLP. Preferred over cascaded if the joint space is smooth.
+
+**Option C — Cascaded generation** (original plan):
+Generate L0 first, condition L1 on L0, etc. Risk: error accumulation compounds across levels — OOD L0 leads to even more OOD L1, etc.
+
+**Mitigations for cascaded/any approach**:
+- **Masked embedding decoder training**: randomly zero out some level embeddings during decoder training, forcing robustness to missing/imperfect inputs (already logged as idea)
+- **Noise injection**: add Gaussian noise to encoder embeddings during decoder training — same effect, different mechanism
+- Both are forms of dropout on the conditioning signal; well-established technique
+
+**Recommended order**: Try Option A first (fast, informative), then Option B (joint), defer Option C unless A/B fail.
 
 ## Scope and goals
 
@@ -254,12 +305,54 @@ Start with low-risk, high-payoff changes before architectural surgery:
 
 ## Future experiment ideas
 
+### Revisit deeper finest-level encoder blocks (post-exp20)
+
+Earlier experiments with `depths=[4,4,4,6,2,1]` (more transformer blocks at L4/L5) showed no benefit. However, those runs had LeJEPA losses active at the finest levels, meaning the extra capacity was being used to fight an inappropriate Gaussian prior. Now that `n_skip_finest_levels=2` skips LeJEPA at both L4 and L5, the finest-level blocks are supervised only by MEP — a much more appropriate objective. More capacity at these levels could now meaningfully improve MEP quality and the richness of the discrete vocabulary organized there.
+
+**To try**: `depths=[4,4,4,6,2,1]` or `[2,2,4,6,2,1]` with `n_skip_finest_levels=2`. Use 50 epochs to screen, 100 to confirm — do not repeat the 200-epoch budget. Compare against exp19 (100 epochs, n_skip=2, val_loss=0.1418) as the baseline — not exp20, which ran 200 epochs and isn't directly comparable.
+
+### Reduce lambda_mep (post-exp20)
+
+`lambda_mep=1.0` has been fixed across all runs. In exp20, MEP loss is monotonically decreasing while other losses fluctuate — suggesting MEP may be dominating late-training optimization and crowding out structural losses.
+
+**To try**: `lambda_mep=0.5` and/or `lambda_mep=0.1` with otherwise identical config to exp19. Use 100 epochs. Compare val_loss against exp19 (0.1418). If reducing MEP weight gives the structural losses more room, we may see improvement similar to the `sigreg_prefac` reduction in exp16.
+
 ### Delta-conditioned cross-view MEP
 Instead of predicting unmasked img2 embeddings from masked img2 (same image), predict **img3 embeddings from masked img2**, conditioned on the shift delta between them. The MEP model signature becomes `mep_model(enc_out2, deltas)` → predicted embeddings of img3.
 
 **Motivation**: Current MEP is a masked reconstruction task — useful but not directly tied to the pitch/time shift structure. Cross-view MEP with delta conditioning explicitly trains the model to answer "if I shift by delta, what does the representation look like?" This directly incentivizes factorized pitch/time directions in latent space, rather than relying on the factorization loss alone to produce them as an emergent property.
 
 **Implementation notes**: Delta conditioning could be a learned linear projection of the delta vector added to the MEP query embeddings (similar to positional encodings). Requires the triplet dataset (img2, img3, deltas) to be available during MEP — which it already is when `lambda_fact > 0`.
+
+## Embedding quality evaluation ideas
+
+Current automated metrics (val_loss, decoder F1) are coarse. Below are more rigorous evaluation approaches to develop.
+
+### PESTO-inspired transposition equivariance test
+
+**Paper**: "PESTO: Pitch Estimation with Self-supervised Transposition-equivariant Objective" — Riou, Lattner, Hadjeres, Peeters. ISMIR 2023 Best Paper. ([arXiv](https://arxiv.org/abs/2309.02265), [GitHub — inference only](https://github.com/SonyCSLParis/pesto))
+
+PESTO enforces that pitch-shifting the input by N semitones shifts the output by exactly N semitones — the same equivariance our factorization loss targets. Their datasets (MIR-1K, MDB-stem-synth) are audio-based and not directly usable for MIDI piano rolls.
+
+**Borrowed evaluation idea**: Measure how *linearly predictable* the pitch shift amount is from the difference vector in latent space. Concretely, for pitch-shifted pairs (img1, img2) with known delta_pitch:
+1. Compute `d = z2 - z1` (mean-pooled per level)
+2. Fit a linear regression `delta_pitch → d · pitch_axis` where `pitch_axis` is the first PC of pitch difference vectors
+3. Report R² per level — a good factorized encoder should have R² ≈ 1.0 on pitch axis, ≈ 0.0 on time axis (and vice versa)
+
+This is a stricter version of what `factorization_metrics` already measures via cosine similarity. The cosine metrics tell us direction consistency; R² tells us whether the *magnitude* of the shift is also encoded linearly.
+
+**Status**: Idea only — not yet implemented.
+
+### Other evaluation directions to explore
+- **Nearest-neighbor retrieval**: Given an anchor piano roll, does the top-K nearest neighbor in latent space contain the same melody/rhythm? Requires a labeled subset.
+- **Linear probe on music attributes**: Train a linear classifier on frozen embeddings to predict key, tempo, or instrument — measures semantic content without fine-tuning.
+- **Reconstruction quality vs. encoder quality correlation**: Track whether decoder F1 reliably tracks encoder val_loss across runs (confirmed for exp9→dec1, but more data points needed).
+
+## Low priority future improvements
+
+- **Optimize embedding dims per Swin level**: PCA analysis shows L0 (256-dim) needs only ~13 effective dims — a ~20x overparameterization. A tapered hierarchy (e.g. 16→32→64→64→32→16) could dramatically reduce parameter count. Requires customizing Swin's default doubling-per-stage behavior.
+
+- **Weighted dataset sampling by song length**: Currently `file_idx` sampling gives shorter songs proportionally more coverage than longer ones. Fix with `torch.utils.data.WeightedRandomSampler`, weighting each file by its length in bars. One-liner change to `data.py` but not a correctness issue — current approach is fine for now.
 
 ## Open questions
 
