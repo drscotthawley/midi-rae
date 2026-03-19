@@ -4,10 +4,25 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 
 ## Pending To-Dos (user action required)
 
-- [ ] **Finish setting up Tailscale on razer** (so razer-docker is accessible for launching/monitoring runs)
-- [ ] **Standardize CUDA versions across lecun and razer** — lecun is on CUDA 12.8 / PyTorch 2.10.0 / cuDNN 9.1; razer is believed to be on CUDA 13.1. Update lecun while physically present at work (safer in case something goes wrong). Goal: reduce cross-machine FP divergence for ablation comparability.
+- [x] **Finish setting up Tailscale on razer** — resolved 2026-03-19, razer-ts-docker accessible
+- [ ] **Standardize CUDA versions across lecun and razer** — lecun upgraded to driver 595 (CUDA 13.2 max); razer believed to be on CUDA 13.1. Install CUDA 13.0 toolkit + PyTorch cu130 on lecun to match razer as closely as possible.
+
+## Standing Config Defaults
+
+These apply to all encoder runs unless explicitly overridden:
+- `lambda_fact=0` — factorization loss is tabled pending MEP investigation (see finding below)
+- `n_skip_finest_levels=2` — skip LeJEPA at L4+L5
+- `lambda_mep=0.1` — MEP loss weight
 
 ## Key Findings
+
+### Factorization loss hurts reconstruction — 2026-03-19
+
+**Finding**: exp25 (lambda_fact=0.5) produced decoder F1=98.91% vs exp22 (lambda_fact=0.5 but trained on razer with slightly different dynamics) at 99.4%. Post-training eval shows exp25 has L0 cross_pt=0.007 (near-perfect pitch/time separation) while exp22 has L0 cross_pt=0.112 — yet exp22 produces a better decoder. The factorization loss over-constrains the embedding geometry in ways that hurt reconstruction.
+
+**Decision**: Set `lambda_fact=0` for all subsequent runs. Factorization loss is scientifically interesting (produces cleaner equivariance metrics) but is tabled until MEP experiments are complete and reconstruction quality is fully understood.
+
+**Next**: exp26 (lambda_fact=0, delta_mep=False) and exp27 (lambda_fact=0, delta_mep=True) will establish the clean baseline.
 
 ### Equivariance eval baseline — exp19 (2026-03-19)
 
