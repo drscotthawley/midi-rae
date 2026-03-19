@@ -153,7 +153,9 @@ def train_step(epoch, enc_out, img_real, decoder,
     "training step for decoder"
     decoder.train()
     tstate.opt_dec.zero_grad()
-    enc_out = mask_enc_out(enc_out, mask_prob=cfg.training.get('emb_mask_prob', 0.0))
+    enc_out = mask_enc_out(enc_out,
+                           mask_prob=cfg.training.get('emb_mask_prob', 0.0),
+                           zero_levels=cfg.training.get('zero_levels', None))
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
     tstate.scaler_dec.scale(loss_dict['dec']).backward()
@@ -164,16 +166,17 @@ def train_step(epoch, enc_out, img_real, decoder,
     return loss_dict, loss_dict['recon']
 
 # %% ../nbs/09_train_dec.ipynb #j42woyqwn0a
-def mask_enc_out(enc_out, mask_prob=0.0):
-    """Randomly zero out level embeddings (except L0) for decoder robustness training.
-    Motivation: the generative model will produce imperfect or missing fine-level embeddings;
-    the decoder should reconstruct well despite that.
-    mask_prob: per-level probability of zeroing (0 = disabled). L0 is never masked.
+def mask_enc_out(enc_out, mask_prob=0.0, zero_levels=None):
+    """Randomly zero out level embeddings for decoder robustness training.
+    mask_prob:   per-level probability of zeroing L1-L5 (0 = disabled). L0 never randomly masked.
+    zero_levels: list of level indices to always zero (e.g. [5] to ablate finest level entirely).
+    Motivation: generative model produces imperfect/missing embeddings; decoder must be robust.
     """
-    if mask_prob <= 0: return enc_out
+    if mask_prob <= 0 and not zero_levels: return enc_out
+    zero_levels = set(zero_levels or [])
     new_levels = []
     for i, lvl in enumerate(enc_out.patches.levels):
-        if i > 0 and torch.rand(1).item() < mask_prob:
+        if i in zero_levels or (i > 0 and mask_prob > 0 and torch.rand(1).item() < mask_prob):
             emb = torch.zeros_like(lvl.emb)
         else:
             emb = lvl.emb
