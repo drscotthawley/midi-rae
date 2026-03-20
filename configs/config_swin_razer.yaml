@@ -11,3 +11,6 @@ encoder_ckpt: $HOME/runs/midi-rae/exp26_z1olvN/checkpoints/SwinEncoder_exp26_z1o
 preencode:
   batch_size: 512   # razer has 16 GB RAM; default 1024 causes swap thrashing; 256 uses 6-7 GB, 512 should be fine
 
+flow:
+  embedding_glob: $HOME/datasets/POP909_encoded_pca/train_chunk*_pca20.pt  # fit_pca defaults to encoded_dir + _pca
+
