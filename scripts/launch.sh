@@ -7,7 +7,7 @@
 #   ./scripts/launch.sh <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]
 #
 #   host              — SSH host (as defined in ~/.ssh/config)
-#   type              — "enc", "dec", "hmep", "preencode", or "fitpca"
+#   type              — "enc", "dec", "hmep", "preencode", "fitpca", or "flow"
 #   config            — config name without .yaml (e.g. config_swin_razer)
 #   tag               — short descriptive label (e.g. "dec1"); a 6-char random suffix is appended
 #   hydra_overrides   — (optional) any number of Hydra overrides, e.g. ++training.dec_epochs=200
@@ -33,8 +33,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" ]]; then
-    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', or 'fitpca', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', or 'flow', got '${TYPE}'"
     exit 1
 fi
 

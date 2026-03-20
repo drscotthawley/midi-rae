@@ -56,7 +56,7 @@ preencode:
   num_passes: 3           # number of passes through the dataset
 
 flow:
-  embedding_glob: $HOME/datasets/POP909_pca/train_chunk*_pca20.pt
+  embedding_glob: $HOME/datasets/POP909_pca_exp26/train_chunk*_pca20.pt
   checkpoint_dir: checkpoints/flow
   h_dim: 512
   n_layers: 4
