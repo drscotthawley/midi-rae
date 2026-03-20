@@ -6,5 +6,5 @@ training:
   batch_size: 250
   num_workers: [4, 2]
 
-encoder_ckpt: $HOME/runs/midi-rae/exp22_ibfFI9/checkpoints/SwinEncoder_exp22_ibfFI9_best.pt
+encoder_ckpt: $HOME/runs/midi-rae/exp26_z1olvN/checkpoints/SwinEncoder_exp26_z1olvN_best.pt
 
