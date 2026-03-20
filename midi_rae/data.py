@@ -379,7 +379,7 @@ def emb_levels_to_enc_out(emb_levels, pos_cache, device):
 class EmbeddingDataset(Dataset):
     """Load PCA-projected embeddings from chunk files produced by fit_pca.
 
-    Each chunk file is a dict with keys 'L0', 'L1', ... each (N_chunk, D).
+    Each chunk file is a dict with keys 'L0', 'L1', ... each (N_chunk, D) or (N_chunk, P, D).
     Optionally loads raw preencode chunks (list of batch dicts) for the no-PCA path.
 
     Args:
@@ -402,9 +402,10 @@ class EmbeddingDataset(Dataset):
         for fp in all_files:
             data = torch.load(fp, weights_only=False)
             if isinstance(data, dict) and any(k.startswith("L") for k in data):
-                # PCA chunk format: {'L0': (N,D), 'L1': (N,D), ...}
+                # PCA chunk format: {'L0': (N,D) or (N,P,D), 'L1': ...}
                 lvls = levels or sorted(k for k in data if k.startswith("L"))
                 tensors = [data[lv].float() for lv in lvls]
+                tensors = [t.flatten(1) if t.dim() == 3 else t for t in tensors]  # (N,P,D) → (N,P*D)
                 if not hasattr(self, '_level_dims'):
                     self._level_dims = [t.shape[1] for t in tensors]
                 all_embs.append(torch.cat(tensors, dim=1) if len(tensors) > 1 else tensors[0])
@@ -412,7 +413,7 @@ class EmbeddingDataset(Dataset):
                 # Raw preencode chunk format
                 for batch_rec in data:
                     emb = batch_rec[key][level]      # (B, N_patches, D)
-                    all_embs.append(emb.mean(dim=1).float())
+                    all_embs.append(emb.flatten(1).float())
             else:
                 raise ValueError(f"Unrecognised format in {fp}")
         self.embeddings = torch.cat(all_embs, dim=0)
