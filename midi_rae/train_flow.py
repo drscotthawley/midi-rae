@@ -315,10 +315,16 @@ def train_flow_main(cfg: DictConfig):
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"device = {device}")
 
-    paths = sorted(_glob.glob(cfg.flow.embedding_glob))
+    paths = sorted(_glob.glob(os.path.expandvars(os.path.expanduser(cfg.flow.embedding_glob))))
     assert paths, f"No files found matching {cfg.flow.embedding_glob}"
     print(f"Loading {len(paths)} file(s)...")
-    dataset = EmbeddingDataset(paths)
+    source_scales = list(cfg.flow.source_scales) if cfg.flow.get("source_scales") else None
+    raw_df = cfg.flow.get("source_df", None)
+    source_df = list(raw_df) if hasattr(raw_df, '__iter__') else raw_df
+    n_levels = len(source_scales) if source_scales else None
+    levels = [f'L{i}' for i in range(n_levels)] if n_levels else None
+    if source_df: source_df = source_df[:n_levels]
+    dataset = EmbeddingDataset(paths, levels=levels)
     dim = dataset.embeddings.shape[1]
     print(f"  {len(dataset)} samples, dim={dim}, level_dims={dataset.level_dims}")
 
@@ -333,10 +339,6 @@ def train_flow_main(cfg: DictConfig):
         wandb.define_metric("epoch")
         wandb.define_metric("*", step_metric="epoch")
         if hasattr(cfg, "tag"): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
-
-    source_scales = list(cfg.flow.source_scales) if cfg.flow.get("source_scales") else None
-    raw_df = cfg.flow.get("source_df", None)
-    source_df = list(raw_df) if hasattr(raw_df, '__iter__') else raw_df
 
     train_flow(model, dataset,
                n_epochs=cfg.flow.n_epochs, lr=cfg.flow.lr, batch_size=cfg.flow.batch_size,

@@ -68,7 +68,7 @@ flow:
   save_every: 10
   eval_every: 10
   source_df: [null, null, null, 3.0, 3.0, 3.0]  # per-level: null=Gaussian (coarse), 3.0=Student-t (fine)
-  source_scales: [8.0, 4.0, 2.0, 0.5, 0.1, 0.05]  # per-level scale factors
+  source_scales: [8.0, 4.0, 2.0, 0.5, 0.1, 0.05]  # per-level scale factors; len sets n_levels to model
   
 wandb:
   project: ar-mep-swin-midi-rae
