@@ -13,4 +13,5 @@ preencode:
 
 flow:
   embedding_glob: $HOME/datasets/POP909_encoded_pca/train_chunk*_pca20.pt  # fit_pca defaults to encoded_dir + _pca
+  batch_size: 16384  # razer flow only uses ~8% GPU at default 4096; larger batch = more stable statistics
 
