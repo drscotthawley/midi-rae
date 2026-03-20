@@ -341,7 +341,8 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                eval_every=10, viz_every=50, use_wandb=False, steps_per_epoch=None,
                source_df=None, source_scales=None, checkpoint=None, cfg=None,
                lr_restart_epochs=500, grad_clip=1.0,
-               repair_every=1, n_repair_projections=1, repair_chunk_size=None):
+               repair_every=1, n_repair_projections=1, repair_chunk_size=None,
+               ema_eta=0.97, ema_start_epoch=100):
     """Train flow matching model on embedding dataset.
 
     Source: N(0,I) sampled fresh each step.
@@ -355,9 +356,12 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     repair_every: re-pair source/target every N batches via ann_repair (0 = disabled).
     n_repair_projections: random projections per ann_repair call (more = better, slower).
     repair_chunk_size: chunk size for ann_repair (None = full batch).
+    ema_eta: EMA decay rate (updated every batch from epoch 1).
+    ema_start_epoch: epoch at which to switch eval/sampling to the EMA model.
     """
-    from midi_rae.utils import save_checkpoint, load_checkpoint
+    from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     model = model.to(device)
+    ema_model = EMAModel(model, eta=ema_eta, update_every=1, dtype=torch.float32)
     dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                     num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
     dl_iter = None  # lazy cycle iterator, created if steps_per_epoch is set
@@ -378,6 +382,8 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
         epoch_start = ckpt['epoch']  # resume after this completed epoch
         global_step = epoch_start * _steps
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
+        # re-sync EMA to loaded weights so it doesn't start from random init
+        ema_model.ema.load_state_dict(model.state_dict())
 
     # Cosine annealing with warm restarts; T_mult=2 doubles period each restart
     # so restarts become progressively gentler as training matures
@@ -420,6 +426,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
+            ema_model.update(model)
 
             epoch_loss += loss.item()
             pbar.set_postfix(loss=f'{loss.item():.4f}')
@@ -433,14 +440,15 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
 
         if eval_every and (epoch + 1) % eval_every == 0:
             print(f'  --- eval epoch {epoch+1} ---')
-            metrics = eval_flow(model, dataset.embeddings, device=device, warp_s=warp_s,
+            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else model
+            metrics = eval_flow(eval_model, dataset.embeddings, device=device, warp_s=warp_s,
                                source_df=source_df, source_scales=source_scales,
                                level_dims=getattr(dataset, 'level_dims', None))
             if use_wandb:
                 import wandb
                 log_dict = {f'eval/{k}': v for k, v in metrics.items()}
                 if hasattr(dataset, 'level_dims') and viz_every and (epoch + 1) % viz_every == 0:
-                    figs = plot_level_histograms(model, dataset.embeddings,
+                    figs = plot_level_histograms(eval_model, dataset.embeddings,
                                                dataset.level_dims, device=device, warp_s=warp_s,
                                                source_df=source_df, source_scales=source_scales,
                                                epoch=epoch+1)
@@ -449,7 +457,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                         log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
                         plt.close(fig)
                     del figs
-                    scatters = plot_level_scatter(model, dataset.embeddings,
+                    scatters = plot_level_scatter(eval_model, dataset.embeddings,
                                                  dataset.level_dims, device=device, warp_s=warp_s,
                                                  source_df=source_df, source_scales=source_scales,
                                                  epoch=epoch+1)
@@ -466,7 +474,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                 wandb.log(log_dict, step=global_step)
             model.train()
 
-        save_checkpoint(model, epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
+        save_checkpoint([model, ema_model.ema], epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
                         save_every=save_every, tag=f'flow_{model.__class__.__name__}')
 
     print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
