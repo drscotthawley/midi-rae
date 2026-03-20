@@ -80,6 +80,7 @@ flow:
   model_type: per_level       # 'per_level' (PerLevelFlowModel) or 'cross_level' (CrossLevelFlowModel w/ attention)
   n_attn_layers: 2            # cross_level only: transformer encoder layers for cross-level attention
   n_heads: 8                  # cross_level only: attention heads (h_dim must be divisible by n_heads)
+  t_dim: 64                   # sinusoidal time embedding dim (replaces bare scalar t in all model types)
   
 wandb:
   project: ar-mep-swin-midi-rae
