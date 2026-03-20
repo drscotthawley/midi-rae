@@ -42,7 +42,7 @@ def preencode(cfg: DictConfig):
     encoder = load_checkpoint(encoder, ckpt_path)
     encoder.eval()
 
-    output_dir = Path(cfg.preencode.output_dir)
+    output_dir = Path(os.path.expandvars(os.path.expanduser(str(cfg.preencode.output_dir))))
     output_dir.mkdir(parents=True, exist_ok=True)
     num_passes   = cfg.preencode.get('num_passes', 10)
     batch_size   = cfg.preencode.get('batch_size', 1024)   # large batch; inference only
@@ -85,7 +85,6 @@ def preencode(cfg: DictConfig):
                 buf = []
                 chunk_idx += 1
     print("\nPre-encoding complete.")
-
 
 # %% ../nbs/08_preencode.ipynb #c159f875
 #| eval: false
