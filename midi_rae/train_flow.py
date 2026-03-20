@@ -285,13 +285,16 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
 def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
                eval_every=10, use_wandb=False, steps_per_epoch=None, source_df=None,
-               source_scales=None):
+               source_scales=None, checkpoint=None, cfg=None):
     """Train flow matching model on embedding dataset.
 
     Source: N(0,I) sampled fresh each step.
     Target: embeddings from dataset.
     Loss:   MSE between predicted and true (constant) velocity.
+    checkpoint: path to a saved checkpoint to resume from (optional).
+    cfg: config dict/object passed to save_checkpoint (optional).
     """
+    from midi_rae.utils import save_checkpoint, load_checkpoint
     model = model.to(device)
     dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                     num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
@@ -304,12 +307,20 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_fn   = nn.MSELoss()
     global_step = 0
+    epoch_start = 0  # 0-indexed
+
+    if checkpoint:
+        model, ckpt = load_checkpoint(model, checkpoint, return_all=True)
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        epoch_start = ckpt['epoch']  # resume after this completed epoch
+        global_step = epoch_start * _steps
+        print(f"Resumed from {checkpoint} (epoch {epoch_start})")
 
     if checkpoint_dir:
         checkpoint_dir = Path(checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(n_epochs):
+    for epoch in range(epoch_start, n_epochs):
         model.train()
         epoch_loss = 0.
         if steps_per_epoch:
@@ -378,12 +389,11 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                 wandb.log(log_dict, step=global_step)
             model.train()
 
-        if checkpoint_dir and (epoch + 1) % save_every == 0:
-            ckpt = checkpoint_dir / f'flow_epoch{epoch+1:04d}.pt'
-            torch.save({'epoch': epoch+1, 'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(), 'loss': avg_loss}, ckpt)
-            print(f'  saved {ckpt}')
+        if checkpoint_dir:
+            save_checkpoint(model, epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
+                            save_every=save_every, tag=f'flow_{getattr(model, "__class__", type(model)).__name__}')
 
+    print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
     return model
 
 # %% ../nbs/12_train_flow.ipynb #aa120009
@@ -422,13 +432,16 @@ def train_flow_main(cfg: DictConfig):
         wandb.define_metric("*", step_metric="epoch")
         if hasattr(cfg, "tag"): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
 
+    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
+
     train_flow(model, dataset,
                n_epochs=cfg.flow.n_epochs, lr=cfg.flow.lr, batch_size=cfg.flow.batch_size,
                warp_s=cfg.flow.warp_s, device=device,
                checkpoint_dir=cfg.flow.checkpoint_dir, save_every=cfg.flow.save_every,
                eval_every=cfg.flow.eval_every, use_wandb=use_wandb,
                steps_per_epoch=cfg.flow.steps_per_epoch,
-               source_df=source_df, source_scales=source_scales)
+               source_df=source_df, source_scales=source_scales,
+               checkpoint=checkpoint, cfg=cfg)
 
     if use_wandb: wandb.finish()
 
