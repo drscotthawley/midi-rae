@@ -77,6 +77,9 @@ flow:
   ema_eta: 0.97               # EMA decay rate (updated every batch)
   ema_start_epoch: 100        # epoch at which eval/sampling switches to EMA model
   self_condition: false       # if true, 50% of batches use self-conditioning (predict x1 first, detach, re-feed)
+  model_type: per_level       # 'per_level' (PerLevelFlowModel) or 'cross_level' (CrossLevelFlowModel w/ attention)
+  n_attn_layers: 2            # cross_level only: transformer encoder layers for cross-level attention
+  n_heads: 8                  # cross_level only: attention heads (h_dim must be divisible by n_heads)
   
 wandb:
   project: ar-mep-swin-midi-rae
