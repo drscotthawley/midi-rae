@@ -66,9 +66,9 @@ def preencode(cfg: DictConfig):
                         enc2 = encoder(batch['img2'].to(device))
                         enc3 = encoder(batch['img3'].to(device))
                 rec = {
-                    'emb1': [lvl.emb.cpu() for lvl in enc1.patches.levels],
-                    'emb2': [lvl.emb.cpu() for lvl in enc2.patches.levels],
-                    'emb3': [lvl.emb.cpu() for lvl in enc3.patches.levels],
+                    'emb1': [lvl.emb.half().cpu() for lvl in enc1.patches.levels],
+                    'emb2': [lvl.emb.half().cpu() for lvl in enc2.patches.levels],
+                    'emb3': [lvl.emb.half().cpu() for lvl in enc3.patches.levels],
                     'img1': batch['img1'].bool(), 'img2': batch['img2'].bool(), 'img3': batch['img3'].bool(),
                     'deltas': batch['deltas'], 'scheme': batch['scheme'],
                     'target': batch['target'], 'file_idx': batch['file_idx'],
