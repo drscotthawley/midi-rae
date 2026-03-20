@@ -92,7 +92,7 @@ def delta_scheme(deltas, n_groups=None):
 # %% ../nbs/05_viz.ipynb #90b3ab53-51c5-440f-b266-87fd86da39bd
 @torch.no_grad()
 def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, title='Embeddings', target=None, debug=False):
-    "3D scatter plot of embeddings. color_by: 'none', 'file', 'pairs', or 'triplets'"
+    "3D scatter plot of embeddings. color_by: 'none', 'random', 'file', 'pairs', or 'triplets'"
     import plotly.graph_objects as go
     from matplotlib import colormaps
 
@@ -101,6 +101,7 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, tit
     if debug: print(" plot_embeddings_3d: n =",n, "color_by =",color_by,", target =",target)
     
     if color_by == 'none':     colors = ['blue'] * n
+    elif color_by == 'random': colors = [f'rgb({np.random.randint(0,256)},{np.random.randint(0,256)},{np.random.randint(0,256)})' for _ in range(n)]
     elif color_by == 'file':   colors = file_idx.tolist() if file_idx is not None else ['blue'] * n
     elif color_by in ['pairs','triplets']:
         group_size = 2 if color_by=='pairs' else 3
@@ -173,13 +174,12 @@ def plot_embeddings_3d(coords, color_by='pairs', file_idx=None, deltas=None, tit
             showactive=True, buttons=buttons)])
     else:
         fig = go.Figure(data=[go.Scatter3d(x=coords[:,0], y=coords[:,1], z=coords[:,2],
-            marker=dict(size=4, color=colors, opacity=0.8, colorscale='Viridis' if color_by not in ['pairs','triplets'] else None),
+            marker=dict(size=4, color=colors, opacity=0.8, colorscale='Viridis' if color_by not in ['pairs','triplets','random'] else None),
             hovertext=hover_text, **scatter_kwargs)])
 
     title = title + f', n={n}'
     fig.update_layout(title=title, margin=dict(l=0, r=0, b=0, t=30))
     return fig
-
 
 # %% ../nbs/05_viz.ipynb #f1feb8ca
 @torch.no_grad()

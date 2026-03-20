@@ -276,8 +276,8 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
         title_sfx = f' — Epoch {epoch}' if epoch is not None else ''
         r3 = pca_project(r)
         g3 = pca_project(g)
-        if r3 is not None: figs[f'L{i}/real'] = plot_embeddings_3d(r3, color_by='none', title=f'L{i} ({d}d) real{title_sfx}')
-        if g3 is not None: figs[f'L{i}/gen']  = plot_embeddings_3d(g3, color_by='none', title=f'L{i} ({d}d) gen{title_sfx}')
+        if r3 is not None: figs[f'L{i}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'L{i} ({d}d) real{title_sfx}')
+        if g3 is not None: figs[f'L{i}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'L{i} ({d}d) gen{title_sfx}')
         offset += d
     return figs
 
