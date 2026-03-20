@@ -33,7 +33,7 @@ elif grep -q "FINISHED\. Best metric" "\$LOG"; then
     echo "Result: \$RESULT"
     echo ""
     echo "--- Last 5 lines of run.log ---"
-    tr '\r' '\n' < "\$LOG" | grep -vE '[0-9]+it/s|%\|' | grep -v '^\s*$' | tail -5
+    tr '\r' '\n' < "\$LOG" | grep -vE '[0-9]+it/s|%\|' | grep -v '^\s*$' | tail -10
 elif [ -z "\$MAIN_PID" ]; then  # not running and no FINISHED line = crash
     echo "Result: CRASHED"
     echo ""

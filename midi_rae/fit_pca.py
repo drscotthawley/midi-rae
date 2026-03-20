@@ -32,7 +32,7 @@ def load_level_embeddings(encoded_dir: Path, split: str, level: int = 0, key: st
 
 # %% ../nbs/11_fit_pca.ipynb #aa110006
 def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
-                     n_components: int = 16, key: str = 'emb2'):
+                     n_components: int = 20, key: str = 'emb2'):
     """Fit PCA on per-patch training embeddings for each level, then project and save per-chunk.
 
     PCA is fit on (N_total * N_patches, D) — all patches from all samples, preserving spatial variance.
@@ -109,7 +109,7 @@ if __name__ == '__main__':
     parser.add_argument('encoded_dir', help='Directory containing pre-encoded chunk .pt files')
     parser.add_argument('output_dir', help='Directory to save PCA transform and projected embeddings')
     parser.add_argument('--levels', type=int, nargs='+', default=None, help='Hierarchy levels to process (default: all)')
-    parser.add_argument('--n_components', type=int, default=16, help='Number of PCA components (default: 16)')
+    parser.add_argument('--n_components', type=int, default=20, help='Number of PCA components (default: 20)')
     parser.add_argument('--key', default='emb2', choices=['emb1','emb2','emb3'],
                         help='Which triplet image embeddings to use (default: emb2)')
     args = parser.parse_args()
