@@ -14,8 +14,6 @@ from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from tqdm.auto import tqdm
 import numpy as np
-
-# %% ../nbs/12_train_flow.ipynb #aa120003
 from .data import EmbeddingDataset
 
 # %% ../nbs/12_train_flow.ipynb #aa120004
@@ -140,6 +138,8 @@ def mmd_rbf(x, y, n_sub=2000):
     def rbf(a, b): return torch.exp(-torch.cdist(a, b).pow(2) / (2 * sigma2))
     return (rbf(x, x).mean() + rbf(y, y).mean() - 2 * rbf(x, y).mean()).item()
 
+
+# %% ../nbs/12_train_flow.ipynb #639b7d87
 def wasserstein_score(x, y, n_projections=200, n_sub=2000):
     """Sliced Wasserstein distance: average 1-D Wasserstein over random projections.
     Falls back gracefully if geomloss is unavailable.
@@ -160,6 +160,8 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
     px, py = x[:n_sub] @ projs, y[:n_sub] @ projs
     return float(np.mean([wasserstein_distance(px[:, i], py[:, i]) for i in range(n_projections)]))
 
+
+# %% ../nbs/12_train_flow.ipynb #9d7ef6b6
 @torch.no_grad()
 def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, device='cpu',
               source_df=None, source_scales=None, level_dims=None):
@@ -210,6 +212,8 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
         print(f'  {k:{w}s} = {v:.4f}')
     return metrics
 
+
+# %% ../nbs/12_train_flow.ipynb #52b2733e
 @torch.no_grad()
 def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
                           n_steps=20, warp_s=0.5, device='cpu', n_bins=100, source_df=None,
