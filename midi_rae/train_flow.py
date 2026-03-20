@@ -232,9 +232,9 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
     for i, d in enumerate(level_dims):
         r = real[:, offset:offset+d].ravel()
         g = gen[:,  offset:offset+d].ravel()
-        lim = max(abs(r).max(), abs(g).max())
+        lim = np.percentile(np.abs(np.concatenate([r, g])), 99)
         bins = np.linspace(-lim, lim, n_bins + 1)
-        fig, ax = plt.subplots(figsize=(5, 3))
+        fig, ax = plt.subplots(figsize=(6, 4))
         ax.hist(r, bins=bins, alpha=0.5, color='steelblue', label='real', density=True)
         ax.hist(g, bins=bins, alpha=0.5, color='darkorange', label='gen',  density=True)
         title = f'L{i} ({d}d)'
