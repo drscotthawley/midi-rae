@@ -16,3 +16,9 @@ preencode:
   num_passes: 3
 
 encoder_ckpt: $HOME/runs/midi-rae/exp26_z1olvN/checkpoints/SwinEncoder_exp26_z1olvN_best.pt
+
+fitpca:
+  encoded_dir: $HOME/datasets/POP909_encoded_exp26
+  output_dir: $HOME/datasets/POP909_pca_exp26
+  n_components: 20
+  key: emb2
