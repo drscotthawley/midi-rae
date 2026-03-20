@@ -49,6 +49,7 @@ def preencode(cfg: DictConfig):
     batches_per_chunk = cfg.preencode.get('batches_per_chunk', 10)
     print(f"output_dir={output_dir}, num_passes={num_passes}, batch_size={batch_size}, batches_per_chunk={batches_per_chunk}")
 
+    amp_dtype = torch.bfloat16 if device == 'cuda' else torch.float32
     for split in ['train', 'val']:
         print(f"\n=== {split} split ===")
         ds = ShiftedTripletDataset(image_dataset_dir=cfg.data.path, split=split,
@@ -60,9 +61,10 @@ def preencode(cfg: DictConfig):
             buf = []   # accumulate batches_per_chunk batches before saving
             for batch_num, batch in enumerate(tqdm(dl, desc=f"{split} pass {pass_num}/{num_passes}")):
                 with torch.no_grad():
-                    enc1 = encoder(batch['img1'].to(device))
-                    enc2 = encoder(batch['img2'].to(device))
-                    enc3 = encoder(batch['img3'].to(device))
+                    with torch.autocast(device_type=device, dtype=amp_dtype):
+                        enc1 = encoder(batch['img1'].to(device))
+                        enc2 = encoder(batch['img2'].to(device))
+                        enc3 = encoder(batch['img3'].to(device))
                 rec = {
                     'emb1': [lvl.emb.cpu() for lvl in enc1.patches.levels],
                     'emb2': [lvl.emb.cpu() for lvl in enc2.patches.levels],
