@@ -2,7 +2,8 @@
 
 # %% auto #0
 __all__ = ['VelocityNet', 'PerLevelFlowModel', 'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples',
-           'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms', 'train_flow', 'train_flow_main']
+           'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms', 'plot_level_scatter', 'train_flow',
+           'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import os
@@ -251,6 +252,34 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
         offset += d
     return figs
 
+# %% ../nbs/12_train_flow.ipynb #tqfgy482snf
+@torch.no_grad()
+def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
+                       n_steps=20, warp_s=0.5, device='cpu',
+                       source_df=None, source_scales=None, epoch=None):
+    """Return dict of per-level 3D PCA scatter plots {'L0/real': fig, 'L0/gen': fig, ...}.
+    Subsamples to n_samples, runs pca_project per level, returns plotly figures.
+    """
+    from midi_rae.viz import pca_project, plot_embeddings_3d
+    dim = real_embeddings.shape[1]
+    idx = torch.randperm(real_embeddings.size(0))[:n_samples]
+    real = real_embeddings[idx].float()
+    gen  = generate_samples(model, n_samples, dim, device=device,
+                            n_steps=n_steps, warp_s=warp_s, source_df=source_df,
+                            source_scales=source_scales, level_dims=level_dims).cpu()
+    figs = {}
+    offset = 0
+    for i, d in enumerate(level_dims):
+        r = real[:, offset:offset+d]
+        g = gen[:,  offset:offset+d]
+        title_sfx = f' — Epoch {epoch}' if epoch is not None else ''
+        r3 = pca_project(r)
+        g3 = pca_project(g)
+        if r3 is not None: figs[f'L{i}/real'] = plot_embeddings_3d(r3, color_by='none', title=f'L{i} ({d}d) real{title_sfx}')
+        if g3 is not None: figs[f'L{i}/gen']  = plot_embeddings_3d(g3, color_by='none', title=f'L{i} ({d}d) gen{title_sfx}')
+        offset += d
+    return figs
+
 # %% ../nbs/12_train_flow.ipynb #a5707933
 def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
@@ -335,6 +364,12 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                     for lname, fig in figs.items():
                         log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
                         plt.close(fig)
+                    scatters = plot_level_scatter(model, dataset.embeddings,
+                                                 dataset.level_dims, device=device, warp_s=warp_s,
+                                                 source_df=source_df, source_scales=source_scales,
+                                                 epoch=epoch+1)
+                    for lname, fig in scatters.items():
+                        log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
                 log_dict['epoch'] = epoch+1
                 wandb.log(log_dict, step=global_step)
             model.train()
