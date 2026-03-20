@@ -2,7 +2,7 @@
 
 # %% auto #0
 __all__ = ['VelocityNet', 'PerLevelFlowModel', 'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples',
-           'mmd_rbf', 'wasserstein_score', 'eval_flow', 'train_flow', 'train_flow_main']
+           'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms', 'train_flow', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import os
@@ -209,6 +209,43 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
     for k, v in metrics.items():
         print(f'  {k:{w}s} = {v:.4f}')
     return metrics
+
+@torch.no_grad()
+def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
+                          n_steps=20, warp_s=0.5, device='cpu', n_bins=100, source_df=None,
+                          source_scales=None, epoch=None):
+    """Return dict of per-level histogram figures {'L0': fig, 'L1': fig, ...}.
+    level_dims: list of ints, flattened PCA dims per level e.g. [20, 80, 320, 1280]
+    real_embeddings: (N, sum(level_dims)) tensor
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    dim = real_embeddings.shape[1]
+    idx = torch.randperm(real_embeddings.size(0))[:n_samples]
+    real = real_embeddings[idx].float().numpy()
+    gen  = generate_samples(model, n_samples, dim, device=device,
+                            n_steps=n_steps, warp_s=warp_s, source_df=source_df,
+                            source_scales=source_scales, level_dims=level_dims).cpu().numpy()
+    figs = {}
+    offset = 0
+    for i, d in enumerate(level_dims):
+        r = real[:, offset:offset+d].ravel()
+        g = gen[:,  offset:offset+d].ravel()
+        lim = max(abs(r).max(), abs(g).max())
+        bins = np.linspace(-lim, lim, n_bins + 1)
+        fig, ax = plt.subplots(figsize=(5, 3))
+        ax.hist(r, bins=bins, alpha=0.5, color='steelblue', label='real', density=True)
+        ax.hist(g, bins=bins, alpha=0.5, color='darkorange', label='gen',  density=True)
+        title = f'L{i} ({d}d)'
+        if epoch is not None: title += f' — Epoch {epoch}'
+        ax.set_title(title)
+        ax.set_xlabel('value')
+        ax.legend(fontsize=8)
+        plt.tight_layout()
+        figs[f'L{i}'] = fig
+        offset += d
+    return figs
 
 # %% ../nbs/12_train_flow.ipynb #a5707933
 def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
