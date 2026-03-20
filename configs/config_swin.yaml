@@ -71,6 +71,11 @@ flow:
   lr_restart_epochs: 500      # T_0 for CosineAnnealingWarmRestarts
   source_df: [null, null, null, 3.0, 3.0, 3.0]  # per-level: null=Gaussian (coarse), 3.0=Student-t (fine)
   source_scales: [8.0, 4.0, 2.0, 0.5]  # per-level scale factors; len sets n_levels to model (L0-L3 only; L4/L5 too small for PCA)
+  repair_every: 1             # mini-batch OT re-pairing every N batches (0=disabled)
+  n_repair_projections: 1     # random projections per ann_repair call
+  repair_chunk_size: null     # chunk size for ann_repair (null=full batch)
+  ema_eta: 0.97               # EMA decay rate (updated every batch)
+  ema_start_epoch: 100        # epoch at which eval/sampling switches to EMA model
   
 wandb:
   project: ar-mep-swin-midi-rae

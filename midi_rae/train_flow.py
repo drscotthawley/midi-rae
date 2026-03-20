@@ -505,9 +505,10 @@ def train_flow_main(cfg: DictConfig):
     dim = dataset.embeddings.shape[1]
     print(f"  {len(dataset)} samples, dim={dim}, level_dims={dataset.level_dims}")
 
-    model = VelocityNet(input_dim=dim, h_dim=cfg.flow.h_dim, n_layers=cfg.flow.n_layers)
+    model = PerLevelFlowModel(level_dims=dataset.level_dims,
+                              h_dim=cfg.flow.h_dim, n_layers=cfg.flow.n_layers)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  VelocityNet: {n_params:,} parameters")
+    print(f"  PerLevelFlowModel: {n_params:,} parameters")
 
     use_wandb = hasattr(cfg, "wandb") and hasattr(cfg.wandb, "flow_project")
     if use_wandb:
@@ -527,9 +528,15 @@ def train_flow_main(cfg: DictConfig):
                use_wandb=use_wandb, steps_per_epoch=cfg.flow.steps_per_epoch,
                source_df=source_df, source_scales=source_scales,
                checkpoint=checkpoint, cfg=cfg,
-               lr_restart_epochs=cfg.flow.get('lr_restart_epochs', 500))
+               lr_restart_epochs=cfg.flow.get('lr_restart_epochs', 500),
+               repair_every=cfg.flow.get('repair_every', 1),
+               n_repair_projections=cfg.flow.get('n_repair_projections', 1),
+               repair_chunk_size=cfg.flow.get('repair_chunk_size', None),
+               ema_eta=cfg.flow.get('ema_eta', 0.97),
+               ema_start_epoch=cfg.flow.get('ema_start_epoch', 100))
 
     if use_wandb: wandb.finish()
 
 if __name__ == "__main__":
     train_flow_main()
+
