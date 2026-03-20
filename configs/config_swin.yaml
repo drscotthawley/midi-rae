@@ -18,7 +18,7 @@ model:
 
 training:
   batch_size: 300         # encoder batch size
-  lr: 1e-3                # used to be 2e-4 but then we removed gradients from z1
+  lr: 5e-4                # peak lr for CosineAnnealingWarmRestarts; halved to reduce restart spikes
   epochs: 100
   lambd: 0.2              # lejepa attraction-vs-sigreg weight
   max_shift_x: 12         
