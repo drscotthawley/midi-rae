@@ -284,8 +284,9 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
 # %% ../nbs/12_train_flow.ipynb #a5707933
 def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
-               eval_every=10, use_wandb=False, steps_per_epoch=None, source_df=None,
-               source_scales=None, checkpoint=None, cfg=None):
+               eval_every=10, viz_every=50, use_wandb=False, steps_per_epoch=None,
+               source_df=None, source_scales=None, checkpoint=None, cfg=None,
+               lr_restart_epochs=500):
     """Train flow matching model on embedding dataset.
 
     Source: N(0,I) sampled fresh each step.
@@ -293,6 +294,8 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     Loss:   MSE between predicted and true (constant) velocity.
     checkpoint: path to a saved checkpoint to resume from (optional).
     cfg: config dict/object passed to save_checkpoint (optional).
+    lr_restart_epochs: T_0 for CosineAnnealingWarmRestarts.
+    viz_every: how often (epochs) to log histograms + scatter plots to W&B.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint
     model = model.to(device)
@@ -316,9 +319,10 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
         global_step = epoch_start * _steps
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
 
-    if checkpoint_dir:
-        checkpoint_dir = Path(checkpoint_dir)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    # Cosine annealing with warm restarts; last_epoch resumes schedule at correct position
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=lr_restart_epochs, T_mult=1, eta_min=1e-6,
+        last_epoch=epoch_start - 1 if epoch_start > 0 else -1)
 
     for epoch in range(epoch_start, n_epochs):
         model.train()
@@ -355,9 +359,11 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             pbar.set_postfix(loss=f'{loss.item():.4f}')
             global_step += 1
 
+        scheduler.step()
         avg_loss = epoch_loss / len(dl)
-        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}')
-        if use_wandb: wandb.log({'train/epoch_loss': avg_loss, 'epoch': epoch+1}, step=global_step)
+        cur_lr = scheduler.get_last_lr()[0]
+        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}')
+        if use_wandb: wandb.log({'train/epoch_loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1}, step=global_step)
 
         if eval_every and (epoch + 1) % eval_every == 0:
             print(f'  --- eval epoch {epoch+1} ---')
@@ -367,7 +373,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             if use_wandb:
                 import wandb
                 log_dict = {f'eval/{k}': v for k, v in metrics.items()}
-                if hasattr(dataset, 'level_dims'):
+                if hasattr(dataset, 'level_dims') and viz_every and (epoch + 1) % viz_every == 0:
                     figs = plot_level_histograms(model, dataset.embeddings,
                                                dataset.level_dims, device=device, warp_s=warp_s,
                                                source_df=source_df, source_scales=source_scales,
@@ -389,9 +395,8 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                 wandb.log(log_dict, step=global_step)
             model.train()
 
-        if checkpoint_dir:
-            save_checkpoint(model, epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
-                            save_every=save_every, tag=f'flow_{getattr(model, "__class__", type(model)).__name__}')
+        save_checkpoint(model, epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
+                        save_every=save_every, tag=f'flow_{model.__class__.__name__}')
 
     print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
     return model
@@ -438,10 +443,11 @@ def train_flow_main(cfg: DictConfig):
                n_epochs=cfg.flow.n_epochs, lr=cfg.flow.lr, batch_size=cfg.flow.batch_size,
                warp_s=cfg.flow.warp_s, device=device,
                checkpoint_dir=cfg.flow.checkpoint_dir, save_every=cfg.flow.save_every,
-               eval_every=cfg.flow.eval_every, use_wandb=use_wandb,
-               steps_per_epoch=cfg.flow.steps_per_epoch,
+               eval_every=cfg.flow.eval_every, viz_every=cfg.flow.get('viz_every', 50),
+               use_wandb=use_wandb, steps_per_epoch=cfg.flow.steps_per_epoch,
                source_df=source_df, source_scales=source_scales,
-               checkpoint=checkpoint, cfg=cfg)
+               checkpoint=checkpoint, cfg=cfg,
+               lr_restart_epochs=cfg.flow.get('lr_restart_epochs', 500))
 
     if use_wandb: wandb.finish()
 
