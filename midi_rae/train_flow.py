@@ -318,6 +318,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     loss_fn   = nn.MSELoss()
     global_step = 0
     epoch_start = 0  # 0-indexed
+    real_scatter_logged = False  # real data is static; only log once
 
     if checkpoint:
         model, ckpt = load_checkpoint(model, checkpoint, return_all=True)
@@ -396,7 +397,12 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                                                  source_df=source_df, source_scales=source_scales,
                                                  epoch=epoch+1)
                     for lname, fig in scatters.items():
+                        is_real = lname.endswith('/real')
+                        if is_real and real_scatter_logged:
+                            fig.data = []  # discard without logging
+                            continue
                         log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
+                    real_scatter_logged = True
                     del scatters
                     gc.collect()
                 log_dict['epoch'] = epoch+1
