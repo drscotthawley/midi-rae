@@ -7,7 +7,7 @@
 #   ./scripts/launch.sh <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]
 #
 #   host              — SSH host (as defined in ~/.ssh/config)
-#   type              — "enc", "dec", or "hmep"
+#   type              — "enc", "dec", "hmep", or "preencode"
 #   config            — config name without .yaml (e.g. config_swin_razer)
 #   tag               — short descriptive label (e.g. "dec1"); a 6-char random suffix is appended
 #   hydra_overrides   — (optional) any number of Hydra overrides, e.g. ++training.dec_epochs=200
@@ -33,8 +33,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" ]]; then
-    echo "Error: type must be 'enc', 'dec', or 'hmep', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', or 'preencode', got '${TYPE}'"
     exit 1
 fi
 
@@ -73,7 +73,8 @@ cat > /tmp/midi_rae_run.sh << EOF
 #!/bin/bash
 source ~/envs/midi-rae/bin/activate
 cd ${RUN_DIR}
-PYTHONPATH=${RUN_DIR} nohup python -m midi_rae.train_${TYPE} --config-name ${CONFIG} ++tag=${RUN_TAG} ${EXTRA_OVERRIDES} > ${RUN_DIR}/run.log 2>&1 &
+MODULE=$([ "${TYPE}" = "preencode" ] && echo "midi_rae.preencode" || echo "midi_rae.train_${TYPE}")
+PYTHONPATH=${RUN_DIR} nohup python -m ${MODULE} --config-name ${CONFIG} ++tag=${RUN_TAG} ${EXTRA_OVERRIDES} > ${RUN_DIR}/run.log 2>&1 &
 echo \$!
 EOF
 
