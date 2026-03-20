@@ -114,12 +114,16 @@ def sample_source(shape, device='cpu', source_df=None, source_scales=None, level
     return y
 
 # %% ../nbs/12_train_flow.ipynb #h9k6c1mqyt7
-def ann_repair(source, target, n_projections=1):
+def ann_repair(source, target, n_projections=1, chunk_size=None):
     """Approximate nearest-neighbor re-pairing of source and target batches.
 
     Sorts both source and target by their projection onto random unit vectors
     and pairs by rank — equivalent to exact 1-D OT along that direction.
     Fully on-device (GPU-friendly), O(B log B) per projection.
+
+    chunk_size: if set, processes the batch in chunks of this size and repairs
+    independently within each chunk. Smaller chunks are faster but less optimal;
+    default (None) processes the whole batch at once.
 
     With n_projections > 1, tries multiple random directions and keeps the
     pairing with the lowest total squared transport cost.
@@ -127,24 +131,34 @@ def ann_repair(source, target, n_projections=1):
     Args:
         source:        (B, D) tensor on any device
         target:        (B, D) tensor on same device
-        n_projections: number of random projections to try
+        n_projections: number of random projections to try per chunk
+        chunk_size:    chunk size for within-batch processing (None = full batch)
 
     Returns:
         (source_repaired, target_repaired): re-ordered so source[i] ↔ target[i]
         approximately minimises total squared transport cost.
     """
-    D = source.shape[1]
-    best_src, best_tgt, best_cost = source, target, float('inf')
-    for _ in range(n_projections):
-        proj  = torch.randn(D, device=source.device, dtype=source.dtype)
-        proj  = proj / proj.norm()
-        s_rep = source[(source @ proj).argsort()]
-        t_rep = target[(target @ proj).argsort()]
-        cost  = (s_rep - t_rep).pow(2).sum().item()
-        if cost < best_cost:
-            best_cost = cost
-            best_src, best_tgt = s_rep, t_rep
-    return best_src, best_tgt
+    B, D = source.shape
+    C = B if (chunk_size is None or chunk_size >= B) else chunk_size
+
+    s_out = torch.empty_like(source)
+    t_out = torch.empty_like(target)
+    for start in range(0, B, C):
+        end  = min(start + C, B)
+        s, t = source[start:end], target[start:end]
+        best_s, best_t, best_cost = s, t, float('inf')
+        for _ in range(n_projections):
+            proj   = torch.randn(D, device=s.device, dtype=s.dtype)
+            proj   = proj / proj.norm()
+            s_rep  = s[(s @ proj).argsort()]
+            t_rep  = t[(t @ proj).argsort()]
+            cost   = (s_rep - t_rep).pow(2).sum().item()
+            if cost < best_cost:
+                best_cost = cost
+                best_s, best_t = s_rep, t_rep
+        s_out[start:end] = best_s
+        t_out[start:end] = best_t
+    return s_out, t_out
 
 
 # %% ../nbs/12_train_flow.ipynb #aa120007
@@ -327,7 +341,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                eval_every=10, viz_every=50, use_wandb=False, steps_per_epoch=None,
                source_df=None, source_scales=None, checkpoint=None, cfg=None,
                lr_restart_epochs=500, grad_clip=1.0,
-               repair_every=1, n_repair_projections=1):
+               repair_every=1, n_repair_projections=1, repair_chunk_size=None):
     """Train flow matching model on embedding dataset.
 
     Source: N(0,I) sampled fresh each step.
@@ -340,6 +354,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     grad_clip: max norm for gradient clipping (0 = disabled).
     repair_every: re-pair source/target every N batches via ann_repair (0 = disabled).
     n_repair_projections: random projections per ann_repair call (more = better, slower).
+    repair_chunk_size: chunk size for ann_repair (None = full batch).
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint
     model = model.to(device)
@@ -387,7 +402,9 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                                    source_scales=source_scales,
                                    level_dims=getattr(dataset, 'level_dims', None))
             if repair_every and global_step % repair_every == 0:
-                source, target = ann_repair(source, target, n_projections=n_repair_projections)
+                source, target = ann_repair(source, target,
+                                            n_projections=n_repair_projections,
+                                            chunk_size=repair_chunk_size)
 
             t = torch.rand(B, 1, device=device)   # uniform in [0,1]
             if warp_s != 1.0:
