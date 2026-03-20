@@ -253,6 +253,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             source = sample_source((B, D), device=device, source_df=source_df,
                                    source_scales=source_scales,
                                    level_dims=getattr(dataset, 'level_dims', None))
+            target = target[:, :source.shape[1]]  # truncate to source dim if dataset has more levels
 
             t = torch.rand(B, 1, device=device)   # uniform in [0,1]
             if warp_s != 1.0:
