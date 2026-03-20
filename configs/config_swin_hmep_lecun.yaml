@@ -8,7 +8,7 @@ training:
   n_fine_levels: 2
   steps_per_epoch: 1000
 
-use_preencoded: false
+use_preencoded: true
 
 preencode:
   output_dir: $HOME/datasets/POP909_encoded_exp26
