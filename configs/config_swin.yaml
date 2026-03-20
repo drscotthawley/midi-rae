@@ -67,7 +67,7 @@ flow:
   warp_s: 0.5
   save_every: 10
   eval_every: 10
-  viz_every: 50               # how often to log histograms + scatter plots to W&B
+  viz_every: 25               # how often to log histograms + scatter plots to W&B
   lr_restart_epochs: 500      # T_0 for CosineAnnealingWarmRestarts
   source_df: [null, null, null, 3.0, 3.0, 3.0]  # per-level: null=Gaussian (coarse), 3.0=Student-t (fine)
   source_scales: [8.0, 4.0, 2.0, 0.5]  # per-level scale factors; len sets n_levels to model (L0-L3 only; L4/L5 too small for PCA)
