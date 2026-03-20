@@ -15,6 +15,7 @@ INTERVAL="${3:-120}"  # default: 2 minutes
 MAX_FAILURES=5        # give up only after this many consecutive SSH failures
 
 failures=0
+seen_running=0
 while true; do
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') ==="
     output=$(bash "${SCRIPT_DIR}/status.sh" "${HOST}" "${RUN_DIR}" 2>&1)
@@ -29,8 +30,10 @@ while true; do
         fi
     else
         failures=0
-        if ! echo "$output" | grep -q "Status: RUNNING"; then
-            break
+        if echo "$output" | grep -q "Status: RUNNING"; then
+            seen_running=1
+        elif [[ $seen_running -eq 1 ]]; then
+            break  # was running, now stopped — done
         fi
     fi
     echo "(next check in ${INTERVAL}s...)"
