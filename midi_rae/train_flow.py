@@ -5,6 +5,7 @@ __all__ = ['VelocityNet', 'PerLevelFlowModel', 'warp_time', 'rk4_step', 'euler_s
            'mmd_rbf', 'wasserstein_score', 'eval_flow', 'train_flow', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
