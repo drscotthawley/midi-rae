@@ -163,6 +163,8 @@ Generate L0 first, condition L1 on L0, etc. Risk: error accumulation compounds a
 
 **Recommended order**: Try Option A first (fast lower bound), then Option B with L0–L3 joint flow + MEP for L4–L5.
 
+**Mini-batch OT via `ann_repair` — theoretically and practically free**: Random source-target pairing produces a highly tangled velocity field (paths cross everywhere), creating high curvature that is hard to learn and unstable to integrate. `ann_repair` re-pairs each batch by sorting source and target along random projections (1-D OT), straightening the flow paths at O(B log B) cost. In practice this costs nothing: the embedding DataLoader is the bottleneck, and the GPU would otherwise sit idle waiting for the next batch. The sort ops run entirely on-device during that idle window. Observed effect: GPU utilization jumps from ~8% (random pairing) to >90% (with `ann_repair`) — the extra compute is genuinely free.
+
 ## Scope and goals
 
 **Focus: encoder training only** (`train_enc`, `nbs/06_train_enc.ipynb`).
@@ -375,6 +377,16 @@ This is a stricter version of what `factorization_metrics` already measures via 
 - **Nearest-neighbor retrieval**: Given an anchor piano roll, does the top-K nearest neighbor in latent space contain the same melody/rhythm? Requires a labeled subset.
 - **Linear probe on music attributes**: Train a linear classifier on frozen embeddings to predict key, tempo, or instrument — measures semantic content without fine-tuning.
 - **Reconstruction quality vs. encoder quality correlation**: Track whether decoder F1 reliably tracks encoder val_loss across runs (confirmed for exp9→dec1, but more data points needed).
+
+### Discrete flow matching on the piano roll lattice (speculative)
+
+Piano roll pixels form a natural binary lattice (note on/off). Discrete flow matching (e.g. MDLM, SEDD, or discrete rectified flow) operates directly on categorical/binary spaces without needing a continuous embedding — the "flow" moves between discrete states rather than interpolating in ℝⁿ. Applied to piano rolls, this would mean learning a generative model directly over the pixel grid rather than in the encoder's continuous latent space.
+
+**Why it might be interesting**: the finest Swin level already organizes a discrete vocabulary of musical primitives — this aligns conceptually with a discrete state space. A discrete flow model might better respect the on/off nature of notes and avoid the continuous-space mismatch where the generative model has to learn to "snap" back to plausible binary patterns.
+
+**Why it's not obviously compatible**: our embeddings are continuous (the whole point of the encoder is to produce a smooth latent space for generation). A hybrid approach — discrete flow over raw pixels, continuous flow in the latent space — would require either abandoning the encoder pipeline or treating the two as separate generation strategies. The lattice structure also doesn't carry the hierarchical multi-scale geometry we've built into the encoder.
+
+**Verdict**: speculative but scientifically interesting. Worth revisiting if the continuous flow model underperforms or if discrete generative models mature enough to handle long-range musical structure.
 
 ## Low priority future improvements
 
