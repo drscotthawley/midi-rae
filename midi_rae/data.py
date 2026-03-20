@@ -5,13 +5,14 @@
 # %% auto #0
 __all__ = ['SCHEME_NAMES', 'TARGET_NAMES', 'shift_no_wrap', 'sample_shift', 'note_length_weights', 'AnchorDataset',
            'sample_shifts', 'PRPairDataset', 'ShiftedTripletDataset', 'PreEncodedChunkDataset', 'ChunkShuffleSampler',
-           'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out']
+           'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out', 'EmbeddingDataset']
 
 # %% ../nbs/01_data.ipynb #b96051a7
 import os 
 import torch
 from torch.utils.data import Dataset, Sampler
 from glob import glob 
+from pathlib import Path
 import random
 from PIL import Image
 import numpy as np
@@ -284,3 +285,49 @@ def emb_levels_to_enc_out(emb_levels, pos_cache, device):
               for i, emb in enumerate(emb_levels)]
     return EncoderOutput(patches=HierarchicalPatchState(levels=levels),
                          full_pos=None, full_non_empty=None, mae_mask=None)
+
+# %% ../nbs/01_data.ipynb #i4isbzdempl
+class EmbeddingDataset(Dataset):
+    """Load PCA-projected embeddings from chunk files produced by fit_pca.
+
+    Each chunk file is a dict with keys 'L0', 'L1', ... each (N_chunk, D).
+    Optionally loads raw preencode chunks (list of batch dicts) for the no-PCA path.
+
+    Args:
+        paths:   glob pattern, Path, or list thereof pointing to chunk .pt files
+        levels:  list of level keys to use, e.g. ['L0','L1',...,'L5'].
+                 If multiple levels given, concatenates along dim=1.
+                 If None, uses all keys found in the first file.
+        key:     for raw preencode chunks, which embedding key ('emb1','emb2','emb3')
+        level:   for raw preencode chunks, which hierarchy level index
+    """
+    def __init__(self, paths, levels=None, key='emb2', level=0):
+        import glob as _glob
+        if isinstance(paths, (str, Path)): paths = [paths]
+        all_files = []
+        for p in paths:
+            expanded = sorted(_glob.glob(os.path.expandvars(os.path.expanduser(str(p)))))
+            all_files.extend([Path(x) for x in expanded] if expanded else [Path(p)])
+
+        all_embs = []
+        for fp in all_files:
+            data = torch.load(fp, weights_only=False)
+            if isinstance(data, dict) and any(k.startswith("L") for k in data):
+                # PCA chunk format: {'L0': (N,D), 'L1': (N,D), ...}
+                lvls = levels or sorted(k for k in data if k.startswith("L"))
+                tensors = [data[lv].float() for lv in lvls]
+                if not hasattr(self, '_level_dims'):
+                    self._level_dims = [t.shape[1] for t in tensors]
+                all_embs.append(torch.cat(tensors, dim=1) if len(tensors) > 1 else tensors[0])
+            elif isinstance(data, list):
+                # Raw preencode chunk format
+                for batch_rec in data:
+                    emb = batch_rec[key][level]      # (B, N_patches, D)
+                    all_embs.append(emb.mean(dim=1).float())
+            else:
+                raise ValueError(f"Unrecognised format in {fp}")
+        self.embeddings = torch.cat(all_embs, dim=0)
+        self.level_dims = getattr(self, '_level_dims', [self.embeddings.shape[1]])
+
+    def __len__(self): return len(self.embeddings)
+    def __getitem__(self, i): return self.embeddings[i]
