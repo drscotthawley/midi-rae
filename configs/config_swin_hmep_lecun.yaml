@@ -1,0 +1,17 @@
+defaults:
+  - config_swin_lecun
+  - _self_
+
+training:
+  hmep_epochs: 200
+  hmep_lr: 1e-4
+  n_fine_levels: 2
+  steps_per_epoch: 1000
+
+use_preencoded: false
+
+preencode:
+  output_dir: $HOME/datasets/POP909_encoded_exp26
+  num_passes: 3
+
+encoder_ckpt: $HOME/runs/midi-rae/exp26_z1olvN/checkpoints/SwinEncoder_exp26_z1olvN_best.pt

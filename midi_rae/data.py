@@ -74,58 +74,13 @@ class AnchorDataset(Dataset):
         self.crop_size, self.aug_y_max, self.sigma, self.pad_x = crop_size, aug_y_max, sigma, pad_x
         
         # Load and split filenames
-        all_filenames = glob(os.path.join(os.path.expanduser(image_dataset_dir), '**/*.png'), recursive=True)
+        all_filenames = glob(os.path.join(os.path.expandvars(os.path.expanduser(image_dataset_dir)), '**/*.png'), recursive=True)
         rng = random.Random(seed)
         shuffled = all_filenames.copy()
         rng.shuffle(shuffled)
         split_idx = int(len(shuffled) * (1 - val_fraction))
         self.filenames = shuffled[:split_idx] if split == 'train' else shuffled[split_idx:]            
         self.actual_len = len(self.filenames)
-        self.images, self.note_weights = [], []
-        if verbose: print(f"Loading {self.actual_len} {split} files from {image_dataset_dir}... ",end="")
-        for f in self.filenames: 
-            img = Image.open(f).convert('L')  # grayscale
-            img =  (np.array(img, dtype=np.uint8) > 0).astype(np.uint8) # binary uint8
-            self.images.append(img)
-            self.note_weights.append(note_length_weights(img).astype(np.float16)) # float16 saves system RAM, autocasts to bfloat16 later
-        if verbose: print(f"Finished loading.")
-
-    def __len__(self):
-        return self.actual_len * 100  # arbitrary large number for epoch length
-
-    def __getitem__(self, idx, pad_x=None, crop_size=None):
-        if crop_size is None: crop_size = self.crop_size
-        if isinstance(crop_size, int): crop_size = (crop_size, crop_size)
-        if pad_x is None: pad_x = self.pad_x 
-
-        # ignore idx, just randomly sample
-        file_idx = random.randint(0, self.actual_len - 1)
-        img = torch.from_numpy( self.images[file_idx] ).float()
-        note_weights = torch.from_numpy(self.note_weights[file_idx])
-
-        # augmentation in y: transpose entire img in y (pitch)
-        aug_y = sample_shift( self.aug_y_max, self.sigma) 
-        img = shift_no_wrap(img, shifts=aug_y, dims=0) # prevent low/high notes from wrapping
-        note_weights = shift_no_wrap(note_weights, shifts=aug_y, dims=0) 
-        
-        # cropping in x 
-        h, w = img.shape
-        min_loc, max_loc = 0+pad_x[0], w - crop_size[1] - pad_x[1]
-        loc = random.randint(min_loc, max_loc)      
-        img = img[:, loc-pad_x[0]: loc + crop_size[1]+pad_x[1]]  # crop horizontally
-        note_weights = note_weights[:, loc-pad_x[0]: loc + crop_size[1]+pad_x[1]]  # crop horizontally
-
-        # optional: additional cropping in y: 
-        if crop_size[0] < img.shape[0]: 
-            mid, hc = img.shape[0]//2,  crop_size[0]//2
-            img = img[mid-hc: mid+hc, :]
-            note_weights = note_weights[mid-hc: mid+hc, :]
-
-        return {
-            'img': img.unsqueeze(0),  # add channel dim: (1, 128+pad_x[0], 128+pad_x[1])
-            'file_idx': file_idx,
-            'note_weights': note_weights.unsqueeze(0),
-        }
 
 # %% ../nbs/01_data.ipynb #9b1f47bb-c1cc-4a0a-a5f3-5083b91eca58
 def sample_shifts(max_x, max_y, sigma):
@@ -153,7 +108,7 @@ class PRPairDataset(Dataset):
         self.sigma, self.shared = sigma, shared
         
         # Load and split filenames
-        all_filenames = glob(os.path.join(os.path.expanduser(image_dataset_dir), '**/*.png'), recursive=True)
+        all_filenames = glob(os.path.join(os.path.expandvars(os.path.expanduser(image_dataset_dir)), '**/*.png'), recursive=True)
         rng = random.Random(seed)
         shuffled = all_filenames.copy()
         rng.shuffle(shuffled)
@@ -163,50 +118,6 @@ class PRPairDataset(Dataset):
             self.filenames = shuffled[:split_idx]
         else:
             self.filenames = shuffled[split_idx:]
-            
-        self.actual_len = len(self.filenames)
-        self.images = []
-        if verbose: print(f"Loading {self.actual_len} {split} files from {image_dataset_dir}... ",end="")
-        for f in self.filenames: 
-            img = Image.open(f).convert('L')  # grayscale
-            self.images.append((np.array(img, dtype=np.uint8) > 0).astype(np.uint8)) # binary uint8
-        if verbose: print(f"Finished loading.")
-
-    def __len__(self):
-        return self.actual_len * 100  # arbitrary large number for epoch length
-
-    def __getitem__(self, idx):
-        # ignore idx, just randomly sample
-        file_idx = random.randint(0, self.actual_len - 1)
-        img = torch.from_numpy(self.images[file_idx]).float() 
-
-        # augmentation in y: transpose entire img in y before doing aything else.
-        aug_y = sample_shift(6, self.sigma)    # +/- six semitones data augmentation (shift_y may add +/- 12 more, below)
-        img = shift_no_wrap(img, shifts=aug_y, dims=0)
-         
-        h, w = img.shape
-        msx = self.shared['training']['max_shift_x'] if self.shared else self.max_shift_x
-        msy = self.shared['training']['max_shift_y'] if self.shared else self.max_shift_y
-        shift_x, shift_y = sample_shifts(msx, msy, self.sigma)
-
-        # cropping
-        # sample loc1 such that both crops are valid
-        min_loc = max(0, -shift_x)
-        max_loc = min(w - self.crop_size, w - self.crop_size - shift_x)
-        loc1 = random.randint(min_loc, max_loc)
-        loc2 = loc1 + shift_x
-        
-        # crop horizontally
-        img1 = img[:, loc1:loc1 + self.crop_size]  # img1 is a random crop (augmentation)
-        img2 = img[:, loc2:loc2 + self.crop_size]  # img2, rather than being img1+shift, is just cropped from a slightly different locationb        
-        img2 = shift_no_wrap(img2, shifts=shift_y, dims=0)    # y-shifts (transposition)
-        
-        return {
-            'img1': img1.unsqueeze(0),  # add channel dim (1, 128, 128)
-            'img2': img2.unsqueeze(0),
-            'deltas': torch.tensor([shift_x, shift_y], dtype=torch.float32).abs(),
-            'file_idx': file_idx,
-        }
 
 # %% ../nbs/01_data.ipynb #13ba9ffc-51c2-4b85-b357-4e1ea53e0a23
 SCHEME_NAMES = {  0: 'pitch-pitch',    1: 'time-time',        2: 'pitch-time'}

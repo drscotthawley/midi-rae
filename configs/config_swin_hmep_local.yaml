@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 data:
-  path: ~/datasets/POP909_images_basic
+  path: $HOME/datasets/POP909_images_basic
 
 training:
   batch_size: 64
@@ -16,7 +16,7 @@ training:
 use_preencoded: true
 
 preencode:
-  output_dir: ~/datasets/POP909_encoded
+  output_dir: $HOME/datasets/POP909_encoded
 
-encoder_ckpt: ~/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt
-hmep_init_ckpt: ~/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinMaskedEmbeddingPredictor_exp24_Lcbvz8_best.pt
+encoder_ckpt: $HOME/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt
+hmep_init_ckpt: $HOME/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinMaskedEmbeddingPredictor_exp24_Lcbvz8_best.pt

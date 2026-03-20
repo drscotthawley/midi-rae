@@ -1,5 +1,5 @@
 data:
-  path: ~/datasets/POP909_images_basic  # adjust path as needed
+  path: $HOME/datasets/POP909_images_basic  # adjust path as needed
   image_size: 128
   in_channels: 1
 
@@ -36,7 +36,7 @@ training:
   enc_ft_lr: -1           # lr for fine-tuning enc via end-to-end training w/ decoder
 
 preencode:
-  output_dir: ~/datasets/POP909_encoded
+  output_dir: $HOME/datasets/POP909_encoded
   num_passes: 10          # number of passes through the dataset
 
 wandb:

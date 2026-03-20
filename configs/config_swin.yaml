@@ -1,5 +1,5 @@
 data:
-  path: ~/datasets/POP909_images_basic  # adjust path as needed
+  path: $HOME/datasets/POP909_images_basic  # adjust path as needed
   image_size: 128
   in_channels: 1
 
@@ -52,11 +52,11 @@ training:
 
 
 preencode:
-  output_dir: /home/shawley/datasets/POP909_encoded
+  output_dir: $HOME/datasets/POP909_encoded
   num_passes: 3           # number of passes through the dataset
 
 flow:
-  embedding_glob: /home/shawley/datasets/POP909_pca/train_chunk*_pca20.pt
+  embedding_glob: $HOME/datasets/POP909_pca/train_chunk*_pca20.pt
   checkpoint_dir: checkpoints/flow
   h_dim: 512
   n_layers: 4
@@ -74,7 +74,7 @@ wandb:
   project: ar-mep-swin-midi-rae
   flow_project: midi-rae-flow
 
-encoder_ckpt: ~/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
+encoder_ckpt: $HOME/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
 
 
 tag: ???  # required run tag, will get prepended to wandb run name

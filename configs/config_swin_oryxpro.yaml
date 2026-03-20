@@ -1,0 +1,8 @@
+defaults:
+  - config_swin
+  - _self_
+
+training:
+  batch_size: 250
+  num_workers: [4, 2]
+

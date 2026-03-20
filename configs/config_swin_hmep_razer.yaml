@@ -11,6 +11,6 @@ training:
 use_preencoded: true
 
 preencode:
-  output_dir: ~/datasets/POP909_encoded
+  output_dir: $HOME/datasets/POP909_encoded
 
-encoder_ckpt: ~/runs/midi-rae/exp22_ibfFI9/checkpoints/SwinEncoder_exp22_ibfFI9_best.pt
+encoder_ckpt: $HOME/runs/midi-rae/exp22_ibfFI9/checkpoints/SwinEncoder_exp22_ibfFI9_best.pt
