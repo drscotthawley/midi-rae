@@ -6,6 +6,7 @@ __all__ = ['VelocityNet', 'PerLevelFlowModel', 'warp_time', 'rk4_step', 'euler_s
            'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
+import gc
 import os
 import torch
 import torch.nn as nn
@@ -364,12 +365,15 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                     for lname, fig in figs.items():
                         log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
                         plt.close(fig)
+                    del figs
                     scatters = plot_level_scatter(model, dataset.embeddings,
                                                  dataset.level_dims, device=device, warp_s=warp_s,
                                                  source_df=source_df, source_scales=source_scales,
                                                  epoch=epoch+1)
                     for lname, fig in scatters.items():
                         log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
+                    del scatters
+                    gc.collect()
                 log_dict['epoch'] = epoch+1
                 wandb.log(log_dict, step=global_step)
             model.train()
