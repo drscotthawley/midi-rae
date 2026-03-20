@@ -76,6 +76,7 @@ flow:
   repair_chunk_size: null     # chunk size for ann_repair (null=full batch)
   ema_eta: 0.97               # EMA decay rate (updated every batch)
   ema_start_epoch: 100        # epoch at which eval/sampling switches to EMA model
+  self_condition: false       # if true, 50% of batches use self-conditioning (predict x1 first, detach, re-feed)
   
 wandb:
   project: ar-mep-swin-midi-rae

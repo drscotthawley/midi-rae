@@ -20,40 +20,55 @@ from .data import EmbeddingDataset
 
 # %% ../nbs/12_train_flow.ipynb #aa120004
 class VelocityNet(nn.Module):
-    """MLP velocity field for flow matching.  Input: [x, t], output: dx/dt.
-    Hidden layers use residual (skip) connections."""
-    def __init__(self, input_dim, h_dim=256, n_layers=3):
+    """MLP velocity field for flow matching.  Input: [x, (x_self_cond,) t], output: dx/dt.
+    Hidden layers use residual (skip) connections.
+    self_condition: if True, also accepts a self-conditioning input x_self_cond (predicted x1
+    from a prior forward pass); zeros are used when not provided."""
+    def __init__(self, input_dim, h_dim=256, n_layers=3, self_condition=False):
         super().__init__()
-        self.fc_in  = nn.Linear(input_dim + 1, h_dim)
+        self.self_condition = self_condition
+        net_in = input_dim * 2 + 1 if self_condition else input_dim + 1
+        self.fc_in  = nn.Linear(net_in, h_dim)
         self.hidden = nn.ModuleList([nn.Linear(h_dim, h_dim) for _ in range(n_layers - 1)])
         self.fc_out = nn.Linear(h_dim, input_dim)
 
-    def forward(self, x, t):
+    def forward(self, x, t, x_self_cond=None):
         if t.dim() == 0: t = t.expand(x.size(0), 1)
         elif t.dim() == 1: t = t.unsqueeze(1)
         t = t.expand(x.size(0), 1)
-        h = F.gelu(self.fc_in(torch.cat([x, t], dim=1)))
+        if self.self_condition:
+            sc = x_self_cond if x_self_cond is not None else torch.zeros_like(x)
+            inp = torch.cat([x, sc, t], dim=1)
+        else:
+            inp = torch.cat([x, t], dim=1)
+        h = F.gelu(self.fc_in(inp))
         for layer in self.hidden:
             h = F.gelu(layer(h)) + h  # residual connection
         return self.fc_out(h)
 
+
 # %% ../nbs/12_train_flow.ipynb #behr6w8yrw7
 class PerLevelFlowModel(nn.Module):
     """One VelocityNet per embedding level; each level's slice is routed to its own net.
-    Has the same forward(x, t) interface as VelocityNet, so all training/eval code works unchanged.
-    level_dims: list of ints, e.g. [16, 16, 16, 16, 16, 8] from dataset.level_dims
+    Has the same forward(x, t, x_self_cond=None) interface as VelocityNet.
+    level_dims: list of ints, e.g. [20, 80, 320, 1280] from dataset.level_dims
+    self_condition: passed through to each VelocityNet.
     """
-    def __init__(self, level_dims, h_dim=256, n_layers=4):
+    def __init__(self, level_dims, h_dim=256, n_layers=4, self_condition=False):
         super().__init__()
+        self.self_condition = self_condition
         self.level_dims = level_dims
-        self.nets = nn.ModuleList([VelocityNet(d, h_dim, n_layers) for d in level_dims])
+        self.nets = nn.ModuleList([VelocityNet(d, h_dim, n_layers, self_condition=self_condition)
+                                   for d in level_dims])
 
-    def forward(self, x, t):
+    def forward(self, x, t, x_self_cond=None):
         outs, offset = [], 0
         for net, d in zip(self.nets, self.level_dims):
-            outs.append(net(x[:, offset:offset+d], t))
+            sc_slice = x_self_cond[:, offset:offset+d] if x_self_cond is not None else None
+            outs.append(net(x[:, offset:offset+d], t, sc_slice))
             offset += d
         return torch.cat(outs, dim=1)
+
 
 # %% ../nbs/12_train_flow.ipynb #aa120005
 def warp_time(t, s=0.5):
@@ -356,37 +371,36 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     repair_every: re-pair source/target every N batches via ann_repair (0 = disabled).
     n_repair_projections: random projections per ann_repair call (more = better, slower).
     repair_chunk_size: chunk size for ann_repair (None = full batch).
-    ema_eta: EMA decay rate (updated every batch from epoch 1).
-    ema_start_epoch: epoch at which to switch eval/sampling to the EMA model.
+    ema_eta: EMA decay rate (updated every batch).
+    ema_start_epoch: epoch at which eval/sampling switches to EMA model.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
+    self_cond = getattr(model, 'self_condition', False)
     model = model.to(device)
     ema_model = EMAModel(model, eta=ema_eta, update_every=1, dtype=torch.float32)
     dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                     num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
-    dl_iter = None  # lazy cycle iterator, created if steps_per_epoch is set
+    dl_iter = None
     _steps = steps_per_epoch or len(dl)
     if use_wandb:
         import wandb
         wandb.config.update(dict(n_epochs=n_epochs, lr=lr, batch_size=batch_size,
-                                 warp_s=warp_s, dim=dataset.embeddings.shape[1]), allow_val_change=True)
+                                 warp_s=warp_s, dim=dataset.embeddings.shape[1],
+                                 self_condition=self_cond), allow_val_change=True)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_fn   = nn.MSELoss()
     global_step = 0
-    epoch_start = 0  # 0-indexed
-    real_scatter_logged = False  # real data is static; only log once
+    epoch_start = 0
+    real_scatter_logged = False
 
     if checkpoint:
         model, ckpt = load_checkpoint(model, checkpoint, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        epoch_start = ckpt['epoch']  # resume after this completed epoch
+        epoch_start = ckpt['epoch']
         global_step = epoch_start * _steps
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
-        # re-sync EMA to loaded weights so it doesn't start from random init
         ema_model.ema.load_state_dict(model.state_dict())
 
-    # Cosine annealing with warm restarts; T_mult=2 doubles period each restart
-    # so restarts become progressively gentler as training matures
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer, T_0=lr_restart_epochs, T_mult=2, eta_min=1e-6,
         last_epoch=epoch_start - 1 if epoch_start > 0 else -1)
@@ -412,15 +426,23 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                                             n_projections=n_repair_projections,
                                             chunk_size=repair_chunk_size)
 
-            t = torch.rand(B, 1, device=device)   # uniform in [0,1]
+            t = torch.rand(B, 1, device=device)
             if warp_s != 1.0:
-                t = warp_time(t, s=warp_s)         # warp for better coverage
+                t = warp_time(t, s=warp_s)
 
-            x_t = (1 - t) * source + t * target   # linear interpolation
-            v   = target - source                  # constant velocity for straight paths
+            x_t = (1 - t) * source + t * target
+            v   = target - source
+
+            # Self-conditioning: 50% of batches, do a first pass to get x̂₁,
+            # then use it as conditioning for the actual training pass.
+            x_self_cond = None
+            if self_cond and torch.rand(1).item() < 0.5:
+                with torch.no_grad():
+                    v_first = model(x_t, t, None)
+                    x_self_cond = (x_t + (1 - t) * v_first).detach()
 
             optimizer.zero_grad()
-            v_pred = model(x_t, t)
+            v_pred = model(x_t, t, x_self_cond)
             loss   = loss_fn(v_pred, v)
             loss.backward()
             if grad_clip > 0:
@@ -464,7 +486,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                     for lname, fig in scatters.items():
                         is_real = lname.endswith('/real')
                         if is_real and real_scatter_logged:
-                            fig.data = []  # discard without logging
+                            fig.data = []
                             continue
                         log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
                     real_scatter_logged = True
@@ -505,10 +527,12 @@ def train_flow_main(cfg: DictConfig):
     dim = dataset.embeddings.shape[1]
     print(f"  {len(dataset)} samples, dim={dim}, level_dims={dataset.level_dims}")
 
+    self_condition = cfg.flow.get('self_condition', False)
     model = PerLevelFlowModel(level_dims=dataset.level_dims,
-                              h_dim=cfg.flow.h_dim, n_layers=cfg.flow.n_layers)
+                              h_dim=cfg.flow.h_dim, n_layers=cfg.flow.n_layers,
+                              self_condition=self_condition)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  PerLevelFlowModel: {n_params:,} parameters")
+    print(f"  PerLevelFlowModel: {n_params:,} parameters (self_condition={self_condition})")
 
     use_wandb = hasattr(cfg, "wandb") and hasattr(cfg.wandb, "flow_project")
     if use_wandb:
