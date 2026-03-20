@@ -20,10 +20,13 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-HOST="${1:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
-TYPE="${2:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
-CONFIG="${3:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
-TAG="${4:?Usage: $0 <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+FORCE=0
+if [[ "${1}" == "--force" ]]; then FORCE=1; shift; fi
+
+HOST="${1:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+TYPE="${2:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+CONFIG="${3:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+TAG="${4:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
 shift 4
 EXTRA_OVERRIDES="$*"  # all remaining args passed directly to Hydra
 
@@ -47,7 +50,9 @@ echo "Run tag: ${RUN_TAG}"
 
 # Check GPU availability on the remote host
 echo "Checking GPU on ${HOST}..."
-if ! $SSH "${HOST}" 'bash -s' < "${SCRIPT_DIR}/is_gpu_free.sh"; then
+if [[ $FORCE -eq 1 ]]; then
+    echo "(--force: skipping GPU check)"
+elif ! $SSH "${HOST}" 'bash -s' < "${SCRIPT_DIR}/is_gpu_free.sh"; then
     echo "Aborting: GPU is busy."
     exit 1
 fi
