@@ -4,7 +4,8 @@
 
 # %% auto #0
 __all__ = ['SCHEME_NAMES', 'TARGET_NAMES', 'shift_no_wrap', 'sample_shift', 'note_length_weights', 'AnchorDataset',
-           'sample_shifts', 'PRPairDataset', 'ShiftedTripletDataset', 'PreEncodedChunkDataset']
+           'sample_shifts', 'PRPairDataset', 'ShiftedTripletDataset', 'PreEncodedChunkDataset', 'ChunkShuffleSampler',
+           'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out']
 
 # %% ../nbs/01_data.ipynb #b96051a7
 import os 
@@ -205,3 +206,81 @@ class PreEncodedChunkDataset(Dataset):
         assert self.files, f"No {split}_chunk*.pt files in {encoded_dir}"
         self.index = []
         self.chunk_sample_ranges = {}
+        for ci, f in enumerate(self.files):
+            chunk = torch.load(f, map_location='cpu', weights_only=False)
+            start = len(self.index)
+            for ri, rec in enumerate(chunk):
+                for si in range(rec[emb_key][0].shape[0]):
+                    self.index.append((ci, ri, si))
+            self.chunk_sample_ranges[ci] = (start, len(self.index))
+            del chunk
+        self._cache_ci = None
+        self._cache_data = None
+
+    def __len__(self): return len(self.index)
+
+    def __getitem__(self, idx):
+        ci, ri, si = self.index[idx]
+        if ci != self._cache_ci:
+            self._cache_data = torch.load(self.files[ci], map_location='cpu', weights_only=False)
+            self._cache_ci = ci
+        rec = self._cache_data[ri]
+        emb = [lvl[si].float() for lvl in rec[self.emb_key]]
+        if self.img_key is None: return emb
+        return emb, rec[self.img_key][si].float()
+
+
+class ChunkShuffleSampler(Sampler):
+    """Shuffle chunk order each epoch; access items within each chunk sequentially.
+    Prevents DataLoader workers from thrashing between chunks."""
+    def __init__(self, dataset, shuffle=True):
+        self.dataset = dataset
+        self.shuffle = shuffle
+
+    def __len__(self): return len(self.dataset)
+
+    def __iter__(self):
+        n = len(self.dataset.files)
+        order = torch.randperm(n).tolist() if self.shuffle else list(range(n))
+        indices = []
+        for ci in order:
+            s, e = self.dataset.chunk_sample_ranges[ci]
+            indices.extend(range(s, e))
+        return iter(indices)
+
+
+def collate_emb_levels(batch):
+    "Stack per-sample level embeddings (list of (N,D) tensors), padding variable-N to max."
+    n_levels = len(batch[0])
+    result = []
+    for lev in range(n_levels):
+        tensors = [item[lev] for item in batch]
+        max_n = max(t.shape[0] for t in tensors)
+        padded = []
+        for t in tensors:
+            if t.shape[0] < max_n:
+                t = torch.cat([t, torch.zeros(max_n - t.shape[0], *t.shape[1:], dtype=t.dtype)], 0)
+            padded.append(t)
+        result.append(torch.stack(padded))
+    return result
+
+
+def collate_preencode(batch):
+    "Collate (emb_levels, img) pairs from PreEncodedChunkDataset."
+    return collate_emb_levels([b[0] for b in batch]), torch.stack([b[1] for b in batch])
+
+
+def get_pos_cache(encoder, image_size, device):
+    "Run encoder on a dummy input to extract the fixed per-level positional grid."
+    dummy = torch.zeros(1, 1, image_size, image_size, device=device)
+    with torch.no_grad():
+        enc_out = encoder(dummy)
+    return [lvl.pos.squeeze(0) for lvl in enc_out.patches.levels]
+
+
+def emb_levels_to_enc_out(emb_levels, pos_cache, device):
+    "Assemble a minimal EncoderOutput from stored emb level tensors and a pos cache."
+    levels = [PatchState(emb=emb.to(device), pos=pos_cache[i], non_empty=None, mae_mask=None)
+              for i, emb in enumerate(emb_levels)]
+    return EncoderOutput(patches=HierarchicalPatchState(levels=levels),
+                         full_pos=None, full_non_empty=None, mae_mask=None)
