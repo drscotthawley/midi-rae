@@ -91,6 +91,7 @@ class CrossLevelFlowModel(nn.Module):
     a small transformer cross-attends across all levels (so L3 attends to L0-L2 without
     cascading), per-level residual MLPs refine, per-level heads decode velocity.
     Sequence length = n_levels (typically 4) so attention cost is negligible.
+    Uses norm_first=True (pre-LN) for training stability.
     self_condition: same 50%-dropout self-conditioning as VelocityNet.
     t_dim: sinusoidal time embedding dim, projected to h_dim and added to each level token.
     """
@@ -105,8 +106,9 @@ class CrossLevelFlowModel(nn.Module):
         self.level_in  = nn.ModuleList([nn.Linear(d * in_mul, h_dim) for d in level_dims])
         # Time embedding: sinusoidal t_dim → h_dim (added to every level token)
         self.t_proj = nn.Sequential(nn.Linear(t_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim))
-        # Cross-level transformer (seq_len = n_levels ≈ 4; cost is trivial)
-        enc_layer = nn.TransformerEncoderLayer(h_dim, n_heads, dim_feedforward=h_dim * 4, batch_first=True, dropout=0.0)
+        # Cross-level transformer (seq_len = n_levels ≈ 4; norm_first=True for stability)
+        enc_layer = nn.TransformerEncoderLayer(h_dim, n_heads, dim_feedforward=h_dim * 4,
+                                               batch_first=True, dropout=0.0, norm_first=True)
         self.cross_attn = nn.TransformerEncoder(enc_layer, num_layers=n_attn_layers)
         # Per-level residual MLPs (operate in h_dim space)
         self.level_mlp = nn.ModuleList([
