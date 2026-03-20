@@ -145,6 +145,7 @@ def mmd_rbf(x, y, n_sub=2000):
 def wasserstein_score(x, y, n_projections=200, n_sub=2000):
     """Sliced Wasserstein distance: average 1-D Wasserstein over random projections.
     Falls back gracefully if geomloss is unavailable.
+    Returns nan on numerical failure (overflow, diverged samples, etc.).
     x, y: (N, D) numpy arrays."""
     try:
         import geomloss
@@ -154,13 +155,18 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
         return loss(xt, yt).item()
     except ImportError:
         pass
-    from scipy.stats import wasserstein_distance
-    rng = np.random.default_rng(0)
-    D = x.shape[1]
-    projs = rng.standard_normal((D, n_projections))
-    projs /= np.linalg.norm(projs, axis=0, keepdims=True)
-    px, py = x[:n_sub] @ projs, y[:n_sub] @ projs
-    return float(np.mean([wasserstein_distance(px[:, i], py[:, i]) for i in range(n_projections)]))
+    except Exception:
+        return float('nan')
+    try:
+        from scipy.stats import wasserstein_distance
+        rng = np.random.default_rng(0)
+        D = x.shape[1]
+        projs = rng.standard_normal((D, n_projections))
+        projs /= np.linalg.norm(projs, axis=0, keepdims=True)
+        px, py = x[:n_sub] @ projs, y[:n_sub] @ projs
+        return float(np.mean([wasserstein_distance(px[:, i], py[:, i]) for i in range(n_projections)]))
+    except Exception:
+        return float('nan')
 
 
 # %% ../nbs/12_train_flow.ipynb #9d7ef6b6
@@ -286,7 +292,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
                eval_every=10, viz_every=50, use_wandb=False, steps_per_epoch=None,
                source_df=None, source_scales=None, checkpoint=None, cfg=None,
-               lr_restart_epochs=500):
+               lr_restart_epochs=500, grad_clip=1.0):
     """Train flow matching model on embedding dataset.
 
     Source: N(0,I) sampled fresh each step.
@@ -294,8 +300,9 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     Loss:   MSE between predicted and true (constant) velocity.
     checkpoint: path to a saved checkpoint to resume from (optional).
     cfg: config dict/object passed to save_checkpoint (optional).
-    lr_restart_epochs: T_0 for CosineAnnealingWarmRestarts.
+    lr_restart_epochs: T_0 for CosineAnnealingWarmRestarts (T_mult=2, so periods double).
     viz_every: how often (epochs) to log histograms + scatter plots to W&B.
+    grad_clip: max norm for gradient clipping (0 = disabled).
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint
     model = model.to(device)
@@ -319,9 +326,10 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
         global_step = epoch_start * _steps
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
 
-    # Cosine annealing with warm restarts; last_epoch resumes schedule at correct position
+    # Cosine annealing with warm restarts; T_mult=2 doubles period each restart
+    # so restarts become progressively gentler as training matures
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=lr_restart_epochs, T_mult=1, eta_min=1e-6,
+        optimizer, T_0=lr_restart_epochs, T_mult=2, eta_min=1e-6,
         last_epoch=epoch_start - 1 if epoch_start > 0 else -1)
 
     for epoch in range(epoch_start, n_epochs):
@@ -340,8 +348,6 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             source = sample_source((B, D), device=device, source_df=source_df,
                                    source_scales=source_scales,
                                    level_dims=getattr(dataset, 'level_dims', None))
-            target = target[:, :source.shape[1]]  # truncate to source dim if dataset has more levels
-
             t = torch.rand(B, 1, device=device)   # uniform in [0,1]
             if warp_s != 1.0:
                 t = warp_time(t, s=warp_s)         # warp for better coverage
@@ -353,6 +359,8 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             v_pred = model(x_t, t)
             loss   = loss_fn(v_pred, v)
             loss.backward()
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
 
             epoch_loss += loss.item()
@@ -400,6 +408,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
 
     print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
     return model
+
 
 # %% ../nbs/12_train_flow.ipynb #aa120009
 #| eval: false
