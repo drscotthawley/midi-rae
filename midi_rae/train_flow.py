@@ -3,7 +3,8 @@
 # %% auto #0
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'warp_time', 'rk4_step',
            'euler_step', 'sample_source', 'ann_repair', 'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow',
-           'plot_level_histograms', 'plot_level_scatter', 'train_flow', 'train_flow_main']
+           'plot_level_histograms', 'plot_level_scatter', 'train_flow', 'make_warmup_cosine_restart_scheduler',
+           'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -429,7 +430,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
                eval_every=10, viz_every=50, use_wandb=False, steps_per_epoch=None,
                source_df=None, source_scales=None, checkpoint=None, cfg=None,
-               lr_restart_epochs=500, grad_clip=1.0,
+               lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
                repair_every=1, n_repair_projections=1, repair_chunk_size=None,
                ema_eta=0.97, ema_start_epoch=100):
     """Train flow matching model on embedding dataset.
@@ -439,7 +440,8 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
     Loss:   MSE between predicted and true (constant) velocity.
     checkpoint: path to a saved checkpoint to resume from (optional).
     cfg: config dict/object passed to save_checkpoint (optional).
-    lr_restart_epochs: T_0 for CosineAnnealingWarmRestarts (T_mult=2, so periods double).
+    lr_restart_epochs: T_0 (first cycle length) for warm-restart schedule.
+    lr_warmup_frac: fraction of each cycle spent on linear warmup to peak lr (default 0.15).
     viz_every: how often (epochs) to log histograms + scatter plots to W&B.
     grad_clip: max norm for gradient clipping (0 = disabled).
     repair_every: re-pair source/target every N batches via ann_repair (0 = disabled).
@@ -475,106 +477,39 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
         ema_model.ema.load_state_dict(model.state_dict())
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=lr_restart_epochs, T_mult=2, eta_min=1e-6,
-        last_epoch=epoch_start - 1 if epoch_start > 0 else -1)
+    scheduler = make_warmup_cosine_restart_scheduler(
+        optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
+    # Fast-forward scheduler to epoch_start if resuming
+    for _ in range(epoch_start): scheduler.step()
 
-    for epoch in range(epoch_start, n_epochs):
-        model.train()
-        epoch_loss = 0.
-        if steps_per_epoch:
-            if dl_iter is None:
-                import itertools; dl_iter = itertools.cycle(dl)
-            batches = (next(dl_iter) for _ in range(_steps))
-        else:
-            batches = dl
-        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch+1}/{n_epochs}', leave=False)
-        for target in pbar:
-            target = target.to(device)
-            B, D   = target.shape
-            source = sample_source((B, D), device=device, source_df=source_df,
-                                   source_scales=source_scales,
-                                   level_dims=getattr(dataset, 'level_dims', None))
-            if repair_every and global_step % repair_every == 0:
-                source, target = ann_repair(source, target,
-                                            n_projections=n_repair_projections,
-                                            chunk_size=repair_chunk_size)
 
-            t = torch.rand(B, 1, device=device)
-            if warp_s != 1.0:
-                t = warp_time(t, s=warp_s)
+# %% ../nbs/12_train_flow.ipynb #kreanhkpdc
+def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0.15, eta_min=1e-6):
+    """LambdaLR implementing true warm restarts: linear ramp-up → cosine decay per cycle.
+    Periods double each restart (T_mult=2): T_0, T_0*2, T_0*4, ...
+    warmup_frac: fraction of each cycle spent warming up to peak lr.
+    eta_min: minimum lr (as absolute value, not a multiplier)."""
+    base_lr = optimizer.param_groups[0]['lr']
 
-            x_t = (1 - t) * source + t * target
-            v   = target - source
+    def get_cycle(epoch):
+        """Return (cycle index, position within cycle, cycle length)."""
+        T_i, T_prev = T_0, 0
+        while T_prev + T_i <= epoch:
+            T_prev += T_i
+            T_i = int(T_i * T_mult)
+        return T_prev, T_i   # cycle_start, cycle_length
 
-            # Self-conditioning: 50% of batches, do a first pass to get x̂₁,
-            # then use it as conditioning for the actual training pass.
-            x_self_cond = None
-            if self_cond and torch.rand(1).item() < 0.5:
-                with torch.no_grad():
-                    v_first = model(x_t, t, None)
-                    x_self_cond = (x_t + (1 - t) * v_first).detach()
+    def lr_lambda(epoch):
+        cycle_start, T_i = get_cycle(epoch)
+        T_cur = epoch - cycle_start
+        warmup_end = max(1, int(T_i * warmup_frac))
+        if T_cur < warmup_end:
+            return T_cur / warmup_end                              # linear warmup → 1.0 (base_lr)
+        progress = (T_cur - warmup_end) / max(1, T_i - warmup_end)
+        cos_val = 0.5 * (1 + math.cos(math.pi * progress))        # 1 → 0
+        return eta_min / base_lr + (1 - eta_min / base_lr) * cos_val
 
-            optimizer.zero_grad()
-            v_pred = model(x_t, t, x_self_cond)
-            loss   = loss_fn(v_pred, v)
-            loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
-            optimizer.step()
-            ema_model.update(model)
-
-            epoch_loss += loss.item()
-            pbar.set_postfix(loss=f'{loss.item():.4f}')
-            global_step += 1
-
-        scheduler.step()
-        avg_loss = epoch_loss / len(dl)
-        cur_lr = scheduler.get_last_lr()[0]
-        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}')
-        if use_wandb: wandb.log({'train/epoch_loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1}, step=global_step)
-
-        if eval_every and (epoch + 1) % eval_every == 0:
-            print(f'  --- eval epoch {epoch+1} ---')
-            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else model
-            metrics = eval_flow(eval_model, dataset.embeddings, device=device, warp_s=warp_s,
-                               source_df=source_df, source_scales=source_scales,
-                               level_dims=getattr(dataset, 'level_dims', None))
-            if use_wandb:
-                import wandb
-                log_dict = {f'eval/{k}': v for k, v in metrics.items()}
-                if hasattr(dataset, 'level_dims') and viz_every and (epoch + 1) % viz_every == 0:
-                    figs = plot_level_histograms(eval_model, dataset.embeddings,
-                                               dataset.level_dims, device=device, warp_s=warp_s,
-                                               source_df=source_df, source_scales=source_scales,
-                                               epoch=epoch+1)
-                    import matplotlib.pyplot as plt
-                    for lname, fig in figs.items():
-                        log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
-                        plt.close(fig)
-                    del figs
-                    scatters = plot_level_scatter(eval_model, dataset.embeddings,
-                                                 dataset.level_dims, device=device, warp_s=warp_s,
-                                                 source_df=source_df, source_scales=source_scales,
-                                                 epoch=epoch+1)
-                    for lname, fig in scatters.items():
-                        is_real = lname.endswith('/real')
-                        if is_real and real_scatter_logged:
-                            fig.data = []
-                            continue
-                        log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
-                    real_scatter_logged = True
-                    del scatters
-                    gc.collect()
-                log_dict['epoch'] = epoch+1
-                wandb.log(log_dict, step=global_step)
-            model.train()
-
-        save_checkpoint([model, ema_model.ema], epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
-                        save_every=save_every, tag=f'flow_{model.__class__.__name__}')
-
-    print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
-    return model
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 # %% ../nbs/12_train_flow.ipynb #aa120009
@@ -631,11 +566,12 @@ def train_flow_main(cfg: DictConfig):
                n_epochs=cfg.flow.n_epochs, lr=cfg.flow.lr, batch_size=cfg.flow.batch_size,
                warp_s=cfg.flow.warp_s, device=device,
                checkpoint_dir=cfg.flow.checkpoint_dir, save_every=cfg.flow.save_every,
-               eval_every=cfg.flow.eval_every, viz_every=cfg.flow.get('viz_every', 50),
+               eval_every=cfg.flow.eval_every, viz_every=cfg.flow.get('viz_every', 25),
                use_wandb=use_wandb, steps_per_epoch=cfg.flow.steps_per_epoch,
                source_df=source_df, source_scales=source_scales,
                checkpoint=checkpoint, cfg=cfg,
                lr_restart_epochs=cfg.flow.get('lr_restart_epochs', 500),
+               lr_warmup_frac=cfg.flow.get('lr_warmup_frac', 0.15),
                repair_every=cfg.flow.get('repair_every', 1),
                n_repair_projections=cfg.flow.get('n_repair_projections', 1),
                repair_chunk_size=cfg.flow.get('repair_chunk_size', None),
