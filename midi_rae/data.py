@@ -83,6 +83,9 @@ class AnchorDataset(Dataset):
         self.filenames = shuffled[:split_idx] if split == 'train' else shuffled[split_idx:]            
         self.actual_len = len(self.filenames)
 
+    def __len__(self):
+        return self.actual_len * 100  # arbitrary large number for epoch length
+
 # %% ../nbs/01_data.ipynb #9b1f47bb-c1cc-4a0a-a5f3-5083b91eca58
 def sample_shifts(max_x, max_y, sigma):
     "Get X and Y shifts; one of them must be non-zero"
