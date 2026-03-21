@@ -3,5 +3,5 @@ defaults:
   - _self_
 
 training:
-  zero_levels: [5]     # always zero L5 embeddings — ablation: can decoder reconstruct without finest level?
+  mask_levels: [5]     # always mask L5 embeddings — ablation: can decoder reconstruct without finest level?
   emb_mask_ratio: 0.0  # no random masking, just the fixed L5 ablation

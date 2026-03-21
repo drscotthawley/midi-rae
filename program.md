@@ -18,7 +18,7 @@ These apply to all encoder runs unless explicitly overridden:
 
 ### Coarse levels provide suppression context; fine levels drive recall — 2026-03-21
 
-**Finding**: Decoder ablation (dec28, `zero_levels=[0,1,2,3]`, train + val masking applied) shows that training with only L4/L5 visible produces lower precision than recall (precision ~0.80, recall ~0.90 at epoch 20), compared to full-embedding runs where precision ≥ 0.91 by the same point.
+**Finding**: Decoder ablation (dec28, `mask_levels=[0,1,2,3]`, train + val masking applied) shows that training with only L4/L5 visible produces lower precision than recall (precision ~0.80, recall ~0.90 at epoch 20), compared to full-embedding runs where precision ≥ 0.91 by the same point.
 
 **Interpretation**: The coarse levels (L0-L3) carry **global suppression context** — they tell the decoder "even though this local patch looks note-like, in this harmonic/temporal context there should be silence here." Without coarse context, the decoder defaults to a higher base rate of note prediction: it finds most real notes (high recall) but also hallucinates notes in empty regions (low precision). The fine levels (L4/L5) encode *what a note patch looks like locally*; the coarse levels encode *when not to place a note*.
 

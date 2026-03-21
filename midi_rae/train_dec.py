@@ -151,7 +151,7 @@ def train_step(epoch, enc_out, img_real, decoder,
     enc_out = mask_enc_out(enc_out,
                            mask_ratio=cfg.training.get('emb_mask_ratio', 0.0),
                            mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
-                           zero_levels=cfg.training.get('zero_levels', None),
+                           mask_levels=cfg.training.get('mask_levels', None),
                            mask_tokens=mask_tokens)
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
@@ -169,21 +169,21 @@ class MaskTokens(nn.Module):
         super().__init__()
         self.tokens = nn.ParameterList([nn.Parameter(torch.randn(d)) for d in dims])
 
-def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, zero_levels=None, mask_tokens=None):
+def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, mask_levels=None, mask_tokens=None):
     """Per-patch masking of encoder embeddings for decoder robustness training.
     mask_ratio:   finest-level fraction of patches to mask (0 = disabled). L0 never masked.
     mr_level_fac: ratio divisor per coarser level (mirrors MEP; finer levels masked more).
-    zero_levels:  list of level indices to always mask entirely (ablation use).
-    mask_tokens:  MaskTokens module; masked positions get learned token instead of zeros.
+    mask_levels:  list of level indices to always mask entirely with learned mask token (ablation use).
+    mask_tokens:  MaskTokens module; masked positions get learned token instead of a fixed value.
     """
-    if mask_ratio <= 0 and not zero_levels: return enc_out
-    zero_levels = set(zero_levels or [])
+    if mask_ratio <= 0 and not mask_levels: return enc_out
+    mask_levels_set = set(mask_levels or [])
     n_levels = len(enc_out.patches.levels)
     new_levels = []
     for i, lvl in enumerate(enc_out.patches.levels):
         B, N, D = lvl.emb.shape
         tok = mask_tokens.tokens[i].view(1, 1, D) if mask_tokens is not None else None
-        if i in zero_levels:
+        if i in mask_levels_set:
             emb = tok.expand(B, N, D).clone() if tok is not None else torch.zeros_like(lvl.emb)
         elif i == 0 or mask_ratio <= 0:
             emb = lvl.emb
@@ -241,7 +241,7 @@ def train(cfg: DictConfig):
     patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
 
     mask_tokens = None
-    if cfg.training.get('emb_mask_ratio', 0.0) > 0 or cfg.training.get('zero_levels', None):
+    if cfg.training.get('emb_mask_ratio', 0.0) > 0 or cfg.training.get('mask_levels', None):
         n_levels = len(cfg.model.depths)
         dims = [cfg.model.embed_dim * (2 ** (n_levels - 1 - i)) for i in range(n_levels)]
         mask_tokens = MaskTokens(dims).to(device)
@@ -286,7 +286,7 @@ def train(cfg: DictConfig):
         wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
 
     emb_mask_ratio = cfg.training.get('emb_mask_ratio', 0.0)
-    zero_levels     = cfg.training.get('zero_levels', None)
+    mask_levels     = cfg.training.get('mask_levels', None)
 
     global_step = 0
     viz_every = 2
@@ -310,7 +310,6 @@ def train(cfg: DictConfig):
 
         train_loss /= len(train_dl)
 
-        # validation, checkpointing, visualization e.g. reconstruction comparison
         decoder.eval()
         with torch.no_grad():
             val_loss = 0
@@ -324,7 +323,7 @@ def train(cfg: DictConfig):
                         enc_out, img_real, _ = get_embeddings_batch(batch, encoder, device)
                     enc_out = mask_enc_out(enc_out, mask_ratio=emb_mask_ratio,
                                            mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
-                                           zero_levels=zero_levels, mask_tokens=mask_tokens)
+                                           mask_levels=mask_levels, mask_tokens=mask_tokens)
                     loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
                     loss_dec, img_recon = loss_dict['dec'], loss_dict['recon']
                 val_loss += loss_dec.item()
@@ -344,7 +343,7 @@ def train(cfg: DictConfig):
                     masked_enc = mask_enc_out(enc_out,
                                              mask_ratio=emb_mask_ratio,
                                              mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
-                                             zero_levels=zero_levels,
+                                             mask_levels=mask_levels,
                                              mask_tokens=mask_tokens)
                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                         m_ld = calc_dec_loss(decoder, masked_enc, img_real, pos_weight=cfg.training.get('pos_weight', 1.0))
