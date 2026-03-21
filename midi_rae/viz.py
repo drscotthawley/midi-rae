@@ -332,7 +332,7 @@ def do_recon_eval(recon, real, mae_mask=None, patch_size=16, eps=1e-8, return_ma
     return evals
 
 # %% ../nbs/05_viz.ipynb #1aaee236-717b-408c-8252-2e0048f63211
-def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
+def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None, thresh=0.5):
     "Convert image patches to full image. Copy over real patches where appropriate."
     B, C, H, W = img_real.shape
     grid_h, grid_w = H//patch_size, W//patch_size
@@ -341,15 +341,15 @@ def patches_to_img(recon_patches, img_real, patch_size=16, mae_mask=None):
     img_recon = recon_patches.reshape(B, grid_h, grid_w, patch_size, patch_size).permute(0, 1, 3, 2, 4)
     img_recon = img_recon.reshape(B, H, W).unsqueeze(1)
     img_recon = torch.sigmoid(img_recon)
-    img_recon = (img_recon > 0.5).float()
+    img_recon = (img_recon > thresh).float()
     if mae_mask is not None:
         vis_2d = expand_patch_mask(mae_mask, grid_h, grid_w, patch_size)
         img_recon[:, :, vis_2d] = img_real[:, :, vis_2d]
-    return img_recon 
+    return img_recon
 
 # %% ../nbs/05_viz.ipynb #86455273-d2fa-4a97-a6a7-0a71a0a7798f
 @torch.no_grad()
-def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=False, return_maps=False):
+def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=False, return_maps=False, thresh=0.5):
     """Show how our LightweightMAEDecoder is doing (during encoder training)"""
     mae_mask = None
     if enc_out is not None:
@@ -362,10 +362,10 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=
 
     img_recon_noreplace = None
     if recon.shape != img_real.shape: # turn into image
-        img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask)
-        img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None)
+        img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask, thresh=thresh)
+        img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None, thresh=thresh)
     
-    img_recon = binarize(recon)
+    img_recon = binarize(recon, thresh=thresh)
         
     evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size, return_maps=return_maps)
     grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
