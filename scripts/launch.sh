@@ -36,8 +36,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" ]]; then
-    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', or 'flow', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "generate" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', or 'generate', got '${TYPE}'"
     exit 1
 fi
 
@@ -78,6 +78,8 @@ if [[ "$TYPE" = "preencode" ]]; then
     MODULE="midi_rae.preencode"
 elif [[ "$TYPE" = "fitpca" ]]; then
     MODULE="midi_rae.fit_pca"
+elif [[ "$TYPE" = "generate" ]]; then
+    MODULE="midi_rae.generate"
 else
     MODULE="midi_rae.train_${TYPE}"
 fi

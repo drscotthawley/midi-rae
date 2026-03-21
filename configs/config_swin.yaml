@@ -89,6 +89,15 @@ wandb:
 
 encoder_ckpt: $HOME/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjbX_best.pt # for decoder usage
 
+generate:
+  pca_dir: $HOME/datasets/POP909_pca_exp26
+  flow_ckpt: $HOME/runs/midi-rae/flow15_cross_mw6I5r/checkpoints/CrossLevelFlowModel_flow_CrossLevelFlowModel_best.pt
+  hmep_ckpt: $HOME/runs/midi-rae/lecun_hmep4_m9BX54/checkpoints/SwinMaskedEmbeddingPredictor_lecun_hmep4_m9BX54_best.pt
+  decoder_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
+  n_samples: 4
+  n_steps: 100
+  output_dir: outputs/generate
+
 
 tag: ???  # required run tag, will get prepended to wandb run name
 
