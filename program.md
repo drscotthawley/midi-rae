@@ -16,6 +16,16 @@ These apply to all encoder runs unless explicitly overridden:
 
 ## Key Findings
 
+### Coarse levels provide suppression context; fine levels drive recall — 2026-03-21
+
+**Finding**: Decoder ablation (dec28, `zero_levels=[0,1,2,3]`, train + val masking applied) shows that training with only L4/L5 visible produces lower precision than recall (precision ~0.80, recall ~0.90 at epoch 20), compared to full-embedding runs where precision ≥ 0.91 by the same point.
+
+**Interpretation**: The coarse levels (L0-L3) carry **global suppression context** — they tell the decoder "even though this local patch looks note-like, in this harmonic/temporal context there should be silence here." Without coarse context, the decoder defaults to a higher base rate of note prediction: it finds most real notes (high recall) but also hallucinates notes in empty regions (low precision). The fine levels (L4/L5) encode *what a note patch looks like locally*; the coarse levels encode *when not to place a note*.
+
+**Implication**: Coarse levels are load-bearing for **precision** (knowing when not to place a note); fine levels handle **recall** (knowing where notes are). This functional decomposition suggests the coarse levels encode higher-level musical context (harmony, rhythm, phrase structure) while fine levels encode local note patterns. This also implies the flow model (which generates L0-L3) is contributing musical *coherence* to generated samples, not just fidelity — even if fine-level reconstruction quality is high with L4/L5 alone.
+
+**Also noted**: `pos_weight=2.5` was tuned for full-embedding training. With coarse levels zeroed, the positive weighting compounds the decoder's already-high note prediction rate — consider reducing `pos_weight` toward 1.0–1.5 for ablations using `zero_levels`.
+
 ### Factorization loss hurts reconstruction — 2026-03-19
 
 **Finding**: exp25 (lambda_fact=0.5) produced decoder F1=98.91% vs exp22 (lambda_fact=0.5 but trained on razer with slightly different dynamics) at 99.4%. Post-training eval shows exp25 has L0 cross_pt=0.007 (near-perfect pitch/time separation) while exp22 has L0 cross_pt=0.112 — yet exp22 produces a better decoder. The factorization loss over-constrains the embedding geometry in ways that hurt reconstruction.
