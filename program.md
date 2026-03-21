@@ -24,7 +24,7 @@ These apply to all encoder runs unless explicitly overridden:
 
 **Implication**: Coarse levels are load-bearing for **precision** (knowing when not to place a note); fine levels handle **recall** (knowing where notes are). This functional decomposition suggests the coarse levels encode higher-level musical context (harmony, rhythm, phrase structure) while fine levels encode local note patterns. This also implies the flow model (which generates L0-L3) is contributing musical *coherence* to generated samples, not just fidelity — even if fine-level reconstruction quality is high with L4/L5 alone.
 
-**Also noted**: `pos_weight=2.5` was tuned for full-embedding training. With coarse levels zeroed, the positive weighting compounds the decoder's already-high note prediction rate — consider reducing `pos_weight` toward 1.0–1.5 for ablations using `zero_levels`.
+**Caveat — pos_weight confound**: The same precision < recall pattern also appeared in dec27 (PCA-augmented fine-tune), where coarse levels *were* present but PCA-distorted. This undermines the "coarse suppression context" interpretation. A more parsimonious explanation: `pos_weight=2.5` inherently biases toward recall over precision; with clean embeddings the decoder is confident enough to overcome this bias, but any degradation (PCA distortion or zeroing) reduces decoder confidence and causes it to fall back on the pos_weight prior — predicting more notes to avoid false negatives. The precision deficit may be a pos_weight artifact rather than a direct indicator of missing suppression context. Future ablations should use `pos_weight=1.0` to decouple this effect before drawing conclusions about which levels encode suppression.
 
 ### Factorization loss hurts reconstruction — 2026-03-19
 
