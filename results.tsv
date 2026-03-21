@@ -34,6 +34,8 @@ n/a	razer-docker	dec	0.012373	keep	dec_masked_v2: per-patch learnable mask token
 n/a	lecun	enc	0.097081	keep	exp25: lambda_mep=0.1, delta_mep=False, 100 epochs — best encoder result yet; beats exp24 (0.118586) and exp22 (0.101)
 exp26_z1olvN	lecun	enc	0.033497	keep	exp26: lambda_fact=0, lambda_mep=0.1, delta_mep=False, 100 epochs — new best by 3x margin; confirms lambda_fact was major bottleneck
 dec26_2JIbRt	lecun	dec	0.006000	keep	dec26: decoder on exp26 encoder — F1=99.52% (precision=99.43%, recall=99.62%); new best on lecun; confirms lambda_fact=0 encoder produces better embeddings for reconstruction
+dec27_pcaaug_J3ppIT	razer-docker	dec	n/a	keep	dec27: PCA-aug decoder (pca_aug_levels=4, prob=0.5), pos_weight=1.0, fine-tuned from dec26 — F1_masked=0.964 (F1_clean=0.988) at epoch 77; converged
+dec28_finelevels_EhOpba	razer-docker	dec	n/a	keep	dec28: fine-levels-only decoder (mask_levels=[0,1,2,3]), pos_weight=1.0, fine-tuned from dec26 — F1≈0.92 (masked) / 0.963 (clean) at epoch 84; killed early
 
 # --- Post-training encoder evaluations (eval_enc.sh / eval_encoder.py) ---
 # Metrics from scripts/eval_encoder.py run on val set (CPU, lecun).
