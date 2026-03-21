@@ -354,9 +354,21 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
                                  coarse_level_dims=None, fine_source_scales=None):
     """Two-stage conditional sampler: coarse flow → fine conditional flow.
 
-    Both models share the *same* timestep grid — enforced by construction:
-    the same `t` tensor drives both forward() calls at every step, so there
-    is no separate time axis and no clock drift between stages.
+    Conditioning signal: x1_pred_coarse = x_t_coarse + (1-t) * v_coarse
+    — the coarse model's predicted endpoint at each step.  This is more
+    informative than the noisy state x_t_coarse alone (especially at small t
+    where x_t is mostly noise), and is in the same space as the final coarse
+    embeddings, normalising out the t-dependence of the velocity scale.
+
+    Both models share the *same* timestep grid — enforced by construction.
+    The coarse model is called once per step to get v_coarse for x1_pred,
+    then step_fn (which may call it again internally for RK4) advances the
+    coarse state.  The fine model uses a simple Euler step conditioned on
+    x1_pred_coarse computed at the start of each step.
+
+    Training counterpart: at each batch, freeze coarse model, compute
+    x1_pred_coarse = x_t_coarse + (1-t)*coarse_model(x_t_coarse, t),
+    then train fine_model(x_t_fine, t, x1_pred_coarse) with flow-matching loss.
 
     Args:
         coarse_model:        first-stage flow (CrossLevelFlowModel / PerLevelFlowModel)
@@ -380,12 +392,21 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
     ts = warp_time(torch.linspace(0, 1, n_steps + 1), s=warp_s)
     coarse_model.eval(); fine_model.eval()
     for i in range(n_steps):
-        dt = (ts[i+1] - ts[i]).item()
-        t  = torch.full((n_samples, 1), ts[i].item(), device=device)
-        # Shared clock: same t tensor → both models — no drift possible
-        y_coarse = step_fn(coarse_model, y_coarse, ts[i].item(), dt)
-        v_fine   = fine_model(y_fine, t, y_coarse)
-        y_fine   = y_fine + v_fine * dt
+        dt   = (ts[i+1] - ts[i]).item()
+        t_s  = ts[i].item()
+        t    = torch.full((n_samples, 1), t_s, device=device)
+
+        # x1_pred_coarse: coarse model's predicted endpoint at current state/time
+        v_coarse_pred  = coarse_model(y_coarse, t)
+        x1_pred_coarse = y_coarse + (1 - t_s) * v_coarse_pred  # [n_samples, coarse_dim]
+
+        # Advance coarse state (step_fn may call coarse_model again internally for RK4)
+        y_coarse = step_fn(coarse_model, y_coarse, t_s, dt)
+
+        # Fine model conditioned on x1_pred_coarse; Euler step
+        v_fine = fine_model(y_fine, t, x1_pred_coarse)
+        y_fine = y_fine + v_fine * dt
+
     return y_coarse, y_fine
 
 # %% ../nbs/12_train_flow.ipynb #h9k6c1mqyt7
