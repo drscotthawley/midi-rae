@@ -50,6 +50,12 @@ training:
   emb_mask_ratio: 0.4     # finest-level patch mask ratio for robustness training (0=disabled, L0 never masked)
   emb_mask_level_fac: 1.25  # ratio divisor per coarser level (mirrors MEP; finer levels masked more)
 
+  pca_aug: false          # if true, apply PCA roundtrip to embeddings during decoder training
+  pca_dir: $HOME/datasets/POP909_pca_exp26  # dir containing pca_L{i}_n20.pkl files
+  pca_aug_levels: 6       # apply PCA to this many levels (skips levels without a pkl file)
+  pca_aug_prob: 0.5       # fraction of training batches that get PCA distortion (0.5 = mixed clean+distorted)
+  dec_init_ckpt: null     # optional: warm-start decoder weights from this checkpoint
+
 
 preencode:
   output_dir: $HOME/datasets/POP909_encoded

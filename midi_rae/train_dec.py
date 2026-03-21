@@ -4,7 +4,7 @@
 
 # %% auto #0
 __all__ = ['setup_dataloaders', 'setup_models', 'setup_tstate', 'get_embeddings_batch', 'train_step', 'MaskTokens',
-           'mask_enc_out', 'train', 'train_dec_main']
+           'mask_enc_out', 'load_pca_models', 'pca_roundtrip_enc_out', 'train', 'train_dec_main']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
 import sys
@@ -199,6 +199,35 @@ def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, zero_levels=None, m
         patches=HierarchicalPatchState(levels=new_levels),
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
 
+# %% ../nbs/09_train_dec.ipynb #kieqb1ep0mc
+import pickle
+
+def load_pca_models(pca_dir, n_levels):
+    "Load sklearn PCA models from pca_dir for levels 0..n_levels-1."
+    pca_models = {}
+    for i in range(n_levels):
+        path = os.path.join(os.path.expandvars(os.path.expanduser(str(pca_dir))), f'pca_L{i}_n20.pkl')
+        with open(path, 'rb') as f:
+            pca_models[i] = pickle.load(f)
+    return pca_models
+
+def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device):
+    "Apply PCA compress→decompress to the first n_aug_levels levels of enc_out."
+    new_levels = []
+    for i, lvl in enumerate(enc_out.patches.levels):
+        if i < n_aug_levels and i in pca_models:
+            B, N, D = lvl.emb.shape
+            pca = pca_models[i]
+            flat = lvl.emb.float().cpu().numpy().reshape(B * N, D)
+            flat_rt = pca.inverse_transform(pca.transform(flat))
+            emb_rt = torch.tensor(flat_rt.reshape(B, N, D), dtype=lvl.emb.dtype, device=device)
+            new_levels.append(PatchState(emb=emb_rt, pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask))
+        else:
+            new_levels.append(lvl)
+    return EncoderOutput(
+        patches=HierarchicalPatchState(levels=new_levels),
+        full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
+
 # %% ../nbs/09_train_dec.ipynb #198855af
 def train(cfg: DictConfig):
     dict_test = dict(cfg) # force resolution of required fields (e.g. tag=???)
@@ -232,8 +261,19 @@ def train(cfg: DictConfig):
         pos_cache = get_pos_cache(_enc, cfg.data.image_size, device)
         del _enc
 
+    pca_models = None
+    pca_aug_levels = cfg.training.get('pca_aug_levels', 4)
+    pca_aug_prob = cfg.training.get('pca_aug_prob', 1.0)
+    if cfg.training.get('pca_aug', False):
+        pca_models = load_pca_models(cfg.training.pca_dir, pca_aug_levels)
+        cjprint(f"PCA aug enabled: {pca_aug_levels} levels, prob={pca_aug_prob}, dir={cfg.training.pca_dir}", color='magenta')
+
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
                           extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
+
+    if cfg.training.get('dec_init_ckpt', None):
+        decoder = load_checkpoint(decoder, os.path.expandvars(os.path.expanduser(cfg.training.dec_init_ckpt)))
+        cjprint(f"Loaded decoder init weights from {cfg.training.dec_init_ckpt}", color='magenta')
 
     if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
         decoder, ckpt = load_checkpoint(decoder, cfg.get('checkpoint',None), return_all=True)
@@ -259,6 +299,8 @@ def train(cfg: DictConfig):
                 note_weights = None
             else:
                 enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, device)
+            if pca_models is not None and torch.rand(1).item() < pca_aug_prob:
+                enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device)
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
             losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
