@@ -63,14 +63,18 @@ def build_enc_out(levels):
 
 # %% ../nbs/14_generate.ipynb #generate-fn
 def generate(cfg: DictConfig):
-    """Full generation pipeline: Flow → inverse PCA → HMEP → Decoder → piano roll images."""
+    """Full generation pipeline: Flow → inverse PCA → HMEP → Decoder → piano roll images.
+    If cfg.generate.use_real=True, skips the flow model and uses real PCA embeddings instead
+    (sanity check that the rest of the pipeline is working)."""
+    import wandb
     from torchvision.utils import make_grid, save_image
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     cjprint(f'Generating on {device}', color='cyan')
     gen = cfg.generate
     flow_cfg = cfg.flow
+    use_real = gen.get('use_real', False)
 
-    # --- infer level_dims from embedding dataset (same as train_flow) ---
+    # --- infer level_dims from embedding dataset ---
     source_scales = list(flow_cfg.source_scales)
     raw_df = flow_cfg.get('source_df', None)
     source_df = list(raw_df) if hasattr(raw_df, '__iter__') else raw_df
@@ -79,9 +83,10 @@ def generate(cfg: DictConfig):
     if source_df: source_df = source_df[:n_levels_flow]
     paths = sorted(glob.glob(os.path.expandvars(os.path.expanduser(flow_cfg.embedding_glob))))
     assert paths, f'No embedding files found: {flow_cfg.embedding_glob}'
-    dataset = EmbeddingDataset(paths[:1], levels=levels)
+    dataset = EmbeddingDataset(paths, levels=levels)
     level_dims = dataset.level_dims
-    print(f'  level_dims: {level_dims}')
+    n_samples = gen.get('n_samples', 64)
+    print(f'  level_dims: {level_dims}, use_real={use_real}')
 
     # --- load PCA models ---
     pca_dir = Path(os.path.expandvars(os.path.expanduser(gen.pca_dir)))
@@ -89,36 +94,38 @@ def generate(cfg: DictConfig):
     for i in range(n_levels_flow):
         with open(pca_dir / f'pca_L{i}_n20.pkl', 'rb') as f:
             pca_models[i] = pickle.load(f)
-        print(f'  PCA L{i}: {pca_models[i].n_components_} components, orig_dim={pca_models[i].n_features_in_}')
 
-    # --- load flow model ---
-    t_dim = flow_cfg.get('t_dim', 64)
-    model_type = gen.get('flow_model_type', flow_cfg.get('model_type', 'per_level'))
-    self_condition = flow_cfg.get('self_condition', False)
-    if model_type == 'cross_level':
-        flow_model = CrossLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
-                                          n_layers=flow_cfg.n_layers,
-                                          n_attn_layers=flow_cfg.get('n_attn_layers', 2),
-                                          n_heads=flow_cfg.get('n_heads', 8),
-                                          self_condition=self_condition, t_dim=t_dim)
+    # --- get L0-L3 PCA vectors (flow or real) ---
+    if use_real:
+        idx = torch.randperm(len(dataset))[:n_samples]
+        x = dataset.embeddings[idx].to(device)
+        cjprint('Using REAL embeddings (sanity check)', color='yellow')
     else:
-        flow_model = PerLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
-                                        n_layers=flow_cfg.n_layers,
-                                        self_condition=self_condition, t_dim=t_dim)
-    flow_ckpt = os.path.expandvars(os.path.expanduser(gen.flow_ckpt))
-    flow_model = load_checkpoint(flow_model, flow_ckpt).to(device).eval()
-
-    # --- sample via Euler integration ---
-    n_samples = gen.get('n_samples', 64)
-    n_steps   = gen.get('n_steps', 100)
-    x = sample_source((n_samples, sum(level_dims)), device=device,
-                      source_df=source_df, source_scales=source_scales, level_dims=level_dims)
-    dt = 1.0 / n_steps
-    with torch.no_grad():
-        for step in range(n_steps):
-            t = torch.full((n_samples,), step * dt, device=device)
-            x = x + flow_model(x, t) * dt
-    print(f'  Flow samples: {x.shape}, min={x.min():.2f}, max={x.max():.2f}')
+        # load flow model and sample
+        t_dim = flow_cfg.get('t_dim', 64)
+        model_type = gen.get('flow_model_type', flow_cfg.get('model_type', 'per_level'))
+        self_condition = flow_cfg.get('self_condition', False)
+        if model_type == 'cross_level':
+            flow_model = CrossLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
+                                              n_layers=flow_cfg.n_layers,
+                                              n_attn_layers=flow_cfg.get('n_attn_layers', 2),
+                                              n_heads=flow_cfg.get('n_heads', 8),
+                                              self_condition=self_condition, t_dim=t_dim)
+        else:
+            flow_model = PerLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
+                                            n_layers=flow_cfg.n_layers,
+                                            self_condition=self_condition, t_dim=t_dim)
+        flow_ckpt = os.path.expandvars(os.path.expanduser(gen.flow_ckpt))
+        flow_model = load_checkpoint(flow_model, flow_ckpt).to(device).eval()
+        n_steps = gen.get('n_steps', 100)
+        x = sample_source((n_samples, sum(level_dims)), device=device,
+                          source_df=source_df, source_scales=source_scales, level_dims=level_dims)
+        dt = 1.0 / n_steps
+        with torch.no_grad():
+            for step in range(n_steps):
+                t = torch.full((n_samples,), step * dt, device=device)
+                x = x + flow_model(x, t) * dt
+        print(f'  Flow samples: {x.shape}, min={x.min():.2f}, max={x.max():.2f}')
 
     # --- inverse PCA → patch embeddings ---
     sample_patch_states = [build_patch_states(x[b], pca_models, level_dims, device)
@@ -169,13 +176,23 @@ def generate(cfg: DictConfig):
         recons = decoder(build_enc_out(all_levels))
     print(f'  Recon shape: {recons.shape}')
 
-    # --- 8x8 grid (same layout as viz_mae_recon) ---
+    # --- 8x8 grid ---
     grid = make_grid(binarize(recons[:64]), nrow=8, normalize=True)
     out_dir = Path(os.path.expandvars(os.path.expanduser(gen.get('output_dir', 'outputs/generate'))))
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / 'generated_piano_rolls.png'
+    label = 'real_sanity' if use_real else 'generated'
+    out_path = out_dir / f'{label}_piano_rolls.png'
     save_image(grid, out_path)
     print(f'Saved {out_path}')
+
+    # --- W&B ---
+    use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
+    if use_wandb:
+        wandb.init(project=cfg.wandb.flow_project, config=dict(cfg.generate),
+                   name=f"{cfg.tag}_{'real' if use_real else 'gen'}")
+        wandb.log({label: wandb.Image(grid, caption=label)})
+        wandb.finish()
+        print('Logged to W&B')
 
 # %% ../nbs/14_generate.ipynb #entry-point
 #| eval: false
