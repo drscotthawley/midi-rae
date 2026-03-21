@@ -96,7 +96,7 @@ generate:
   hmep_ckpt: $HOME/runs/midi-rae/lecun_hmep4_m9BX54/checkpoints/SwinMaskedEmbeddingPredictor_lecun_hmep4_m9BX54_best.pt
   hmep_n_summaries: [1, 2, 4, 8, 32, 64]
   decoder_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
-  n_samples: 4
+  n_samples: 64
   n_steps: 100
   output_dir: outputs/generate
 

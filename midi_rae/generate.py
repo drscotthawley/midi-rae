@@ -64,6 +64,7 @@ def build_enc_out(levels):
 # %% ../nbs/14_generate.ipynb #generate-fn
 def generate(cfg: DictConfig):
     """Full generation pipeline: Flow → inverse PCA → HMEP → Decoder → piano roll images."""
+    from torchvision.utils import make_grid, save_image
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     cjprint(f'Generating on {device}', color='cyan')
     gen = cfg.generate
@@ -78,7 +79,7 @@ def generate(cfg: DictConfig):
     if source_df: source_df = source_df[:n_levels_flow]
     paths = sorted(glob.glob(os.path.expandvars(os.path.expanduser(flow_cfg.embedding_glob))))
     assert paths, f'No embedding files found: {flow_cfg.embedding_glob}'
-    dataset = EmbeddingDataset(paths[:1], levels=levels)   # load just one chunk to get level_dims
+    dataset = EmbeddingDataset(paths[:1], levels=levels)
     level_dims = dataset.level_dims
     print(f'  level_dims: {level_dims}')
 
@@ -108,7 +109,7 @@ def generate(cfg: DictConfig):
     flow_model = load_checkpoint(flow_model, flow_ckpt).to(device).eval()
 
     # --- sample via Euler integration ---
-    n_samples = gen.get('n_samples', 4)
+    n_samples = gen.get('n_samples', 64)
     n_steps   = gen.get('n_steps', 100)
     x = sample_source((n_samples, sum(level_dims)), device=device,
                       source_df=source_df, source_scales=source_scales, level_dims=level_dims)
@@ -119,11 +120,11 @@ def generate(cfg: DictConfig):
             x = x + flow_model(x, t) * dt
     print(f'  Flow samples: {x.shape}, min={x.min():.2f}, max={x.max():.2f}')
 
-    # --- inverse PCA: flow vectors → patch embeddings ---
+    # --- inverse PCA → patch embeddings ---
     sample_patch_states = [build_patch_states(x[b], pca_models, level_dims, device)
                            for b in range(n_samples)]
 
-    # --- HMEP predicts fine levels from generated coarse levels ---
+    # --- HMEP predicts fine levels ---
     m = cfg.model
     n_stages = len(list(m.depths))
     enc_dims = [int(m.embed_dim * 2**(n_stages-1-i)) for i in range(n_stages)]
@@ -135,7 +136,7 @@ def generate(cfg: DictConfig):
 
     fine_levels = list(range(n_levels_flow, n_stages))
     fine_dims   = [enc_dims[li] for li in fine_levels]
-    fine_n_patches = [4**li for li in fine_levels]   # L4=4^4=256, L5=4^5=1024
+    fine_n_patches = [4**li for li in fine_levels]
 
     all_levels = batch_patch_states(sample_patch_states)
     for n_p, dim in zip(fine_n_patches, fine_dims):
@@ -146,26 +147,13 @@ def generate(cfg: DictConfig):
                                       mae_mask=torch.ones(n_p, device=device)))
     with torch.no_grad():
         hmep_preds, _ = hmep(build_enc_out(all_levels), mask_ratio=0)
-    print(f'  HMEP preds: {[p.shape for p in hmep_preds]}')
 
-    # replace zero fine levels with HMEP predictions
     for j, (n_p, dim) in enumerate(zip(fine_n_patches, fine_dims)):
         li = n_levels_flow + j
         pos = make_grid_pos(n_p, device)
         all_levels[li] = PatchState(emb=hmep_preds[li], pos=pos,
                                      non_empty=torch.ones(n_samples, n_p, device=device),
                                      mae_mask=torch.ones(n_p, device=device))
-    enc_out_hmep = build_enc_out(all_levels)
-
-    # also build zero fine-level version for ablation
-    all_levels_zero = list(batch_patch_states(sample_patch_states))
-    for n_p, dim in zip(fine_n_patches, fine_dims):
-        pos = make_grid_pos(n_p, device)
-        all_levels_zero.append(PatchState(emb=torch.zeros(n_samples, n_p, dim, device=device),
-                                           pos=pos,
-                                           non_empty=torch.ones(n_samples, n_p, device=device),
-                                           mae_mask=torch.ones(n_p, device=device)))
-    enc_out_zero = build_enc_out(all_levels_zero)
 
     # --- decode ---
     decoder_ckpt = os.path.expandvars(os.path.expanduser(gen.decoder_ckpt))
@@ -178,24 +166,15 @@ def generate(cfg: DictConfig):
     decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
 
     with torch.no_grad():
-        recons      = decoder(enc_out_hmep)
-        recons_zero = decoder(enc_out_zero)
+        recons = decoder(build_enc_out(all_levels))
     print(f'  Recon shape: {recons.shape}')
 
-    # --- save ---
+    # --- 8x8 grid (same layout as viz_mae_recon) ---
+    grid = make_grid(binarize(recons[:64]), nrow=8, normalize=True)
     out_dir = Path(os.path.expandvars(os.path.expanduser(gen.get('output_dir', 'outputs/generate'))))
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2, n_samples, figsize=(4*n_samples, 8))
-    for i in range(n_samples):
-        axes[0, i].imshow(binarize(recons[i, 0]).cpu().numpy(), aspect='auto', origin='lower', cmap='gray_r')
-        axes[0, i].set_title(f'HMEP — {i+1}'); axes[0, i].axis('off')
-        axes[1, i].imshow(binarize(recons_zero[i, 0]).cpu().numpy(), aspect='auto', origin='lower', cmap='gray_r')
-        axes[1, i].set_title(f'Zero L4/L5 — {i+1}'); axes[1, i].axis('off')
-    plt.suptitle('Generated Piano Rolls: HMEP L4/L5 (top) vs Zero L4/L5 (bottom)')
-    plt.tight_layout()
     out_path = out_dir / 'generated_piano_rolls.png'
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
-    plt.close()
+    save_image(grid, out_path)
     print(f'Saved {out_path}')
 
 # %% ../nbs/14_generate.ipynb #entry-point
