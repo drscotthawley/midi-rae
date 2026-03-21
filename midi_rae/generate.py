@@ -63,18 +63,17 @@ def build_enc_out(levels):
 
 # %% ../nbs/14_generate.ipynb #generate-fn
 def generate(cfg: DictConfig):
-    """Full generation pipeline: Flow → inverse PCA → HMEP → Decoder → piano roll images.
-    If cfg.generate.use_real=True, skips the flow model and uses real PCA embeddings instead
-    (sanity check that the rest of the pipeline is working)."""
+    """Full generation pipeline logged to W&B.
+    Always produces two grids: flow-generated and real (sanity check) embeddings
+    both put through inverse PCA → HMEP → decoder."""
     import wandb
     from torchvision.utils import make_grid, save_image
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     cjprint(f'Generating on {device}', color='cyan')
     gen = cfg.generate
     flow_cfg = cfg.flow
-    use_real = gen.get('use_real', False)
 
-    # --- infer level_dims from embedding dataset ---
+    # --- level_dims from dataset ---
     source_scales = list(flow_cfg.source_scales)
     raw_df = flow_cfg.get('source_df', None)
     source_df = list(raw_df) if hasattr(raw_df, '__iter__') else raw_df
@@ -86,113 +85,109 @@ def generate(cfg: DictConfig):
     dataset = EmbeddingDataset(paths, levels=levels)
     level_dims = dataset.level_dims
     n_samples = gen.get('n_samples', 64)
-    print(f'  level_dims: {level_dims}, use_real={use_real}')
+    print(f'  level_dims: {level_dims}')
 
-    # --- load PCA models ---
+    # --- PCA models ---
     pca_dir = Path(os.path.expandvars(os.path.expanduser(gen.pca_dir)))
     pca_models = {}
     for i in range(n_levels_flow):
         with open(pca_dir / f'pca_L{i}_n20.pkl', 'rb') as f:
             pca_models[i] = pickle.load(f)
 
-    # --- get L0-L3 PCA vectors (flow or real) ---
-    if use_real:
-        idx = torch.randperm(len(dataset))[:n_samples]
-        x = dataset.embeddings[idx].to(device)
-        cjprint('Using REAL embeddings (sanity check)', color='yellow')
+    # --- flow model ---
+    t_dim = flow_cfg.get('t_dim', 64)
+    model_type = gen.get('flow_model_type', flow_cfg.get('model_type', 'per_level'))
+    self_condition = flow_cfg.get('self_condition', False)
+    if model_type == 'cross_level':
+        flow_model = CrossLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
+                                          n_layers=flow_cfg.n_layers,
+                                          n_attn_layers=flow_cfg.get('n_attn_layers', 2),
+                                          n_heads=flow_cfg.get('n_heads', 8),
+                                          self_condition=self_condition, t_dim=t_dim)
     else:
-        # load flow model and sample
-        t_dim = flow_cfg.get('t_dim', 64)
-        model_type = gen.get('flow_model_type', flow_cfg.get('model_type', 'per_level'))
-        self_condition = flow_cfg.get('self_condition', False)
-        if model_type == 'cross_level':
-            flow_model = CrossLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
-                                              n_layers=flow_cfg.n_layers,
-                                              n_attn_layers=flow_cfg.get('n_attn_layers', 2),
-                                              n_heads=flow_cfg.get('n_heads', 8),
-                                              self_condition=self_condition, t_dim=t_dim)
-        else:
-            flow_model = PerLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
-                                            n_layers=flow_cfg.n_layers,
-                                            self_condition=self_condition, t_dim=t_dim)
-        flow_ckpt = os.path.expandvars(os.path.expanduser(gen.flow_ckpt))
-        flow_model = load_checkpoint(flow_model, flow_ckpt).to(device).eval()
-        n_steps = gen.get('n_steps', 100)
-        x = sample_source((n_samples, sum(level_dims)), device=device,
+        flow_model = PerLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
+                                        n_layers=flow_cfg.n_layers,
+                                        self_condition=self_condition, t_dim=t_dim)
+    flow_ckpt = os.path.expandvars(os.path.expanduser(gen.flow_ckpt))
+    flow_model = load_checkpoint(flow_model, flow_ckpt).to(device).eval()
+
+    # --- sample generated embeddings ---
+    n_steps = gen.get('n_steps', 100)
+    x_gen = sample_source((n_samples, sum(level_dims)), device=device,
                           source_df=source_df, source_scales=source_scales, level_dims=level_dims)
-        dt = 1.0 / n_steps
-        with torch.no_grad():
-            for step in range(n_steps):
-                t = torch.full((n_samples,), step * dt, device=device)
-                x = x + flow_model(x, t) * dt
-        print(f'  Flow samples: {x.shape}, min={x.min():.2f}, max={x.max():.2f}')
+    dt = 1.0 / n_steps
+    with torch.no_grad():
+        for step in range(n_steps):
+            t = torch.full((n_samples,), step * dt, device=device)
+            x_gen = x_gen + flow_model(x_gen, t) * dt
+    print(f'  Flow samples: {x_gen.shape}')
 
-    # --- inverse PCA → patch embeddings ---
-    sample_patch_states = [build_patch_states(x[b], pca_models, level_dims, device)
-                           for b in range(n_samples)]
+    # --- real embeddings (same n_samples, random subset) ---
+    idx = torch.randperm(len(dataset))[:n_samples]
+    x_real = dataset.embeddings[idx].to(device)
 
-    # --- HMEP predicts fine levels ---
+    # --- HMEP + decoder setup (shared) ---
     m = cfg.model
     n_stages = len(list(m.depths))
     enc_dims = [int(m.embed_dim * 2**(n_stages-1-i)) for i in range(n_stages)]
     raw_ns = gen.get('hmep_n_summaries', None)
     n_summaries = tuple(raw_ns) if raw_ns is not None else None
     hmep = SwinMaskedEmbeddingPredictor(dims=enc_dims, n_summaries=n_summaries)
-    hmep_ckpt = os.path.expandvars(os.path.expanduser(gen.hmep_ckpt))
-    hmep = load_checkpoint(hmep, hmep_ckpt).to(device).eval()
+    hmep = load_checkpoint(hmep, os.path.expandvars(os.path.expanduser(gen.hmep_ckpt))).to(device).eval()
 
-    fine_levels = list(range(n_levels_flow, n_stages))
-    fine_dims   = [enc_dims[li] for li in fine_levels]
-    fine_n_patches = [4**li for li in fine_levels]
-
-    all_levels = batch_patch_states(sample_patch_states)
-    for n_p, dim in zip(fine_n_patches, fine_dims):
-        pos = make_grid_pos(n_p, device)
-        all_levels.append(PatchState(emb=torch.zeros(n_samples, n_p, dim, device=device),
-                                      pos=pos,
-                                      non_empty=torch.ones(n_samples, n_p, device=device),
-                                      mae_mask=torch.ones(n_p, device=device)))
-    with torch.no_grad():
-        hmep_preds, _ = hmep(build_enc_out(all_levels), mask_ratio=0)
-
-    for j, (n_p, dim) in enumerate(zip(fine_n_patches, fine_dims)):
-        li = n_levels_flow + j
-        pos = make_grid_pos(n_p, device)
-        all_levels[li] = PatchState(emb=hmep_preds[li], pos=pos,
-                                     non_empty=torch.ones(n_samples, n_p, device=device),
-                                     mae_mask=torch.ones(n_p, device=device))
-
-    # --- decode ---
-    decoder_ckpt = os.path.expandvars(os.path.expanduser(gen.decoder_ckpt))
     decoder = SwinDecoder(img_height=cfg.data.image_size, img_width=cfg.data.image_size,
                            patch_h=m.patch_h, patch_w=m.patch_w,
                            out_channels=cfg.data.in_channels,
                            embed_dim=m.embed_dim, depths=list(m.dec_depths),
                            num_heads=list(m.dec_num_heads), window_size=m.window_size,
                            mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
-    decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
+    decoder = load_checkpoint(decoder, os.path.expandvars(os.path.expanduser(gen.decoder_ckpt))).to(device).eval()
 
-    with torch.no_grad():
-        recons = decoder(build_enc_out(all_levels))
-    print(f'  Recon shape: {recons.shape}')
+    fine_levels = list(range(n_levels_flow, n_stages))
+    fine_dims   = [enc_dims[li] for li in fine_levels]
+    fine_n_patches = [4**li for li in fine_levels]
 
-    # --- 8x8 grid ---
-    grid = make_grid(binarize(recons[:64]), nrow=8, normalize=True)
+    def run_pipeline(x):
+        """inverse PCA → HMEP → decoder for a batch of PCA vectors x."""
+        states = [build_patch_states(x[b], pca_models, level_dims, device) for b in range(len(x))]
+        all_levels = batch_patch_states(states)
+        for n_p, dim in zip(fine_n_patches, fine_dims):
+            pos = make_grid_pos(n_p, device)
+            all_levels.append(PatchState(emb=torch.zeros(len(x), n_p, dim, device=device),
+                                          pos=pos,
+                                          non_empty=torch.ones(len(x), n_p, device=device),
+                                          mae_mask=torch.ones(n_p, device=device)))
+        with torch.no_grad():
+            hmep_preds, _ = hmep(build_enc_out(all_levels), mask_ratio=0)
+        for j, (n_p, dim) in enumerate(zip(fine_n_patches, fine_dims)):
+            li = n_levels_flow + j
+            all_levels[li] = PatchState(emb=hmep_preds[li], pos=make_grid_pos(n_p, device),
+                                         non_empty=torch.ones(len(x), n_p, device=device),
+                                         mae_mask=torch.ones(n_p, device=device))
+        with torch.no_grad():
+            return decoder(build_enc_out(all_levels))
+
+    recons_gen  = run_pipeline(x_gen)
+    recons_real = run_pipeline(x_real)
+    print(f'  Recon shape: {recons_gen.shape}')
+
+    grid_gen  = make_grid(binarize(recons_gen[:64]),  nrow=8, normalize=True)
+    grid_real = make_grid(binarize(recons_real[:64]), nrow=8, normalize=True)
+
     out_dir = Path(os.path.expandvars(os.path.expanduser(gen.get('output_dir', 'outputs/generate'))))
     out_dir.mkdir(parents=True, exist_ok=True)
-    label = 'real_sanity' if use_real else 'generated'
-    out_path = out_dir / f'{label}_piano_rolls.png'
-    save_image(grid, out_path)
-    print(f'Saved {out_path}')
+    save_image(grid_gen,  out_dir / 'generated_piano_rolls.png')
+    save_image(grid_real, out_dir / 'real_piano_rolls.png')
 
-    # --- W&B ---
     use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
     if use_wandb:
         wandb.init(project=cfg.wandb.flow_project, config=dict(cfg.generate),
-                   name=f"{cfg.tag}_{'real' if use_real else 'gen'}")
-        wandb.log({label: wandb.Image(grid, caption=label)})
+                   name=f"{cfg.tag}_gen")
+        wandb.log({'generated': wandb.Image(grid_gen,  caption='flow generated'),
+                   'real':      wandb.Image(grid_real, caption='real (inverse PCA sanity)')})
         wandb.finish()
         print('Logged to W&B')
+    print('Done.')
 
 # %% ../nbs/14_generate.ipynb #entry-point
 #| eval: false
