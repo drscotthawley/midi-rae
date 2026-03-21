@@ -92,7 +92,9 @@ encoder_ckpt: $HOME/runs/midi-rae/exp9_XZkjbX/checkpoints/SwinEncoder_exp9_XZkjb
 generate:
   pca_dir: $HOME/datasets/POP909_pca_exp26
   flow_ckpt: $HOME/runs/midi-rae/flow15_cross_mw6I5r/checkpoints/CrossLevelFlowModel_flow_CrossLevelFlowModel_best.pt
+  flow_model_type: cross_level
   hmep_ckpt: $HOME/runs/midi-rae/lecun_hmep4_m9BX54/checkpoints/SwinMaskedEmbeddingPredictor_lecun_hmep4_m9BX54_best.pt
+  hmep_n_summaries: [1, 2, 4, 8, 32, 64]
   decoder_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
   n_samples: 4
   n_steps: 100

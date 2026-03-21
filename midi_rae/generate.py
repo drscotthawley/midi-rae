@@ -92,7 +92,7 @@ def generate(cfg: DictConfig):
 
     # --- load flow model ---
     t_dim = flow_cfg.get('t_dim', 64)
-    model_type = flow_cfg.get('model_type', 'per_level')
+    model_type = gen.get('flow_model_type', flow_cfg.get('model_type', 'per_level'))
     self_condition = flow_cfg.get('self_condition', False)
     if model_type == 'cross_level':
         flow_model = CrossLevelFlowModel(level_dims=level_dims, h_dim=flow_cfg.h_dim,
@@ -123,11 +123,13 @@ def generate(cfg: DictConfig):
     sample_patch_states = [build_patch_states(x[b], pca_models, level_dims, device)
                            for b in range(n_samples)]
 
-    # --- HMEP predicts L4/L5 from generated L0-L3 ---
+    # --- HMEP predicts fine levels from generated coarse levels ---
     m = cfg.model
     n_stages = len(list(m.depths))
     enc_dims = [int(m.embed_dim * 2**(n_stages-1-i)) for i in range(n_stages)]
-    hmep = SwinMaskedEmbeddingPredictor(dims=enc_dims)
+    raw_ns = gen.get('hmep_n_summaries', None)
+    n_summaries = tuple(raw_ns) if raw_ns is not None else None
+    hmep = SwinMaskedEmbeddingPredictor(dims=enc_dims, n_summaries=n_summaries)
     hmep_ckpt = os.path.expandvars(os.path.expanduser(gen.hmep_ckpt))
     hmep = load_checkpoint(hmep, hmep_ckpt).to(device).eval()
 
@@ -146,7 +148,7 @@ def generate(cfg: DictConfig):
         hmep_preds, _ = hmep(build_enc_out(all_levels), mask_ratio=0)
     print(f'  HMEP preds: {[p.shape for p in hmep_preds]}')
 
-    # replace zero L4/L5 with HMEP predictions
+    # replace zero fine levels with HMEP predictions
     for j, (n_p, dim) in enumerate(zip(fine_n_patches, fine_dims)):
         li = n_levels_flow + j
         pos = make_grid_pos(n_p, device)
@@ -155,7 +157,7 @@ def generate(cfg: DictConfig):
                                      mae_mask=torch.ones(n_p, device=device))
     enc_out_hmep = build_enc_out(all_levels)
 
-    # also build zero-L4/L5 version for ablation
+    # also build zero fine-level version for ablation
     all_levels_zero = list(batch_patch_states(sample_patch_states))
     for n_p, dim in zip(fine_n_patches, fine_dims):
         pos = make_grid_pos(n_p, device)
