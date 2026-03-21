@@ -58,7 +58,7 @@ training:
 
 
 preencode:
-  output_dir: $HOME/datasets/POP909_encoded
+  output_dir: $HOME/datasets/POP909_encoded_exp26
   num_passes: 3           # number of passes through the dataset
 
 flow:
