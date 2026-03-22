@@ -106,6 +106,7 @@ flow2:
   steps_per_epoch: 1000
   save_every: 10
   eval_every: 10
+  viz_every: 10
   lr_restart_epochs: 500
   lr_warmup_frac: 0.15
   ema_eta: 0.97
