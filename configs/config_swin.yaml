@@ -92,7 +92,7 @@ flow:
 flow2:
   pca_dir: $HOME/datasets/POP909_pca_exp26         # dir with *_pca20.pt (coarse L0-L3)
   encoded_dir: $HOME/datasets/POP909_encoded_exp26 # dir with train_chunk*.pt (fine L4/L5)
-  coarse_ckpt: null                                # path to trained coarse flow checkpoint
+  coarse_ckpt: $HOME/runs/midi-rae/flow15_cross_mw6I5r/checkpoints/CrossLevelFlowModel_flow_CrossLevelFlowModel_best.pt
   checkpoint_dir: checkpoints/flow2
   h_dim: 256
   n_layers: 4
