@@ -35,16 +35,18 @@ def load_level_embeddings(encoded_dir: Path, split: str, level: int = 0, key: st
 # %% ../nbs/11_fit_pca.ipynb #aa110006
 def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
                      n_components: int = 20, key: str = 'emb2',
-                     fine_levels: list = None, fine_n_components: int = None):
+                     fine_levels: list = None, fine_n_components = None):
     """Fit PCA on per-patch training embeddings for each level, then project and save per-chunk.
 
     PCA is fit on (N_total * N_patches, D) — all patches from all samples, preserving spatial variance.
     Levels where D <= n_components skip PCA (identity) to avoid fitting on hundreds of millions of rows.
 
-    Coarse levels (not in fine_levels) use n_components and are saved as:
-      <output_dir>/{split}_chunk{idx}_pca{n_components}.pt   — keys 'L0', 'L1', ...
-    Fine levels (in fine_levels, if provided) use fine_n_components and are saved as:
-      <output_dir>/{split}_chunk{idx}_fine_pca{fine_n_components}.pt  — keys 'L4', 'L5', ...
+    fine_n_components: int (same for all fine levels) or list (one per fine level).
+      e.g. fine_n_components=[4, 3] for L4=4 components, L5=3 components.
+
+    Coarse output: <output_dir>/{split}_chunk{idx}_pca{n_components}.pt   — keys 'L0', 'L1', ...
+    Fine output:   <output_dir>/{split}_chunk{idx}_fine_pca{suffix}.pt    — keys 'L4', 'L5', ...
+      where suffix is e.g. '4_3' for [4,3] or '4' for 4.
     """
     encoded_dir     = Path(encoded_dir)
     output_dir      = Path(output_dir)
@@ -52,7 +54,6 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
 
     fine_levels_set = set(fine_levels) if fine_levels else set()
 
-    # Detect number of levels from first chunk if not specified
     if levels is None:
         sample = torch.load(sorted(encoded_dir.glob("train_chunk*.pt"))[0], weights_only=False)
         levels = list(range(len(sample[0][key])))
@@ -60,12 +61,23 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
     coarse_levels = [l for l in levels if l not in fine_levels_set]
     active_fine   = [l for l in levels if l in fine_levels_set]
 
-    def _fit_and_project(level_list, n_comp, file_suffix):
-        """Fit PCA on level_list at n_comp components; save PKLs + per-chunk files."""
+    # Normalize fine_n_components to per-level list and build file suffix
+    if active_fine and fine_n_components is not None:
+        if isinstance(fine_n_components, int):
+            fn_list = [fine_n_components] * len(active_fine)
+            fn_suffix = f"fine_pca{fine_n_components}"
+        else:
+            fn_list = list(fine_n_components)
+            fn_suffix = "fine_pca" + "_".join(str(n) for n in fn_list)
+    else:
+        fn_list, fn_suffix = [], None
+
+    def _fit_and_project(level_list, n_comp_list, file_suffix):
+        """Fit PCA on level_list; save PKLs + per-chunk files."""
         if not level_list:
             return {}
         pcas = {}
-        for level in level_list:
+        for level, n_comp in zip(level_list, n_comp_list):
             sample = torch.load(sorted(encoded_dir.glob("train_chunk*.pt"))[0], weights_only=False)
             D = sample[0][key][level].shape[-1]
             n = min(n_comp, D)
@@ -91,7 +103,7 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
             for chunk_path in tqdm(chunks, desc=split):
                 data = torch.load(chunk_path, weights_only=False)
                 out = {}
-                for level in level_list:
+                for level, n_comp in zip(level_list, n_comp_list):
                     embs = torch.cat([rec[key][level].float() for rec in data], dim=0)
                     N, P, D = embs.shape
                     if pcas[level] is None:
@@ -105,8 +117,10 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
             print(f"  done → {output_dir}")
         return pcas
 
-    coarse_pcas = _fit_and_project(coarse_levels, n_components, f"pca{n_components}")
-    fine_pcas   = (_fit_and_project(active_fine, fine_n_components, f"fine_pca{fine_n_components}")
+    coarse_pcas = _fit_and_project(coarse_levels,
+                                    [n_components] * len(coarse_levels),
+                                    f"pca{n_components}")
+    fine_pcas   = (_fit_and_project(active_fine, fn_list, fn_suffix)
                    if active_fine else {})
     return coarse_pcas, fine_pcas
 
@@ -121,7 +135,8 @@ def fit_pca_main(cfg: DictConfig):
     n_components      = int(fc.get('n_components', 20))
     key               = str(fc.get('key', 'emb2'))
     fine_levels       = list(fc.fine_levels) if fc.get('fine_levels') else None
-    fine_n_components = int(fc.fine_n_components) if fc.get('fine_n_components') else None
+    raw_fn = fc.get('fine_n_components')
+    fine_n_components = (list(raw_fn) if hasattr(raw_fn, '__iter__') else int(raw_fn)) if raw_fn is not None else None
     fit_and_save_pca(encoded_dir, output_dir, levels, n_components, key,
                      fine_levels=fine_levels, fine_n_components=fine_n_components)
     print("FINISHED")

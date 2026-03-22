@@ -444,8 +444,9 @@ class ConditionalFlowDataset(Dataset):
         fine_levels:      which level indices to use for fine data, default [4, 5]
         emb_key:          embedding key in raw chunk dicts, default 'emb1'
         split:            'train' or 'val'
-        fine_pca_dir:     if set, load fine from *_fine_pca{fine_n_components}.pt files (upfront)
-        fine_n_components: required when fine_pca_dir is set; e.g. 3
+        fine_pca_dir:     if set, load fine from *_fine_pca{suffix}.pt files (upfront)
+        fine_n_components: int or list-of-ints; required when fine_pca_dir is set.
+                           e.g. 4 → suffix 'fine_pca4'; [4,3] → suffix 'fine_pca4_3'
     """
     def __init__(self, pca_dir, encoded_dir=None, pca_levels=None, fine_levels=None,
                  emb_key='emb1', split='train', fine_pca_dir=None, fine_n_components=None):
@@ -482,13 +483,17 @@ class ConditionalFlowDataset(Dataset):
         if fine_pca_dir is not None:
             assert fine_n_components is not None, "fine_n_components required when fine_pca_dir is set"
             fine_pca_dir = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
+            # Build filename suffix: int → 'fine_pca4'; list → 'fine_pca4_3'
+            if isinstance(fine_n_components, int):
+                fn_suffix = f"fine_pca{fine_n_components}"
+            else:
+                fn_suffix = "fine_pca" + "_".join(str(n) for n in fine_n_components)
             fine_files = sorted(_glob.glob(
-                os.path.join(fine_pca_dir, f'{split}_chunk*_fine_pca{fine_n_components}.pt')))
-            assert fine_files, \
-                f"No {split}_chunk*_fine_pca{fine_n_components}.pt in {fine_pca_dir}"
+                os.path.join(fine_pca_dir, f'{split}_chunk*_{fn_suffix}.pt')))
+            assert fine_files, f"No {split}_chunk*_{fn_suffix}.pt in {fine_pca_dir}"
             assert len(fine_files) == len(pca_files), \
                 f"Chunk count mismatch: {len(pca_files)} coarse vs {len(fine_files)} fine"
-            print(f"  Loading fine PCA data ({len(fine_files)} chunks, n={fine_n_components})...", flush=True)
+            print(f"  Loading fine PCA data ({len(fine_files)} chunks, {fn_suffix})...", flush=True)
             fine_all = []
             for fp in fine_files:
                 fd = torch.load(fp, weights_only=False)
