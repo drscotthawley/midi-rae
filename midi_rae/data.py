@@ -5,7 +5,8 @@
 # %% auto #0
 __all__ = ['SCHEME_NAMES', 'TARGET_NAMES', 'shift_no_wrap', 'sample_shift', 'note_length_weights', 'AnchorDataset',
            'sample_shifts', 'PRPairDataset', 'ShiftedTripletDataset', 'PreEncodedChunkDataset', 'ChunkShuffleSampler',
-           'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out', 'EmbeddingDataset']
+           'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out', 'EmbeddingDataset',
+           'ConditionalFlowDataset']
 
 # %% ../nbs/01_data.ipynb #b96051a7
 import os 
@@ -421,3 +422,75 @@ class EmbeddingDataset(Dataset):
 
     def __len__(self): return len(self.embeddings)
     def __getitem__(self, i): return self.embeddings[i]
+
+# %% ../nbs/01_data.ipynb #jflcahvd7s
+class ConditionalFlowDataset(Dataset):
+    """Paired dataset for training ConditionalFineFlowModel.
+
+    Returns (x_coarse, x_fine) pairs where:
+      x_coarse : flat PCA-compressed L0-L3  [sum_pca_dims]  — matches first-stage flow output
+      x_fine   : flat raw L4+L5 embeddings  [N_L4*D_L4 + N_L5*D_L5]
+
+    Chunks are aligned by index: train_chunk00000_pca20.pt pairs with
+    train_chunk00000.pt for guaranteed sample-level correspondence.
+
+    Args:
+        pca_dir:      directory containing train_chunk*_pca20.pt files (L0-L3)
+        encoded_dir:  directory containing train_chunk*.pt  files (raw all levels)
+        pca_levels:   which PCA keys to load, default ['L0','L1','L2','L3']
+        fine_levels:  which raw level indices to load, default [4, 5]
+        emb_key:      embedding key in raw chunk dicts, default 'emb1'
+        split:        'train' or 'val' (filters chunk filenames)
+    """
+    def __init__(self, pca_dir, encoded_dir, pca_levels=None, fine_levels=None,
+                 emb_key='emb1', split='train'):
+        import glob as _glob
+        pca_dir     = os.path.expandvars(os.path.expanduser(str(pca_dir)))
+        encoded_dir = os.path.expandvars(os.path.expanduser(str(encoded_dir)))
+        pca_levels  = pca_levels  or ['L0', 'L1', 'L2', 'L3']
+        fine_levels = fine_levels or [4, 5]
+
+        pca_files = sorted(_glob.glob(os.path.join(pca_dir,     f'{split}_chunk*_pca20.pt')))
+        raw_files = sorted(_glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
+        # Keep only raw files that are NOT pca files (exclude *_pca20.pt)
+        raw_files = [f for f in raw_files if not f.endswith('_pca20.pt')]
+        assert pca_files, f"No {split}_chunk*_pca20.pt in {pca_dir}"
+        assert raw_files, f"No {split}_chunk*.pt in {encoded_dir}"
+        assert len(pca_files) == len(raw_files), \
+            f"Chunk count mismatch: {len(pca_files)} pca vs {len(raw_files)} raw"
+
+        coarse_all, fine_all = [], []
+        for pf, rf in zip(pca_files, raw_files):
+            # --- Coarse: PCA L0-L3 ---
+            pca_data = torch.load(pf, weights_only=False)
+            tensors  = [pca_data[lv].float() for lv in pca_levels]
+            tensors  = [t.flatten(1) if t.dim() == 3 else t for t in tensors]
+            if not hasattr(self, '_coarse_level_dims'):
+                self._coarse_level_dims = [t.shape[1] for t in tensors]
+            coarse_all.append(torch.cat(tensors, dim=1))  # (N_chunk, sum_pca_dims)
+
+            # --- Fine: raw L4, L5 from preencode chunks ---
+            raw_data  = torch.load(rf, weights_only=False)   # list of batch-dicts
+            fine_lvls = []
+            for batch_rec in raw_data:
+                levels_tensors = [batch_rec[emb_key][li].float()  # (B, N_patches, D)
+                                  for li in fine_levels]
+                levels_flat = [t.flatten(1) for t in levels_tensors]  # (B, N*D) each
+                fine_lvls.append(torch.cat(levels_flat, dim=1))       # (B, sum_fine_dims)
+            fine_chunk = torch.cat(fine_lvls, dim=0)                  # (N_chunk, sum_fine_dims)
+            if not hasattr(self, '_fine_level_dims'):
+                self._fine_level_dims = [t.flatten(1).shape[1] for t in
+                                         [raw_data[0][emb_key][li].float() for li in fine_levels]]
+            fine_all.append(fine_chunk)
+
+        self.coarse = torch.cat(coarse_all, dim=0)   # (N_total, sum_pca_dims)
+        self.fine   = torch.cat(fine_all,   dim=0)   # (N_total, sum_fine_dims)
+        assert len(self.coarse) == len(self.fine), \
+            f"Sample count mismatch after loading: {len(self.coarse)} vs {len(self.fine)}"
+        self.coarse_level_dims = self._coarse_level_dims
+        self.fine_level_dims   = self._fine_level_dims
+
+    def __len__(self): return len(self.coarse)
+
+    def __getitem__(self, i):
+        return self.coarse[i], self.fine[i]
