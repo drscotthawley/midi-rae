@@ -1,0 +1,11 @@
+defaults:
+  - config_swin_razer
+  - _self_
+
+flow2:
+  lr: 5e-3                   # aggressive LR — gradient clipping keeps it in bounds
+  lr_restart_epochs: 999999  # effectively flat LR (no cosine restarts during training)
+  lr_warmup_frac: 0.0        # no warmup — jump straight to peak LR
+  grad_clip: 0.1             # tight clipping to compensate for high LR
+  ema_eta: 0.9               # fast EMA tracking
+  fine_source_scales: [1.0, 1.0]

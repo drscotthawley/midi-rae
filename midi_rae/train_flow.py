@@ -1155,6 +1155,7 @@ def _run_flow2(cfg: DictConfig):
         cfg               = cfg,
         lr_restart_epochs = flow2.get('lr_restart_epochs', 500),
         lr_warmup_frac    = flow2.get('lr_warmup_frac', 0.15),
+        grad_clip         = flow2.get('grad_clip', 1.0),
         ema_eta           = flow2.get('ema_eta', 0.97),
         ema_start_epoch   = flow2.get('ema_start_epoch', 100),
         fine_level_names  = fine_level_names,
