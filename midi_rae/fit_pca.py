@@ -124,6 +124,7 @@ def fit_pca_main(cfg: DictConfig):
     fine_n_components = int(fc.fine_n_components) if fc.get('fine_n_components') else None
     fit_and_save_pca(encoded_dir, output_dir, levels, n_components, key,
                      fine_levels=fine_levels, fine_n_components=fine_n_components)
+    print("FINISHED")
 
 if __name__ == '__main__' and 'ipykernel' not in __import__('sys').modules:
     fit_pca_main()
