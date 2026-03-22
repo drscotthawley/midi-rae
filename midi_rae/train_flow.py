@@ -153,17 +153,12 @@ class FiLM(nn.Module):
     Applies adaptive LayerNorm: output = (1 + γ(cond)) * LN(x) + β(cond).
     Weights initialised to zero so the module starts as a plain LayerNorm
     (identity modulation), giving stable early training.
-
-    Args:
-        cond_dim: dimensionality of the conditioning vector.
-        feat_dim: dimensionality of the features to modulate.
     """
     def __init__(self, cond_dim, feat_dim):
         super().__init__()
         self.norm  = nn.LayerNorm(feat_dim)
         self.gamma = nn.Linear(cond_dim, feat_dim)
         self.beta  = nn.Linear(cond_dim, feat_dim)
-        # Init: γ≈0, β≈0  →  output ≈ LN(x) at the start of training
         nn.init.zeros_(self.gamma.weight); nn.init.zeros_(self.gamma.bias)
         nn.init.zeros_(self.beta.weight);  nn.init.zeros_(self.beta.bias)
 
@@ -172,121 +167,133 @@ class FiLM(nn.Module):
 
 
 class ConditionalFineFlowModel(nn.Module):
-    """Second-stage flow model: generates fine-level embeddings (L4/L5)
-    conditioned on coarse-level embeddings (L0-L3) from a first-stage flow.
+    """Per-patch flow model for fine levels (L4, L5).
 
-    Design:
-      - Input LayerNorm on each level before projection (normalises scale
-        differences between levels; L4/L5 dims are tiny vs L0-L3).
-      - All level tokens (cond + target) are projected to h_dim and jointly
-        processed by a pre-norm TransformerEncoder so target tokens can freely
-        attend to coarse context.
-      - A pooled summary of the attended coarse tokens drives FiLM layers
-        that modulate each target-level MLP block.  FiLM = AdaLN: the cond
-        signal controls *scale and shift*, not just additive bias.
-      - Time embedding: same sinusoidal + two-layer MLP as CrossLevelFlowModel.
-        **The caller must pass the same `t` to both models during sampling**
-        (enforced in generate_samples_conditional via a shared timestep grid).
-      - Output heads exist only for target levels; coarse tokens have no
-        velocity output and are detached from the loss.
+    The original single-token-per-level design projected the entire L4 level
+    (256 patches × 5 comp = 1280d) through one Linear into h_dim, losing all
+    per-patch identity.  Every patch received the same velocity.
+
+    This model treats each patch as its own token and processes them with
+    *shared* MLP weights — like a per-patch MLP applied in parallel.
+    Conditioning comes from spatially-aligned parent tokens at each coarse level,
+    looked up via precomputed parent indices (registered as buffers).  No
+    within-level attention is needed: each patch is independent given its parents.
 
     Args:
-        cond_dims:    list of flattened dims for conditioning levels (L0-L3).
-                      Should be PCA-compressed dims to match first-stage output.
-        target_dims:  list of flattened dims for target levels (L4, L5).
-        h_dim:        internal hidden dimension.
-        n_layers:     total depth: 1 attention block + (n_layers-1) FiLM-MLP blocks.
-        n_attn_layers: transformer encoder depth (seq_len = n_cond+n_target ≈ 6).
-        n_heads:      attention heads (h_dim must be divisible by n_heads).
-        t_dim:        sinusoidal time embedding dim (match first-stage model).
+        cond_dims:     flattened PCA dims for coarse levels, e.g. [20, 80, 320, 1280]
+        target_dims:   flattened PCA dims for fine levels,   e.g. [1280, 3072]
+        target_n_comp: PCA components per fine patch,        e.g. [5, 3]
+        h_dim:         shared hidden dim
+        n_layers:      number of pre-norm residual MLP blocks
+        t_dim:         sinusoidal time embedding dim
+        cond_n_comp:   PCA components per coarse patch (default 20)
     """
-    def __init__(self, cond_dims, target_dims, h_dim=256, n_layers=4,
-                 n_attn_layers=2, n_heads=8, t_dim=64):
+    def __init__(self, cond_dims, target_dims, target_n_comp,
+                 h_dim=256, n_layers=4, t_dim=64, cond_n_comp=20):
         super().__init__()
-        self.cond_dims   = list(cond_dims)
-        self.target_dims = list(target_dims)
-        self.t_dim = t_dim
-        n_cond = len(cond_dims)
+        self.cond_dims     = list(cond_dims)
+        self.target_dims   = list(target_dims)
+        self.target_n_comp = list(target_n_comp)
+        self.cond_n_comp   = cond_n_comp
+        self.t_dim         = t_dim
 
-        # --- Input normalisation (pre-projection LayerNorm per level) ---
-        self.cond_norms   = nn.ModuleList([nn.LayerNorm(d) for d in cond_dims])
-        self.target_norms = nn.ModuleList([nn.LayerNorm(d) for d in target_dims])
+        cond_n_patches   = [d // cond_n_comp for d in cond_dims]
+        target_n_patches = [d // nc for d, nc in zip(target_dims, target_n_comp)]
+        cond_grids       = [self._square_grid(n) for n in cond_n_patches]
+        target_grids     = [self._square_grid(n) for n in target_n_patches]
+        self.target_n_patches = target_n_patches
+        self._cond_n_patches  = cond_n_patches
 
-        # --- Per-level input projections → h_dim ---
-        self.cond_in   = nn.ModuleList([nn.Linear(d, h_dim) for d in cond_dims])
-        self.target_in = nn.ModuleList([nn.Linear(d, h_dim) for d in target_dims])
+        # Precompute parent indices: pidx_{fi}_{ki} shape [n_fine_patches]
+        for fi, (fH, fW) in enumerate(target_grids):
+            for ki, (cH, cW) in enumerate(cond_grids):
+                self.register_buffer(f'pidx_{fi}_{ki}', self._parent_idx(fH, fW, cH, cW))
 
-        # --- Time embedding: sinusoidal t_dim → h_dim (same as CrossLevelFlowModel) ---
+        # Time embedding
         self.t_proj = nn.Sequential(
             nn.Linear(t_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim))
 
-        # --- Joint self-attention over all tokens (pre-norm for stability) ---
-        enc_layer = nn.TransformerEncoderLayer(
-            h_dim, n_heads, dim_feedforward=h_dim * 4,
-            batch_first=True, dropout=0.0, norm_first=True)
-        self.attn = nn.TransformerEncoder(enc_layer, num_layers=n_attn_layers)
+        # Per-fine-level: project own patch [nc] → h_dim (shared across patches)
+        self.patch_in = nn.ModuleList([nn.Linear(nc, h_dim) for nc in target_n_comp])
 
-        # --- Condition summary → FiLM input ---
-        # Flatten attended coarse tokens and project to a single h_dim vector.
-        self.cond_pool = nn.Sequential(
-            nn.Linear(n_cond * h_dim, h_dim), nn.SiLU())
+        # Per-fine-level × per-coarse-level: project parent [cond_n_comp] → h_dim
+        self.parent_proj = nn.ModuleList([
+            nn.ModuleList([nn.Linear(cond_n_comp, h_dim) for _ in cond_dims])
+            for _ in target_dims])
 
-        # --- FiLM-modulated residual MLP blocks (one per depth step, per target level) ---
-        self.film_layers = nn.ModuleList([
-            nn.ModuleList([FiLM(h_dim, h_dim) for _ in target_dims])
-            for _ in range(n_layers - 1)])
-        self.mlp_layers = nn.ModuleList([
-            nn.ModuleList([nn.Linear(h_dim, h_dim) for _ in target_dims])
-            for _ in range(n_layers - 1)])
+        # Learnable per-patch positional embeddings (zero-init = no bias at start)
+        self.pos_emb = nn.ParameterList([
+            nn.Parameter(torch.zeros(np, h_dim)) for np in target_n_patches])
 
-        # --- Output heads: velocity for target levels only ---
-        self.target_out = nn.ModuleList([nn.Linear(h_dim, d) for d in target_dims])
+        # Pre-norm residual MLP blocks, shared across all patches within a level
+        self.mlp_blocks = nn.ModuleList([
+            nn.ModuleList([
+                nn.Sequential(
+                    nn.LayerNorm(h_dim),
+                    nn.Linear(h_dim, h_dim * 4),
+                    nn.GELU(),
+                    nn.Linear(h_dim * 4, h_dim))
+                for _ in range(n_layers)])
+            for _ in target_dims])
+
+        # Output head: h_dim → velocity [nc] per patch
+        self.patch_out = nn.ModuleList([nn.Linear(h_dim, nc) for nc in target_n_comp])
+
+    @staticmethod
+    def _square_grid(n):
+        s = int(round(n ** 0.5))
+        assert s * s == n, f"n_patches={n} is not a perfect square"
+        return s, s
+
+    @staticmethod
+    def _parent_idx(fH, fW, cH, cW):
+        """Index into coarse grid (cH×cW) for every patch in fine grid (fH×fW)."""
+        r = torch.arange(fH).repeat_interleave(fW)
+        c = torch.arange(fW).repeat(fH)
+        return (r * cH // fH) * cW + (c * cW // fW)
 
     def forward(self, x_target, t, x_cond):
         """
-        x_target : [B, sum(target_dims)]  noisy fine-level embeddings
-        t         : [B] or [B,1]          timestep — must equal the t used by
-                                           the first-stage model in the same step
-        x_cond    : [B, sum(cond_dims)]   coarse embeddings from first-stage flow
-                    (PCA-roundtripped during training to match inference distribution)
-        Returns   : [B, sum(target_dims)] predicted velocity for target levels only
+        x_target: [B, sum(target_dims)]  noisy fine-level PCA embeddings
+        t:        [B] or [B,1]           timestep
+        x_cond:   [B, sum(cond_dims)]    coarse predicted endpoint x1 from first-stage flow
+        Returns:  [B, sum(target_dims)]  predicted velocity
         """
+        B = x_target.size(0)
         if t.dim() > 1: t = t.squeeze(-1)
-        elif t.dim() == 0: t = t.unsqueeze(0).expand(x_target.size(0))
-        assert t.min() >= 0.0 and t.max() <= 1.0, \
-            "t must be in [0,1] — pass the same timestep used by the first-stage flow"
 
         t_emb = self.t_proj(sinusoidal_time_emb(t, self.t_dim))  # [B, h_dim]
 
-        # Project condition levels (pre-norm → linear → GELU + time)
-        cond_tokens, offset = [], 0
-        for norm, proj, d in zip(self.cond_norms, self.cond_in, self.cond_dims):
-            cond_tokens.append(F.gelu(proj(norm(x_cond[:, offset:offset+d]))) + t_emb)
+        # Parse coarse levels → list of [B, n_coarse_patches, cond_n_comp]
+        coarse, offset = [], 0
+        for d, np in zip(self.cond_dims, self._cond_n_patches):
+            coarse.append(x_cond[:, offset:offset+d].reshape(B, np, self.cond_n_comp))
             offset += d
 
-        # Project target levels (pre-norm → linear → GELU + time)
-        target_tokens, offset = [], 0
-        for norm, proj, d in zip(self.target_norms, self.target_in, self.target_dims):
-            target_tokens.append(F.gelu(proj(norm(x_target[:, offset:offset+d]))) + t_emb)
+        velocities, offset = [], 0
+        for fi, (d, nc, np) in enumerate(
+                zip(self.target_dims, self.target_n_comp, self.target_n_patches)):
+            patches = x_target[:, offset:offset+d].reshape(B, np, nc)
             offset += d
 
-        # Joint self-attention: [B, n_cond + n_target, h_dim]
-        all_tokens = self.attn(torch.stack(cond_tokens + target_tokens, dim=1))
-        n_cond = len(self.cond_dims)
-        cond_out    = all_tokens[:, :n_cond, :]
-        target_toks = list(all_tokens[:, n_cond:, :].unbind(1))
+            # Own patch + position + time  →  [B, np, h_dim]
+            h = F.gelu(self.patch_in[fi](patches))
+            h = h + self.pos_emb[fi]       # [B, np, h_dim]  (broadcast over B)
+            h = h + t_emb.unsqueeze(1)     # [B, np, h_dim]  (broadcast over np)
 
-        # Pool attended coarse tokens → FiLM conditioning signal
-        film_cond = self.cond_pool(cond_out.flatten(1))  # [B, h_dim]
+            # Parent context from each coarse level (single gather per level)
+            for ki, (coarse_emb, proj) in enumerate(zip(coarse, self.parent_proj[fi])):
+                pidx = getattr(self, f'pidx_{fi}_{ki}')       # [np]
+                h = h + F.gelu(proj(coarse_emb[:, pidx, :]))  # [B, np, h_dim]
 
-        # FiLM-modulated residual MLPs for each target level
-        for film_row, mlp_row in zip(self.film_layers, self.mlp_layers):
-            target_toks = [
-                F.gelu(mlp(film(tok, film_cond))) + tok
-                for tok, film, mlp in zip(target_toks, film_row, mlp_row)]
+            # Shared residual MLP blocks
+            for block in self.mlp_blocks[fi]:
+                h = h + block(h)
 
-        # Output heads → velocity (target levels only)
-        return torch.cat([out(tok) for out, tok in zip(self.target_out, target_toks)], dim=1)
+            velocities.append(self.patch_out[fi](h).reshape(B, -1))
+
+        return torch.cat(velocities, dim=1)
+
 
 # %% ../nbs/12_train_flow.ipynb #aa120005
 def warp_time(t, s=0.5):
@@ -1237,13 +1244,12 @@ def _run_flow2(cfg: DictConfig):
         print("  coarse_ckpt not set — coarse model starts from random weights")
 
     fine_model = ConditionalFineFlowModel(
-        cond_dims    = coarse_level_dims,
-        target_dims  = dataset.fine_level_dims,
-        h_dim        = flow2.h_dim,
-        n_layers     = flow2.n_layers,
-        n_attn_layers= flow2.get('n_attn_layers', 2),
-        n_heads      = flow2.get('n_heads', 8),
-        t_dim        = cfg.flow.get('t_dim', 64),
+        cond_dims     = coarse_level_dims,
+        target_dims   = dataset.fine_level_dims,
+        target_n_comp = fine_n_components,
+        h_dim         = flow2.h_dim,
+        n_layers      = flow2.n_layers,
+        t_dim         = cfg.flow.get('t_dim', 64),
     )
     n_params = sum(p.numel() for p in fine_model.parameters())
     print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
