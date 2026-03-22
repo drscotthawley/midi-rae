@@ -517,19 +517,23 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
 # %% ../nbs/12_train_flow.ipynb #9d7ef6b6
 @torch.no_grad()
 def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, device='cpu',
-              source_df=None, source_scales=None, level_dims=None):
+              source_df=None, source_scales=None, level_dims=None, gen=None):
     """Compare distributional statistics of real vs generated embeddings, per level.
     Returns flat dict with keys like 'L0/mmd', 'L0/wasserstein', 'L0/real_std', etc.
     Also returns global 'mmd' and 'wasserstein' for backward compatibility.
     real_embeddings: (N, D) tensor.
+    gen: optional pre-computed generated samples (N, D) tensor — skips generate_samples().
     """
     from scipy.stats import skew, kurtosis
-    dim = real_embeddings.shape[1]
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
     real = real_embeddings[idx].float()
-    gen  = generate_samples(model, n_samples, dim, device=device,
-                            n_steps=n_steps, warp_s=warp_s, source_df=source_df,
-                            source_scales=source_scales, level_dims=level_dims).cpu()
+    if gen is None:
+        dim = real_embeddings.shape[1]
+        gen = generate_samples(model, n_samples, dim, device=device,
+                               n_steps=n_steps, warp_s=warp_s, source_df=source_df,
+                               source_scales=source_scales, level_dims=level_dims).cpu()
+    else:
+        gen = gen[:n_samples].float().cpu()
     r, g = real.numpy(), gen.numpy()
 
     metrics = {}
@@ -570,20 +574,24 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
 @torch.no_grad()
 def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
                           n_steps=20, warp_s=0.5, device='cpu', n_bins=100, source_df=None,
-                          source_scales=None, epoch=None):
+                          source_scales=None, epoch=None, gen=None):
     """Return dict of per-level histogram figures {'L0': fig, 'L1': fig, ...}.
     level_dims: list of ints, flattened PCA dims per level e.g. [20, 80, 320, 1280]
     real_embeddings: (N, sum(level_dims)) tensor
+    gen: optional pre-computed generated samples — skips generate_samples().
     """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    dim = real_embeddings.shape[1]
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
     real = real_embeddings[idx].float().numpy()
-    gen  = generate_samples(model, n_samples, dim, device=device,
-                            n_steps=n_steps, warp_s=warp_s, source_df=source_df,
-                            source_scales=source_scales, level_dims=level_dims).cpu().numpy()
+    if gen is None:
+        dim = real_embeddings.shape[1]
+        gen = generate_samples(model, n_samples, dim, device=device,
+                               n_steps=n_steps, warp_s=warp_s, source_df=source_df,
+                               source_scales=source_scales, level_dims=level_dims).cpu().numpy()
+    else:
+        gen = gen[:n_samples].float().cpu().numpy()
     figs = {}
     offset = 0
     for i, d in enumerate(level_dims):
@@ -603,6 +611,7 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
         figs[f'L{i}'] = fig
         offset += d
     return figs
+
 
 # %% ../nbs/12_train_flow.ipynb #tqfgy482snf
 @torch.no_grad()
@@ -867,7 +876,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
         ema_model.ema.load_state_dict(fine_model.state_dict())
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
 
-    fine_level_dims = dataset.fine_level_dims
+    fine_level_dims   = dataset.fine_level_dims
+    coarse_dim        = dataset.coarse.shape[1]
+    coarse_level_dims = dataset.coarse_level_dims
 
     for epoch in range(epoch_start, n_epochs):
         fine_model.train()
@@ -884,24 +895,20 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             real_fine   = real_fine.to(device)
             B = real_coarse.size(0)
 
-            # Sample time and source noise
             t = warp_time(torch.rand(B, 1, device=device), s=warp_s)
             noise_coarse = torch.randn_like(real_coarse)
             noise_fine   = sample_source((B, real_fine.size(1)), device=device,
                                          source_scales=fine_source_scales,
                                          level_dims=fine_level_dims)
 
-            # Flow matching interpolation
             x_t_coarse = (1 - t) * noise_coarse + t * real_coarse
             x_t_fine   = (1 - t) * noise_fine   + t * real_fine
             v_fine_target = real_fine - noise_fine
 
-            # Frozen coarse model → x1_pred_coarse conditioning signal
             with torch.no_grad():
                 v_coarse       = coarse_model(x_t_coarse, t)
                 x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
 
-            # Fine model training step
             optimizer.zero_grad()
             v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
             loss   = loss_fn(v_pred, v_fine_target)
@@ -919,10 +926,44 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
         avg_loss = epoch_loss / _steps
         cur_lr   = scheduler.get_last_lr()[0]
         print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}')
+
+        log_dict = {'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1}
+
+        if eval_every and (epoch + 1) % eval_every == 0:
+            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
+            # generate fine samples from joint (coarse+fine) flow
+            _, gen_fine = generate_samples_conditional(
+                coarse_model, eval_model,
+                n_samples=2000, coarse_dim=coarse_dim,
+                target_dims=fine_level_dims, device=device,
+                n_steps=20, warp_s=warp_s,
+                coarse_level_dims=coarse_level_dims,
+                fine_source_scales=fine_source_scales,
+            )
+            idx = torch.randperm(len(dataset))[:2000]
+            real_fine_eval = dataset.fine[idx].float()
+
+            metrics = eval_flow(eval_model, real_fine_eval,
+                                n_samples=2000, level_dims=fine_level_dims,
+                                gen=gen_fine.cpu())
+            log_dict.update({f'eval/{k}': v for k, v in metrics.items()})
+
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            figs = plot_level_histograms(eval_model, real_fine_eval,
+                                         fine_level_dims, epoch=epoch+1,
+                                         gen=gen_fine.cpu())
+            if use_wandb:
+                import wandb
+                for lname, fig in figs.items():
+                    log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
+                    plt.close(fig)
+            fine_model.train()
+
         if use_wandb:
             import wandb
-            wandb.log({'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1},
-                      step=global_step)
+            wandb.log(log_dict, step=global_step)
 
         if save_every and (epoch + 1) % save_every == 0:
             eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
