@@ -517,12 +517,13 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
 # %% ../nbs/12_train_flow.ipynb #9d7ef6b6
 @torch.no_grad()
 def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, device='cpu',
-              source_df=None, source_scales=None, level_dims=None, gen=None):
+              source_df=None, source_scales=None, level_dims=None, gen=None, level_names=None):
     """Compare distributional statistics of real vs generated embeddings, per level.
     Returns flat dict with keys like 'L0/mmd', 'L0/wasserstein', 'L0/real_std', etc.
     Also returns global 'mmd' and 'wasserstein' for backward compatibility.
     real_embeddings: (N, D) tensor.
     gen: optional pre-computed generated samples (N, D) tensor — skips generate_samples().
+    level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' keys.
     """
     from scipy.stats import skew, kurtosis
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
@@ -556,19 +557,19 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
             rl = r[:, offset:offset+d]
             gl = g[:, offset:offset+d]
             rt, gt = torch.tensor(rl), torch.tensor(gl)
-            metrics[f'L{i}/real_std']    = float(rl.std())
-            metrics[f'L{i}/gen_std']     = float(gl.std())
-            metrics[f'L{i}/real_kurt']   = float(kurtosis(rl.ravel()))
-            metrics[f'L{i}/gen_kurt']    = float(kurtosis(gl.ravel()))
-            metrics[f'L{i}/mmd']         = mmd_rbf(rt, gt)
-            metrics[f'L{i}/wasserstein'] = wasserstein_score(rl, gl)
+            lname = level_names[i] if level_names else f'L{i}'
+            metrics[f'{lname}/real_std']    = float(rl.std())
+            metrics[f'{lname}/gen_std']     = float(gl.std())
+            metrics[f'{lname}/real_kurt']   = float(kurtosis(rl.ravel()))
+            metrics[f'{lname}/gen_kurt']    = float(kurtosis(gl.ravel()))
+            metrics[f'{lname}/mmd']         = mmd_rbf(rt, gt)
+            metrics[f'{lname}/wasserstein'] = wasserstein_score(rl, gl)
             offset += d
 
     w = max(len(k) for k in metrics)
     for k, v in metrics.items():
         print(f'  {k:{w}s} = {v:.4f}')
     return metrics
-
 
 # %% ../nbs/12_train_flow.ipynb #52b2733e
 @torch.no_grad()
@@ -847,7 +848,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
     dataset must be a ConditionalFlowDataset returning (x_coarse, x_fine) pairs.
     coarse_model is kept frozen throughout (no gradients, no optimizer step).
-    fine_level_names: optional list of strings e.g. ['L4', 'L5'] for histogram labels.
+    fine_level_names: optional list of strings e.g. ['L4', 'L5'] for metric/histogram labels.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     coarse_model = coarse_model.to(device)
@@ -933,7 +934,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
         if eval_every and (epoch + 1) % eval_every == 0:
             eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
-            # generate fine samples from joint (coarse+fine) flow
             _, gen_fine = generate_samples_conditional(
                 coarse_model, eval_model,
                 n_samples=2000, coarse_dim=coarse_dim,
@@ -947,7 +947,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
             metrics = eval_flow(eval_model, real_fine_eval,
                                 n_samples=2000, level_dims=fine_level_dims,
-                                gen=gen_fine.cpu())
+                                gen=gen_fine.cpu(), level_names=fine_level_names)
             log_dict.update({f'eval/{k}': v for k, v in metrics.items()})
 
             import matplotlib
