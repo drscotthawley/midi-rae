@@ -111,15 +111,14 @@ flow2:
   ema_start_epoch: 0
   warp_s: 0.5
   fine_source_scales: [1.0, 1.0]  # scale factors for L4, L5
-  # Uncomment after running fitpca with fine_levels=[4,5], fine_n_components=3:
-  # fine_pca_dir: $HOME/datasets/POP909_pca_exp26
-  # fine_n_components: 3
+  fine_pca_dir: $HOME/datasets/POP909_pca_exp26
+  fine_n_components: [5, 3]   # L4=5 (90.1%), L5=3 (95.5%)
 
 fitpca:
   # encoded_dir and output_dir default to cfg.preencode.output_dir and encoded_dir+'_pca'
   levels: [4, 5]          # only process fine levels (coarse pca20 files already exist)
   fine_levels: [4, 5]
-  fine_n_components: [4, 3]   # L4: 4 components (76.6% → ~85-90%); L5: 3 (already 95.5%)
+  fine_n_components: [5, 3]   # L4: 5 components (90.1%); L5: 3 components (95.5%)
 
 wandb:
   project: ar-mep-swin-midi-rae
