@@ -820,6 +820,83 @@ def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0
 import hydra
 from omegaconf import DictConfig
 
+def _run_flow2(cfg: DictConfig):
+    """Second-stage conditional fine-level flow training (called from train_flow_main)."""
+    from midi_rae.data import ConditionalFlowDataset
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"device = {device}")
+
+    flow2 = cfg.flow2
+    dataset = ConditionalFlowDataset(
+        pca_dir     = flow2.pca_dir,
+        encoded_dir = flow2.encoded_dir,
+        pca_levels  = list(flow2.get('pca_levels',  ['L0','L1','L2','L3'])),
+        fine_levels = list(flow2.get('fine_levels',  [4, 5])),
+        emb_key     = flow2.get('emb_key', 'emb1'),
+    )
+    print(f"  {len(dataset)} samples  "
+          f"coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
+
+    coarse_level_dims = dataset.coarse_level_dims
+    coarse_model = CrossLevelFlowModel(
+        level_dims   = coarse_level_dims,
+        h_dim        = cfg.flow.h_dim,
+        n_layers     = cfg.flow.n_layers,
+        n_attn_layers= cfg.flow.get('n_attn_layers', 2),
+        n_heads      = cfg.flow.get('n_heads', 8),
+        t_dim        = cfg.flow.get('t_dim', 64),
+    )
+    from midi_rae.utils import load_checkpoint
+    coarse_ckpt = os.path.expandvars(os.path.expanduser(str(flow2.coarse_ckpt)))
+    coarse_model = load_checkpoint(coarse_model, coarse_ckpt)
+    print(f"  Loaded coarse model from {coarse_ckpt}")
+
+    fine_model = ConditionalFineFlowModel(
+        cond_dims    = coarse_level_dims,
+        target_dims  = dataset.fine_level_dims,
+        h_dim        = flow2.h_dim,
+        n_layers     = flow2.n_layers,
+        n_attn_layers= flow2.get('n_attn_layers', 2),
+        n_heads      = flow2.get('n_heads', 8),
+        t_dim        = cfg.flow.get('t_dim', 64),
+    )
+    n_params = sum(p.numel() for p in fine_model.parameters())
+    print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
+
+    use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
+    if use_wandb:
+        import wandb
+        wandb.init(project=cfg.wandb.flow_project, config=dict(flow2))
+        wandb.define_metric("epoch")
+        wandb.define_metric("*", step_metric="epoch")
+        if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
+
+    fine_source_scales = list(flow2.get('fine_source_scales', [])) or None
+    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
+
+    train_flow_conditional(
+        coarse_model, fine_model, dataset,
+        n_epochs          = flow2.n_epochs,
+        lr                = flow2.lr,
+        batch_size        = flow2.batch_size,
+        warp_s            = cfg.flow.warp_s,
+        device            = device,
+        checkpoint_dir    = flow2.checkpoint_dir,
+        save_every        = flow2.get('save_every', 10),
+        eval_every        = flow2.get('eval_every', 10),
+        use_wandb         = use_wandb,
+        steps_per_epoch   = flow2.get('steps_per_epoch', None),
+        fine_source_scales= fine_source_scales,
+        checkpoint        = checkpoint,
+        cfg               = cfg,
+        lr_restart_epochs = flow2.get('lr_restart_epochs', 500),
+        lr_warmup_frac    = flow2.get('lr_warmup_frac', 0.15),
+        ema_eta           = flow2.get('ema_eta', 0.97),
+        ema_start_epoch   = flow2.get('ema_start_epoch', 100),
+    )
+    if use_wandb: wandb.finish()
+
+
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def train_flow_main(cfg: DictConfig):
 
@@ -974,7 +1051,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
             # Frozen coarse model → x1_pred_coarse conditioning signal
             with torch.no_grad():
-                v_coarse      = coarse_model(x_t_coarse, t)
+                v_coarse       = coarse_model(x_t_coarse, t)
                 x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
 
             # Fine model training step
@@ -1004,88 +1081,4 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
             save_checkpoint(eval_model, epoch + 1, optimizer, avg_loss,
                             checkpoint_dir, cfg=cfg)
-
-
-#| eval: false
-import hydra
-from omegaconf import DictConfig
-
-def _run_flow2(cfg: DictConfig):
-    """Entry point for second-stage conditional fine-level flow training."""
-    from midi_rae.data import ConditionalFlowDataset
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"device = {device}")
-
-    flow2 = cfg.flow2
-    dataset = ConditionalFlowDataset(
-        pca_dir     = flow2.pca_dir,
-        encoded_dir = flow2.encoded_dir,
-        pca_levels  = list(flow2.get('pca_levels',  ['L0','L1','L2','L3'])),
-        fine_levels = list(flow2.get('fine_levels',  [4, 5])),
-        emb_key     = flow2.get('emb_key', 'emb1'),
-    )
-    print(f"  {len(dataset)} samples  "
-          f"coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
-
-    # Load frozen coarse model
-    coarse_level_dims = dataset.coarse_level_dims
-    coarse_model = CrossLevelFlowModel(
-        level_dims   = coarse_level_dims,
-        h_dim        = cfg.flow.h_dim,
-        n_layers     = cfg.flow.n_layers,
-        n_attn_layers= cfg.flow.get('n_attn_layers', 2),
-        n_heads      = cfg.flow.get('n_heads', 8),
-        t_dim        = cfg.flow.get('t_dim', 64),
-    )
-    from midi_rae.utils import load_checkpoint
-    coarse_ckpt = os.path.expandvars(os.path.expanduser(str(flow2.coarse_ckpt)))
-    coarse_model = load_checkpoint(coarse_model, coarse_ckpt)
-    print(f"  Loaded coarse model from {coarse_ckpt}")
-
-    # Build fine model
-    fine_model = ConditionalFineFlowModel(
-        cond_dims    = coarse_level_dims,
-        target_dims  = dataset.fine_level_dims,
-        h_dim        = flow2.h_dim,
-        n_layers     = flow2.n_layers,
-        n_attn_layers= flow2.get('n_attn_layers', 2),
-        n_heads      = flow2.get('n_heads', 8),
-        t_dim        = cfg.flow.get('t_dim', 64),
-    )
-    n_params = sum(p.numel() for p in fine_model.parameters())
-    print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
-
-    use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
-    if use_wandb:
-        import wandb
-        wandb.init(project=cfg.wandb.flow_project, config=dict(flow2))
-        wandb.define_metric("epoch")
-        wandb.define_metric("*", step_metric="epoch")
-        if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
-
-    fine_source_scales = list(flow2.get('fine_source_scales', [])) or None
-    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
-
-    train_flow_conditional(
-        coarse_model, fine_model, dataset,
-        n_epochs          = flow2.n_epochs,
-        lr                = flow2.lr,
-        batch_size        = flow2.batch_size,
-        warp_s            = cfg.flow.warp_s,
-        device            = device,
-        checkpoint_dir    = flow2.checkpoint_dir,
-        save_every        = flow2.get('save_every', 10),
-        eval_every        = flow2.get('eval_every', 10),
-        use_wandb         = use_wandb,
-        steps_per_epoch   = flow2.get('steps_per_epoch', None),
-        fine_source_scales= fine_source_scales,
-        checkpoint        = checkpoint,
-        cfg               = cfg,
-        lr_restart_epochs = flow2.get('lr_restart_epochs', 500),
-        lr_warmup_frac    = flow2.get('lr_warmup_frac', 0.15),
-        ema_eta           = flow2.get('ema_eta', 0.97),
-        ema_start_epoch   = flow2.get('ema_start_epoch', 100),
-    )
-    if use_wandb: wandb.finish()
-
 
