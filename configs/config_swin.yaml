@@ -57,7 +57,7 @@ training:
   pca_aug_noise_std: 0.05  # Gaussian noise injected after roundtrip to simulate flow model generation error
   pca_fine_levels: [4, 5]           # fine levels with separate n_components
   pca_fine_n_components: [5, 3]     # L4=5 (90.1%), L5=3 (95.5%)
-  dec_init_ckpt: null     # optional: warm-start decoder weights from this checkpoint
+  dec_init_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
 
 
 preencode:
