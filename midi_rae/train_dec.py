@@ -219,8 +219,8 @@ def load_pca_models(pca_dir, n_levels, fine_levels=None, fine_n_components=None)
             pca_models[i] = pickle.load(f)
     return pca_models
 
-def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device):
-    "Apply PCA compress→decompress to the first n_aug_levels levels of enc_out."
+def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device, noise_std=0.0):
+    "Apply PCA compress→decompress to the first n_aug_levels levels of enc_out, with optional noise injection."
     new_levels = []
     for i, lvl in enumerate(enc_out.patches.levels):
         if i < n_aug_levels and i in pca_models:
@@ -229,6 +229,8 @@ def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device):
             flat = lvl.emb.float().cpu().numpy().reshape(B * N, D)
             flat_rt = pca.inverse_transform(pca.transform(flat))
             emb_rt = torch.tensor(flat_rt.reshape(B, N, D), dtype=lvl.emb.dtype, device=device)
+            if noise_std > 0.0:
+                emb_rt = emb_rt + torch.randn_like(emb_rt) * noise_std
             new_levels.append(PatchState(emb=emb_rt, pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask))
         else:
             new_levels.append(lvl)
@@ -271,8 +273,9 @@ def train(cfg: DictConfig):
         del _enc
 
     pca_models = None
-    pca_aug_levels = cfg.training.get('pca_aug_levels', 6)
-    pca_aug_prob = cfg.training.get('pca_aug_prob', 1.0)
+    pca_aug_levels   = cfg.training.get('pca_aug_levels', 6)
+    pca_aug_prob     = cfg.training.get('pca_aug_prob', 1.0)
+    pca_aug_noise_std = cfg.training.get('pca_aug_noise_std', 0.0)
     if cfg.training.get('pca_aug', False):
         raw_fn = cfg.training.get('pca_fine_n_components', None)
         fine_n_components = (list(raw_fn) if hasattr(raw_fn, '__iter__') else int(raw_fn)) if raw_fn is not None else None
@@ -280,7 +283,7 @@ def train(cfg: DictConfig):
         fine_levels = list(raw_fl) if raw_fl is not None else None
         pca_models = load_pca_models(cfg.training.pca_dir, pca_aug_levels,
                                      fine_levels=fine_levels, fine_n_components=fine_n_components)
-        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, prob={pca_aug_prob}, fine_levels={fine_levels}, fine_n={fine_n_components}, dir={cfg.training.pca_dir}", color='magenta')
+        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, prob={pca_aug_prob}, noise_std={pca_aug_noise_std}, fine_levels={fine_levels}, fine_n={fine_n_components}, dir={cfg.training.pca_dir}", color='magenta')
 
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
                           extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
@@ -317,7 +320,7 @@ def train(cfg: DictConfig):
             else:
                 enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, device)
             if pca_models is not None and torch.rand(1).item() < pca_aug_prob:
-                enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device)
+                enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=pca_aug_noise_std)
             if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
             losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
@@ -335,8 +338,8 @@ def train(cfg: DictConfig):
                         enc_out = emb_levels_to_enc_out(emb_levels, pos_cache, device)
                     else:
                         enc_out, img_real, _ = get_embeddings_batch(batch, encoder, device)
-                    if pca_models is not None:  # always apply during val (matches inference)
-                        enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device)
+                    if pca_models is not None:  # always apply during val (matches inference); no noise for clean eval
+                        enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=0.0)
                     enc_out = mask_enc_out(enc_out, mask_ratio=emb_mask_ratio,
                                            mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
                                            mask_levels=mask_levels, mask_tokens=mask_tokens)
