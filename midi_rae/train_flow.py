@@ -4,8 +4,8 @@
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'FiLM', 'ConditionalFineFlowModel',
            'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional', 'ann_repair',
            'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms',
-           'plot_level_scatter', 'train_flow', 'make_warmup_cosine_restart_scheduler', 'train_flow_main',
-           'train_flow_conditional']
+           'plot_level_scatter', 'train_flow', 'make_warmup_cosine_restart_scheduler', 'train_flow_conditional',
+           'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -815,7 +815,122 @@ def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-# %% ../nbs/12_train_flow.ipynb #aa120009
+# %% ../nbs/12_train_flow.ipynb #tss6l3odpb
+def train_flow_conditional(coarse_model, fine_model, dataset,
+                           n_epochs=100000, lr=1e-3, batch_size=4096,
+                           warp_s=0.5, device='cpu',
+                           checkpoint_dir=None, save_every=10, eval_every=10,
+                           use_wandb=False, steps_per_epoch=None,
+                           fine_source_scales=None, checkpoint=None, cfg=None,
+                           lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
+                           ema_eta=0.97, ema_start_epoch=100):
+    """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
+
+    At each step:
+      1. Sample t, noise_coarse, noise_fine
+      2. Interpolate: x_t_coarse = (1-t)*noise_coarse + t*real_coarse
+                      x_t_fine   = (1-t)*noise_fine   + t*real_fine
+      3. frozen coarse forward: v_coarse = coarse_model(x_t_coarse, t)
+         → x1_pred_coarse = x_t_coarse + (1-t)*v_coarse  (predicted endpoint)
+      4. fine model: v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
+      5. loss = MSE(v_pred, real_fine - noise_fine)
+
+    dataset must be a ConditionalFlowDataset returning (x_coarse, x_fine) pairs.
+    coarse_model is kept frozen throughout (no gradients, no optimizer step).
+    """
+    from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
+    coarse_model = coarse_model.to(device)
+    coarse_model.eval()
+    for p in coarse_model.parameters(): p.requires_grad_(False)
+
+    fine_model = fine_model.to(device)
+    ema_model  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+
+    dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                    num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
+    dl_iter = None
+    _steps  = steps_per_epoch or len(dl)
+
+    optimizer = optim.Adam(fine_model.parameters(), lr=lr)
+    loss_fn   = nn.MSELoss()
+    scheduler = make_warmup_cosine_restart_scheduler(
+        optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
+
+    global_step = 0
+    epoch_start = 0
+    if checkpoint:
+        fine_model, ckpt = load_checkpoint(fine_model, checkpoint, return_all=True)
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        epoch_start = ckpt['epoch']
+        global_step = epoch_start * _steps
+        for _ in range(epoch_start): scheduler.step()
+        ema_model.ema.load_state_dict(fine_model.state_dict())
+        print(f"Resumed from {checkpoint} (epoch {epoch_start})")
+
+    fine_level_dims = dataset.fine_level_dims
+
+    for epoch in range(epoch_start, n_epochs):
+        fine_model.train()
+        epoch_loss = 0.
+        if steps_per_epoch:
+            if dl_iter is None:
+                import itertools; dl_iter = itertools.cycle(dl)
+            batches = (next(dl_iter) for _ in range(_steps))
+        else:
+            batches = dl
+        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch+1}/{n_epochs}', leave=False)
+        for real_coarse, real_fine in pbar:
+            real_coarse = real_coarse.to(device)
+            real_fine   = real_fine.to(device)
+            B = real_coarse.size(0)
+
+            # Sample time and source noise
+            t = warp_time(torch.rand(B, 1, device=device), s=warp_s)
+            noise_coarse = torch.randn_like(real_coarse)
+            noise_fine   = sample_source((B, real_fine.size(1)), device=device,
+                                         source_scales=fine_source_scales,
+                                         level_dims=fine_level_dims)
+
+            # Flow matching interpolation
+            x_t_coarse = (1 - t) * noise_coarse + t * real_coarse
+            x_t_fine   = (1 - t) * noise_fine   + t * real_fine
+            v_fine_target = real_fine - noise_fine
+
+            # Frozen coarse model → x1_pred_coarse conditioning signal
+            with torch.no_grad():
+                v_coarse       = coarse_model(x_t_coarse, t)
+                x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
+
+            # Fine model training step
+            optimizer.zero_grad()
+            v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
+            loss   = loss_fn(v_pred, v_fine_target)
+            loss.backward()
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(fine_model.parameters(), max_norm=grad_clip)
+            optimizer.step()
+            ema_model.update(fine_model)
+
+            epoch_loss += loss.item()
+            pbar.set_postfix(loss=f'{loss.item():.4f}')
+            global_step += 1
+
+        scheduler.step()
+        avg_loss = epoch_loss / _steps
+        cur_lr   = scheduler.get_last_lr()[0]
+        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}')
+        if use_wandb:
+            import wandb
+            wandb.log({'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1},
+                      step=global_step)
+
+        if checkpoint_dir and save_every and (epoch + 1) % save_every == 0:
+            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
+            save_checkpoint(eval_model, epoch + 1, optimizer, avg_loss,
+                            checkpoint_dir, cfg=cfg)
+
+
+# %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
 import hydra
 from omegaconf import DictConfig
@@ -966,119 +1081,4 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == "__main__":
     train_flow_main()
-
-
-# %% ../nbs/12_train_flow.ipynb #tss6l3odpb
-def train_flow_conditional(coarse_model, fine_model, dataset,
-                           n_epochs=100000, lr=1e-3, batch_size=4096,
-                           warp_s=0.5, device='cpu',
-                           checkpoint_dir=None, save_every=10, eval_every=10,
-                           use_wandb=False, steps_per_epoch=None,
-                           fine_source_scales=None, checkpoint=None, cfg=None,
-                           lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
-                           ema_eta=0.97, ema_start_epoch=100):
-    """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
-
-    At each step:
-      1. Sample t, noise_coarse, noise_fine
-      2. Interpolate: x_t_coarse = (1-t)*noise_coarse + t*real_coarse
-                      x_t_fine   = (1-t)*noise_fine   + t*real_fine
-      3. frozen coarse forward: v_coarse = coarse_model(x_t_coarse, t)
-         → x1_pred_coarse = x_t_coarse + (1-t)*v_coarse  (predicted endpoint)
-      4. fine model: v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
-      5. loss = MSE(v_pred, real_fine - noise_fine)
-
-    dataset must be a ConditionalFlowDataset returning (x_coarse, x_fine) pairs.
-    coarse_model is kept frozen throughout (no gradients, no optimizer step).
-    """
-    from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
-    coarse_model = coarse_model.to(device)
-    coarse_model.eval()
-    for p in coarse_model.parameters(): p.requires_grad_(False)
-
-    fine_model = fine_model.to(device)
-    ema_model  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
-
-    dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                    num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
-    dl_iter = None
-    _steps  = steps_per_epoch or len(dl)
-
-    optimizer = optim.Adam(fine_model.parameters(), lr=lr)
-    loss_fn   = nn.MSELoss()
-    scheduler = make_warmup_cosine_restart_scheduler(
-        optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
-
-    global_step = 0
-    epoch_start = 0
-    if checkpoint:
-        fine_model, ckpt = load_checkpoint(fine_model, checkpoint, return_all=True)
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        epoch_start = ckpt['epoch']
-        global_step = epoch_start * _steps
-        for _ in range(epoch_start): scheduler.step()
-        ema_model.ema.load_state_dict(fine_model.state_dict())
-        print(f"Resumed from {checkpoint} (epoch {epoch_start})")
-
-    fine_level_dims = dataset.fine_level_dims
-
-    for epoch in range(epoch_start, n_epochs):
-        fine_model.train()
-        epoch_loss = 0.
-        if steps_per_epoch:
-            if dl_iter is None:
-                import itertools; dl_iter = itertools.cycle(dl)
-            batches = (next(dl_iter) for _ in range(_steps))
-        else:
-            batches = dl
-        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch+1}/{n_epochs}', leave=False)
-        for real_coarse, real_fine in pbar:
-            real_coarse = real_coarse.to(device)
-            real_fine   = real_fine.to(device)
-            B = real_coarse.size(0)
-
-            # Sample time and source noise
-            t = warp_time(torch.rand(B, 1, device=device), s=warp_s)
-            noise_coarse = torch.randn_like(real_coarse)
-            noise_fine   = sample_source((B, real_fine.size(1)), device=device,
-                                         source_scales=fine_source_scales,
-                                         level_dims=fine_level_dims)
-
-            # Flow matching interpolation
-            x_t_coarse = (1 - t) * noise_coarse + t * real_coarse
-            x_t_fine   = (1 - t) * noise_fine   + t * real_fine
-            v_fine_target = real_fine - noise_fine
-
-            # Frozen coarse model → x1_pred_coarse conditioning signal
-            with torch.no_grad():
-                v_coarse       = coarse_model(x_t_coarse, t)
-                x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
-
-            # Fine model training step
-            optimizer.zero_grad()
-            v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
-            loss   = loss_fn(v_pred, v_fine_target)
-            loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(fine_model.parameters(), max_norm=grad_clip)
-            optimizer.step()
-            ema_model.update(fine_model)
-
-            epoch_loss += loss.item()
-            pbar.set_postfix(loss=f'{loss.item():.4f}')
-            global_step += 1
-
-        scheduler.step()
-        avg_loss = epoch_loss / _steps
-        cur_lr   = scheduler.get_last_lr()[0]
-        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}')
-        if use_wandb:
-            import wandb
-            wandb.log({'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1},
-                      step=global_step)
-
-        if checkpoint_dir and save_every and (epoch + 1) % save_every == 0:
-            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
-            save_checkpoint(eval_model, epoch + 1, optimizer, avg_loss,
-                            checkpoint_dir, cfg=cfg)
 
