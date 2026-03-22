@@ -81,7 +81,7 @@ flow:
   repair_every: 1             # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 1     # random projections per ann_repair call
   repair_chunk_size: null     # chunk size for ann_repair (null=full batch)
-  ema_eta: 0.97               # EMA decay rate (updated every batch)
+  ema_eta: 0.9                # EMA decay rate (updated every batch)
   ema_start_epoch: 0          # epoch at which eval/sampling switches to EMA model (0 = always use EMA)
   self_condition: false       # if true, 50% of batches use self-conditioning (predict x1 first, detach, re-feed)
   model_type: per_level       # 'per_level' (PerLevelFlowModel) or 'cross_level' (CrossLevelFlowModel w/ attention)
@@ -110,7 +110,7 @@ flow2:
   ema_eta: 0.97
   ema_start_epoch: 0
   warp_s: 0.5
-  fine_source_scales: [0.5, 0.25]  # scale factors for L4, L5 (finer → smaller scale)
+  fine_source_scales: [1.0, 1.0]  # scale factors for L4, L5
 
 wandb:
   project: ar-mep-swin-midi-rae

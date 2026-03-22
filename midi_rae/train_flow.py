@@ -889,6 +889,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     decoder, pca_models, fine_levels_idx: if all provided, decode piano rolls during viz.
     fine_level_names: optional list of strings e.g. ['L4', 'L5'] for metric/histogram labels.
     viz_every: how often (epochs) to log histograms + scatter plots to W&B.
+    Checkpoints save both live model (with optimizer) and EMA model under distinct tags.
+    Resume by pointing ++checkpoint at the EMA _best.pt file.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     coarse_model = coarse_model.to(device)
@@ -911,7 +913,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     global_step = 0
     epoch_start = 0
     real_scatter_logged = False
+
     if checkpoint:
+        # checkpoint points at EMA file; restore both live model and EMA from it
         fine_model, ckpt = load_checkpoint(fine_model, checkpoint, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch']
@@ -1036,10 +1040,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             wandb.log(log_dict, step=global_step)
 
         if save_every and (epoch + 1) % save_every == 0:
-            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
-            save_checkpoint(eval_model, epoch + 1, avg_loss, cfg or {},
+            # Save live model (with optimizer) and EMA model separately under distinct tags
+            # so both can be restored independently on resume.
+            save_checkpoint(fine_model,    epoch+1, avg_loss, cfg or {},
                             optimizer=optimizer, save_every=save_every,
-                            tag='flow2_ConditionalFineFlowModel')
+                            tag='flow2_fine_live')
+            save_checkpoint(ema_model.ema, epoch+1, avg_loss, cfg or {},
+                            save_every=save_every, tag='flow2_fine_ema')
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
