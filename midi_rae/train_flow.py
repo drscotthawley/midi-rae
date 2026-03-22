@@ -1137,7 +1137,7 @@ def _run_flow2(cfg: DictConfig):
     fine_n_components = flow2.get('fine_n_components', None)
     if fine_pca_dir:
         fine_pca_dir      = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
-        fine_n_components = int(fine_n_components)
+        fine_n_components = (list(fine_n_components) if hasattr(fine_n_components, '__iter__') else int(fine_n_components)) if fine_n_components is not None else None
 
     dataset = ConditionalFlowDataset(
         pca_dir           = flow2.pca_dir,
@@ -1315,3 +1315,4 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == "__main__":
     train_flow_main()
+
