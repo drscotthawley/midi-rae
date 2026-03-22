@@ -664,10 +664,13 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
 def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
                        n_steps=20, warp_s=0.5, device='cpu',
                        source_df=None, source_scales=None, epoch=None,
-                       gen=None, level_names=None):
+                       gen=None, level_names=None, level_n_components=None):
     """Return dict of per-level 3D PCA scatter plots {'L0/real': fig, 'L0/gen': fig, ...}.
     gen: optional pre-computed generated samples — skips generate_samples().
     level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' labels.
+    level_n_components: optional list of ints (one per level). If provided, each level's data is
+        reshaped from (B, n_patches × n_comp) → (B × n_patches, n_comp) before PCA so that each
+        patch is a point — matching the encoder training viz style (make_emb_viz / _gather_level).
     """
     from midi_rae.viz import pca_project, plot_embeddings_3d
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
@@ -686,19 +689,26 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
         g = gen[:,  offset:offset+d]
         lname = level_names[i] if level_names else f'L{i}'
         title_sfx = f' — Epoch {epoch}' if epoch is not None else ''
+        if level_n_components is not None:
+            n_comp = level_n_components[i]
+            n_patches = d // n_comp
+            r = r.reshape(-1, n_comp)   # (B × n_patches, n_comp) — each patch is a point
+            g = g.reshape(-1, n_comp)
         r3 = pca_project(r)
         g3 = pca_project(g)
-        if r3 is not None: figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({d}d) real{title_sfx}')
-        if g3 is not None: figs[f'{lname}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'{lname} ({d}d) gen{title_sfx}')
+        if r3 is not None: figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) real{title_sfx}')
+        if g3 is not None: figs[f'{lname}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) gen{title_sfx}')
         offset += d
     return figs
 
 # %% ../nbs/12_train_flow.ipynb #kg8vxfngoce
 def _wandb_log_viz(log_dict, eval_model, embeddings, level_dims, epoch,
                    real_scatter_logged, gen=None, level_names=None,
-                   device='cpu', warp_s=0.5, source_df=None, source_scales=None):
+                   device='cpu', warp_s=0.5, source_df=None, source_scales=None,
+                   level_n_components=None):
     """Log per-level histograms and 3-D scatter plots to W&B via log_dict.
     gen: optional pre-computed generated samples — avoids redundant forward passes.
+    level_n_components: passed to plot_level_scatter to show per-patch points (encoder viz style).
     Modifies log_dict in-place. Returns updated real_scatter_logged flag."""
     import wandb, matplotlib.pyplot as plt
     figs = plot_level_histograms(eval_model, embeddings, level_dims, epoch=epoch,
@@ -710,7 +720,8 @@ def _wandb_log_viz(log_dict, eval_model, embeddings, level_dims, epoch,
     del figs
     scatters = plot_level_scatter(eval_model, embeddings, level_dims, epoch=epoch,
                                   gen=gen, level_names=level_names, device=device,
-                                  warp_s=warp_s, source_df=source_df, source_scales=source_scales)
+                                  warp_s=warp_s, source_df=source_df, source_scales=source_scales,
+                                  level_n_components=level_n_components)
     for lname, fig in scatters.items():
         if lname.endswith('/real') and real_scatter_logged:
             fig.data = []
@@ -781,31 +792,52 @@ def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
 
 
 # %% ../nbs/12_train_flow.ipynb #a5707933
-def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
-               warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
-               eval_every=10, viz_every=50, use_wandb=False, steps_per_epoch=None,
-               source_df=None, source_scales=None, checkpoint=None, cfg=None,
-               lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
-               repair_every=1, n_repair_projections=1, repair_chunk_size=None,
-               ema_eta=0.97, ema_start_epoch=100):
+def train_flow(model, dataset, cfg, device='cpu'):
     """Train flow matching model on embedding dataset.
-
-    Source: N(0,I) sampled fresh each step.
-    Target: embeddings from dataset.
-    Loss:   MSE between predicted and true (constant) velocity.
-    checkpoint: path to a saved checkpoint to resume from (optional).
-    cfg: config dict/object passed to save_checkpoint (optional).
-    lr_restart_epochs: T_0 (first cycle length) for warm-restart schedule.
-    lr_warmup_frac: fraction of each cycle spent on linear warmup to peak lr (default 0.15).
-    viz_every: how often (epochs) to log histograms + scatter plots to W&B.
-    grad_clip: max norm for gradient clipping (0 = disabled).
-    repair_every: re-pair source/target every N batches via ann_repair (0 = disabled).
-    n_repair_projections: random projections per ann_repair call (more = better, slower).
-    repair_chunk_size: chunk size for ann_repair (None = full batch).
-    ema_eta: EMA decay rate (updated every batch).
-    ema_start_epoch: epoch at which eval/sampling switches to EMA model.
+    All hyperparameters are read from cfg.flow.  Manages W&B init/finish internally.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
+    fc = cfg.flow
+
+    # --- Hyperparameters from cfg ---
+    n_epochs          = fc.n_epochs
+    lr                = fc.lr
+    batch_size        = fc.batch_size
+    warp_s            = fc.warp_s
+    save_every        = fc.save_every
+    eval_every        = fc.eval_every
+    viz_every         = fc.get('viz_every', 25)
+    steps_per_epoch   = fc.get('steps_per_epoch', None)
+    lr_restart_epochs = fc.get('lr_restart_epochs', 500)
+    lr_warmup_frac    = fc.get('lr_warmup_frac', 0.15)
+    grad_clip         = fc.get('grad_clip', 1.0)
+    ema_eta           = fc.get('ema_eta', 0.97)
+    ema_start_epoch   = fc.get('ema_start_epoch', 100)
+    repair_every      = fc.get('repair_every', 1)
+    n_repair_projections = fc.get('n_repair_projections', 1)
+    repair_chunk_size = fc.get('repair_chunk_size', None)
+
+    source_scales = list(fc.source_scales) if fc.get('source_scales') else None
+    raw_df        = fc.get('source_df', None)
+    source_df     = list(raw_df) if hasattr(raw_df, '__iter__') else raw_df
+    level_dims    = getattr(dataset, 'level_dims', None)
+    if source_df and level_dims: source_df = source_df[:len(level_dims)]
+
+    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
+
+    use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
+    if use_wandb:
+        import wandb
+        wandb.init(project=cfg.wandb.flow_project, config=dict(fc))
+        wandb.define_metric("epoch")
+        wandb.define_metric("*", step_metric="epoch")
+        if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
+
+    # Per-patch scatter viz: n_patches at coarse level i = 4^i
+    level_n_components = None
+    if level_dims:
+        level_n_components = [d // (4**i) for i, d in enumerate(level_dims)]
+
     self_cond = getattr(model, 'self_condition', False)
     model = model.to(device)
     ema_model = EMAModel(model, eta=ema_eta, update_every=1, dtype=torch.float32)
@@ -813,16 +845,12 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                     num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
     dl_iter = None
     _steps = steps_per_epoch or len(dl)
-    if use_wandb:
-        import wandb
-        wandb.config.update(dict(n_epochs=n_epochs, lr=lr, batch_size=batch_size,
-                                 warp_s=warp_s, dim=dataset.embeddings.shape[1],
-                                 self_condition=self_cond), allow_val_change=True)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_fn   = nn.MSELoss()
     global_step = 0
     epoch_start = 0
     real_scatter_logged = False
+    dim = dataset.embeddings.shape[1]
 
     if checkpoint:
         model, ckpt = load_checkpoint(model, checkpoint, return_all=True)
@@ -834,10 +862,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
 
     scheduler = make_warmup_cosine_restart_scheduler(
         optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
-    for _ in range(epoch_start): scheduler.step()  # fast-forward if resuming
-
-    dim = dataset.embeddings.shape[1]
-    level_dims = getattr(dataset, 'level_dims', None)
+    for _ in range(epoch_start): scheduler.step()
 
     for epoch in range(epoch_start, n_epochs):
         model.train()
@@ -858,20 +883,15 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                 source, target = ann_repair(source, target,
                                             n_projections=n_repair_projections,
                                             chunk_size=repair_chunk_size)
-
             t = torch.rand(B, 1, device=device)
-            if warp_s != 1.0:
-                t = warp_time(t, s=warp_s)
-
+            if warp_s != 1.0: t = warp_time(t, s=warp_s)
             x_t = (1 - t) * source + t * target
             v   = target - source
-
             x_self_cond = None
             if self_cond and torch.rand(1).item() < 0.5:
                 with torch.no_grad():
                     v_first = model(x_t, t, None)
                     x_self_cond = (x_t + (1 - t) * v_first).detach()
-
             optimizer.zero_grad()
             v_pred = model(x_t, t, x_self_cond)
             loss   = loss_fn(v_pred, v)
@@ -880,7 +900,6 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
             ema_model.update(model)
-
             epoch_loss += loss.item()
             pbar.set_postfix(loss=f'{loss.item():.4f}')
             global_step += 1
@@ -901,13 +920,13 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                                 source_df=source_df, source_scales=source_scales,
                                 level_dims=level_dims, gen=gen)
             if use_wandb:
-                import wandb
                 log_dict = {f'eval/{k}': v for k, v in metrics.items()}
                 if level_dims and viz_every and (epoch + 1) % viz_every == 0:
                     real_scatter_logged = _wandb_log_viz(
                         log_dict, eval_model, dataset.embeddings, level_dims, epoch+1,
                         real_scatter_logged, gen=gen, device=device, warp_s=warp_s,
-                        source_df=source_df, source_scales=source_scales)
+                        source_df=source_df, source_scales=source_scales,
+                        level_n_components=level_n_components)
                     _wandb_log_jacobian(log_dict, eval_model,
                                         dataset.embeddings[:256].float().to(device))
                     gc.collect()
@@ -920,6 +939,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                         save_every=save_every, tag=f'flow_{model.__class__.__name__}')
 
     print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
+    if use_wandb: wandb.finish()
     return model
 
 # %% ../nbs/12_train_flow.ipynb #kreanhkpdc
@@ -952,27 +972,55 @@ def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0
 
 
 # %% ../nbs/12_train_flow.ipynb #tss6l3odpb
-def train_flow_conditional(coarse_model, fine_model, dataset,
-                           n_epochs=100000, lr=1e-3, batch_size=4096,
-                           warp_s=0.5, device='cpu',
-                           checkpoint_dir=None, save_every=10, eval_every=10, viz_every=20,
-                           use_wandb=False, steps_per_epoch=None,
-                           fine_source_scales=None, checkpoint=None, cfg=None,
-                           lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
-                           ema_eta=0.97, ema_start_epoch=100, fine_level_names=None,
-                           decoder=None, pca_models=None, fine_levels_idx=None,
-                           repair_every=1, n_repair_projections=1, repair_chunk_size=None):
+def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
+                           decoder=None, pca_models=None):
     """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
+    All hyperparameters read from cfg.flow2.  Manages W&B init/finish internally.
 
-    decoder, pca_models, fine_levels_idx: if all provided, decode piano rolls during viz.
-    fine_level_names: optional list of strings e.g. ['L4', 'L5'] for metric/histogram labels.
-    viz_every: how often (epochs) to log histograms + scatter plots to W&B.
-    repair_every/n_repair_projections/repair_chunk_size: ann_repair OT re-pairing (same as train_flow).
-    Checkpoints save both live model (with optimizer) and EMA model under distinct tags.
-    Resume by pointing ++checkpoint at the EMA _best.pt file.
+    decoder, pca_models: if both provided, decode piano rolls during viz.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     from midi_rae.data import ChunkShuffleSampler, ConditionalFlowDataset
+    fc = cfg.flow2
+
+    # --- Hyperparameters from cfg ---
+    n_epochs          = fc.n_epochs
+    lr                = fc.lr
+    batch_size        = fc.batch_size
+    warp_s            = fc.warp_s
+    save_every        = fc.get('save_every', 10)
+    eval_every        = fc.get('eval_every', 10)
+    viz_every         = fc.get('viz_every', 20)
+    steps_per_epoch   = fc.get('steps_per_epoch', None)
+    lr_restart_epochs = fc.get('lr_restart_epochs', 500)
+    lr_warmup_frac    = fc.get('lr_warmup_frac', 0.15)
+    grad_clip         = fc.get('grad_clip', 1.0)
+    ema_eta           = fc.get('ema_eta', 0.97)
+    ema_start_epoch   = fc.get('ema_start_epoch', 100)
+    repair_every      = fc.get('repair_every', 1)
+    n_repair_projections = fc.get('n_repair_projections', 1)
+    repair_chunk_size = fc.get('repair_chunk_size', None)
+    fine_source_scales = list(fc.get('fine_source_scales', [])) or None
+
+    fine_levels = list(fc.get('fine_levels', [4, 5]))
+    fine_level_names = [f'L{l}' for l in fine_levels]
+    fine_levels_idx  = fine_levels
+
+    raw_fn = fc.get('fine_n_components', None)
+    fine_n_components = (list(raw_fn) if hasattr(raw_fn, '__iter__') else int(raw_fn)) if raw_fn is not None else None
+    fn_list = (fine_n_components if isinstance(fine_n_components, list)
+               else [fine_n_components] * len(fine_levels)) if fine_n_components else None
+
+    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
+
+    use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
+    if use_wandb:
+        import wandb
+        wandb.init(project=cfg.wandb.flow_project, config=dict(fc))
+        wandb.define_metric("epoch")
+        wandb.define_metric("*", step_metric="epoch")
+        if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
+
     coarse_model = coarse_model.to(device)
     coarse_model.eval()
     for p in coarse_model.parameters(): p.requires_grad_(False)
@@ -1103,9 +1151,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
                 real_scatter_logged = _wandb_log_viz(
                     log_dict, eval_model, real_fine_eval, fine_level_dims, epoch+1,
-                    real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names)
+                    real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names,
+                    level_n_components=fn_list)
 
-                if decoder is not None and pca_models is not None and fine_levels_idx is not None:
+                if decoder is not None and pca_models is not None:
                     rolls = decode_flow_to_piano_rolls(
                         gen_coarse.cpu(), gen_fine_cpu,
                         pca_models, coarse_level_dims, fine_level_dims,
@@ -1133,6 +1182,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                             tag='flow2_fine_live')
             save_checkpoint(ema_model.ema, epoch+1, avg_loss, cfg or {},
                             save_every=save_every, tag='flow2_fine_ema')
+
+    if use_wandb: wandb.finish()
+
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
@@ -1196,18 +1248,6 @@ def _run_flow2(cfg: DictConfig):
     n_params = sum(p.numel() for p in fine_model.parameters())
     print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
 
-    use_wandb = hasattr(cfg, 'wandb') and hasattr(cfg.wandb, 'flow_project')
-    if use_wandb:
-        import wandb
-        wandb.init(project=cfg.wandb.flow_project, config=dict(flow2))
-        wandb.define_metric("epoch")
-        wandb.define_metric("*", step_metric="epoch")
-        if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
-
-    fine_source_scales = list(flow2.get('fine_source_scales', [])) or None
-    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
-    fine_level_names = [f'L{l}' for l in fine_levels]
-
     # Load decoder + PCA models (coarse + fine) for piano roll visualization (optional)
     decoder, pca_models = None, None
     decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
@@ -1224,14 +1264,12 @@ def _run_flow2(cfg: DictConfig):
             mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
         decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
         for p in decoder.parameters(): p.requires_grad_(False)
-        # Coarse PCA models (L0-L3, n=20)
         pca_dir = Path(os.path.expandvars(os.path.expanduser(flow2.pca_dir)))
         n_coarse = len(coarse_level_dims)
         pca_models = {}
         for i in range(n_coarse):
             with open(pca_dir / f'pca_L{i}_n20.pkl', 'rb') as f:
                 pca_models[i] = pickle.load(f)
-        # Fine PCA models (L4/L5, n=5/3) — needed for inverse_transform in decode_flow_to_piano_rolls
         if fine_pca_dir and fine_n_components:
             fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
                       else {l: n for l, n in zip(fine_levels, fine_n_components)})
@@ -1243,33 +1281,8 @@ def _run_flow2(cfg: DictConfig):
                         pca_models[li] = pickle.load(f)
         print(f"  Loaded decoder + {len(pca_models)} PCA models (coarse+fine) for piano roll viz")
 
-    train_flow_conditional(
-        coarse_model, fine_model, dataset,
-        n_epochs          = flow2.n_epochs,
-        lr                = flow2.lr,
-        batch_size        = flow2.batch_size,
-        warp_s            = cfg.flow.warp_s,
-        device            = device,
-        checkpoint_dir    = flow2.checkpoint_dir,
-        save_every        = flow2.get('save_every', 10),
-        eval_every        = flow2.get('eval_every', 10),
-        viz_every         = flow2.get('viz_every', 20),
-        use_wandb         = use_wandb,
-        steps_per_epoch   = flow2.get('steps_per_epoch', None),
-        fine_source_scales= fine_source_scales,
-        checkpoint        = checkpoint,
-        cfg               = cfg,
-        lr_restart_epochs = flow2.get('lr_restart_epochs', 500),
-        lr_warmup_frac    = flow2.get('lr_warmup_frac', 0.15),
-        grad_clip         = flow2.get('grad_clip', 1.0),
-        ema_eta           = flow2.get('ema_eta', 0.97),
-        ema_start_epoch   = flow2.get('ema_start_epoch', 100),
-        fine_level_names  = fine_level_names,
-        decoder           = decoder,
-        pca_models        = pca_models,
-        fine_levels_idx   = fine_levels,
-    )
-    if use_wandb: wandb.finish()
+    train_flow_conditional(coarse_model, fine_model, dataset, cfg,
+                           device=device, decoder=decoder, pca_models=pca_models)
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
@@ -1278,6 +1291,7 @@ def train_flow_main(cfg: DictConfig):
     if cfg.get("flow_stage", 1) == 2:
         _run_flow2(cfg)
         return
+
     import glob as _glob
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"device = {device}")
@@ -1285,12 +1299,10 @@ def train_flow_main(cfg: DictConfig):
     paths = sorted(_glob.glob(os.path.expandvars(os.path.expanduser(cfg.flow.embedding_glob))))
     assert paths, f"No files found matching {cfg.flow.embedding_glob}"
     print(f"Loading {len(paths)} file(s)...")
+
     source_scales = list(cfg.flow.source_scales) if cfg.flow.get("source_scales") else None
-    raw_df = cfg.flow.get("source_df", None)
-    source_df = list(raw_df) if hasattr(raw_df, '__iter__') else raw_df
     n_levels = len(source_scales) if source_scales else None
     levels = [f'L{i}' for i in range(n_levels)] if n_levels else None
-    if source_df: source_df = source_df[:n_levels]
     dataset = EmbeddingDataset(paths, levels=levels)
     dim = dataset.embeddings.shape[1]
     print(f"  {len(dataset)} samples, dim={dim}, level_dims={dataset.level_dims}")
@@ -1311,33 +1323,7 @@ def train_flow_main(cfg: DictConfig):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  {model.__class__.__name__}: {n_params:,} parameters (self_condition={self_condition}, t_dim={t_dim})")
 
-    use_wandb = hasattr(cfg, "wandb") and hasattr(cfg.wandb, "flow_project")
-    if use_wandb:
-        import wandb
-        wandb.init(project=cfg.wandb.flow_project, config=dict(cfg.flow))
-        wandb.define_metric("epoch")
-        wandb.define_metric("*", step_metric="epoch")
-        if hasattr(cfg, "tag"): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
-
-    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
-
-    train_flow(model, dataset,
-               n_epochs=cfg.flow.n_epochs, lr=cfg.flow.lr, batch_size=cfg.flow.batch_size,
-               warp_s=cfg.flow.warp_s, device=device,
-               checkpoint_dir=cfg.flow.checkpoint_dir, save_every=cfg.flow.save_every,
-               eval_every=cfg.flow.eval_every, viz_every=cfg.flow.get('viz_every', 25),
-               use_wandb=use_wandb, steps_per_epoch=cfg.flow.steps_per_epoch,
-               source_df=source_df, source_scales=source_scales,
-               checkpoint=checkpoint, cfg=cfg,
-               lr_restart_epochs=cfg.flow.get('lr_restart_epochs', 500),
-               lr_warmup_frac=cfg.flow.get('lr_warmup_frac', 0.15),
-               repair_every=cfg.flow.get('repair_every', 1),
-               n_repair_projections=cfg.flow.get('n_repair_projections', 1),
-               repair_chunk_size=cfg.flow.get('repair_chunk_size', None),
-               ema_eta=cfg.flow.get('ema_eta', 0.97),
-               ema_start_epoch=cfg.flow.get('ema_start_epoch', 100))
-
-    if use_wandb: wandb.finish()
+    train_flow(model, dataset, cfg, device=device)
 
 if __name__ == "__main__":
     train_flow_main()
