@@ -693,6 +693,46 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
         offset += d
     return figs
 
+# %% ../nbs/12_train_flow.ipynb #kg8vxfngoce
+def _wandb_log_viz(log_dict, eval_model, embeddings, level_dims, epoch,
+                   real_scatter_logged, gen=None, level_names=None,
+                   device='cpu', warp_s=0.5, source_df=None, source_scales=None):
+    """Log per-level histograms and 3-D scatter plots to W&B via log_dict.
+    gen: optional pre-computed generated samples — avoids redundant forward passes.
+    Modifies log_dict in-place. Returns updated real_scatter_logged flag."""
+    import wandb, matplotlib.pyplot as plt
+    figs = plot_level_histograms(eval_model, embeddings, level_dims, epoch=epoch,
+                                 gen=gen, level_names=level_names, device=device,
+                                 warp_s=warp_s, source_df=source_df, source_scales=source_scales)
+    for lname, fig in figs.items():
+        log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch}')
+        plt.close(fig)
+    del figs
+    scatters = plot_level_scatter(eval_model, embeddings, level_dims, epoch=epoch,
+                                  gen=gen, level_names=level_names, device=device,
+                                  warp_s=warp_s, source_df=source_df, source_scales=source_scales)
+    for lname, fig in scatters.items():
+        if lname.endswith('/real') and real_scatter_logged:
+            fig.data = []
+            continue
+        log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
+    del scatters
+    return True  # real_scatter_logged
+
+# %% ../nbs/12_train_flow.ipynb #dzg0nzkk9w
+def _wandb_log_jacobian(log_dict, eval_model, sample_data, n_t=20, n_epsilon=4,
+                        cond=None, device='cpu'):
+    """Evaluate Jacobian Frobenius norm vs t and log a line chart to W&B via log_dict.
+    Modifies log_dict in-place.
+    cond: optional conditioning tensor (B, cond_dim) for conditional models."""
+    import wandb
+    t_vals, jac_norms = eval_jacobian_norm_vs_t(
+        eval_model, sample_data, n_t=n_t, n_epsilon=n_epsilon, cond=cond, device=device)
+    jac_table = wandb.Table(columns=['t', 'jacobian_norm'],
+                            data=[[t, n] for t, n in zip(t_vals, jac_norms)])
+    log_dict['eval/jacobian_norm_vs_t'] = wandb.plot.line(
+        jac_table, 't', 'jacobian_norm', title='Jacobian Frobenius Norm vs t')
+
 # %% ../nbs/12_train_flow.ipynb #9jf9xpgrqr
 @torch.no_grad()
 def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
@@ -796,6 +836,9 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
         optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
     for _ in range(epoch_start): scheduler.step()  # fast-forward if resuming
 
+    dim = dataset.embeddings.shape[1]
+    level_dims = getattr(dataset, 'level_dims', None)
+
     for epoch in range(epoch_start, n_epochs):
         model.train()
         epoch_loss = 0.
@@ -810,8 +853,7 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             target = target.to(device)
             B, D   = target.shape
             source = sample_source((B, D), device=device, source_df=source_df,
-                                   source_scales=source_scales,
-                                   level_dims=getattr(dataset, 'level_dims', None))
+                                   source_scales=source_scales, level_dims=level_dims)
             if repair_every and global_step % repair_every == 0:
                 source, target = ann_repair(source, target,
                                             n_projections=n_repair_projections,
@@ -824,8 +866,6 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
             x_t = (1 - t) * source + t * target
             v   = target - source
 
-            # Self-conditioning: 50% of batches, do a first pass to get x̂₁,
-            # then use it as conditioning for the actual training pass.
             x_self_cond = None
             if self_cond and torch.rand(1).item() < 0.5:
                 with torch.no_grad():
@@ -854,37 +894,26 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
         if eval_every and (epoch + 1) % eval_every == 0:
             print(f'  --- eval epoch {epoch+1} ---')
             eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else model
+            gen = generate_samples(eval_model, 10000, dim, device=device, n_steps=20,
+                                   warp_s=warp_s, source_df=source_df,
+                                   source_scales=source_scales, level_dims=level_dims).cpu()
             metrics = eval_flow(eval_model, dataset.embeddings, device=device, warp_s=warp_s,
-                               source_df=source_df, source_scales=source_scales,
-                               level_dims=getattr(dataset, 'level_dims', None))
+                                source_df=source_df, source_scales=source_scales,
+                                level_dims=level_dims, gen=gen)
             if use_wandb:
                 import wandb
                 log_dict = {f'eval/{k}': v for k, v in metrics.items()}
-                if hasattr(dataset, 'level_dims') and viz_every and (epoch + 1) % viz_every == 0:
-                    figs = plot_level_histograms(eval_model, dataset.embeddings,
-                                               dataset.level_dims, device=device, warp_s=warp_s,
-                                               source_df=source_df, source_scales=source_scales,
-                                               epoch=epoch+1)
-                    import matplotlib.pyplot as plt
-                    for lname, fig in figs.items():
-                        log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
-                        plt.close(fig)
-                    del figs
-                    scatters = plot_level_scatter(eval_model, dataset.embeddings,
-                                                 dataset.level_dims, device=device, warp_s=warp_s,
-                                                 source_df=source_df, source_scales=source_scales,
-                                                 epoch=epoch+1)
-                    for lname, fig in scatters.items():
-                        is_real = lname.endswith('/real')
-                        if is_real and real_scatter_logged:
-                            fig.data = []
-                            continue
-                        log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
-                    real_scatter_logged = True
-                    del scatters
+                if level_dims and viz_every and (epoch + 1) % viz_every == 0:
+                    real_scatter_logged = _wandb_log_viz(
+                        log_dict, eval_model, dataset.embeddings, level_dims, epoch+1,
+                        real_scatter_logged, gen=gen, device=device, warp_s=warp_s,
+                        source_df=source_df, source_scales=source_scales)
+                    _wandb_log_jacobian(log_dict, eval_model,
+                                        dataset.embeddings[:256].float().to(device))
                     gc.collect()
                 log_dict['epoch'] = epoch+1
                 wandb.log(log_dict, step=global_step)
+            del gen
             model.train()
 
         save_checkpoint([model, ema_model.ema], epoch+1, avg_loss, cfg or {}, optimizer=optimizer,
@@ -892,7 +921,6 @@ def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
 
     print(f"FINISHED. Best metric: final loss={avg_loss:.4f}")
     return model
-
 
 # %% ../nbs/12_train_flow.ipynb #kreanhkpdc
 def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0.15, eta_min=1e-6):
@@ -932,12 +960,14 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                            fine_source_scales=None, checkpoint=None, cfg=None,
                            lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
                            ema_eta=0.97, ema_start_epoch=100, fine_level_names=None,
-                           decoder=None, pca_models=None, fine_levels_idx=None):
+                           decoder=None, pca_models=None, fine_levels_idx=None,
+                           repair_every=1, n_repair_projections=1, repair_chunk_size=None):
     """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
 
     decoder, pca_models, fine_levels_idx: if all provided, decode piano rolls during viz.
     fine_level_names: optional list of strings e.g. ['L4', 'L5'] for metric/histogram labels.
     viz_every: how often (epochs) to log histograms + scatter plots to W&B.
+    repair_every/n_repair_projections/repair_chunk_size: ann_repair OT re-pairing (same as train_flow).
     Checkpoints save both live model (with optimizer) and EMA model under distinct tags.
     Resume by pointing ++checkpoint at the EMA _best.pt file.
     """
@@ -950,8 +980,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     fine_model = fine_model.to(device)
     ema_model  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
 
-    # Use ChunkShuffleSampler for lazy datasets to avoid chunk thrashing;
-    # use shuffle=True when fine PCA data is fully loaded in RAM.
     use_fine_pca = getattr(dataset, '_use_fine_pca', False)
     if isinstance(dataset, ConditionalFlowDataset) and not use_fine_pca:
         sampler = ChunkShuffleSampler(dataset)
@@ -973,7 +1001,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     real_scatter_logged = False
 
     if checkpoint:
-        # checkpoint points at EMA file; restore both live model and EMA from it
         fine_model, ckpt = load_checkpoint(fine_model, checkpoint, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch']
@@ -1012,6 +1039,17 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             noise_fine   = sample_source((B, real_fine.size(1)), device=device,
                                          source_scales=fine_source_scales,
                                          level_dims=fine_level_dims)
+
+            if repair_every and global_step % repair_every == 0:
+                src_cat = torch.cat([noise_coarse, noise_fine], dim=1)
+                tgt_cat = torch.cat([real_coarse,  real_fine],  dim=1)
+                src_cat, tgt_cat = ann_repair(src_cat, tgt_cat,
+                                              n_projections=n_repair_projections,
+                                              chunk_size=repair_chunk_size)
+                noise_coarse = src_cat[:, :noise_coarse.size(1)]
+                noise_fine   = src_cat[:, noise_coarse.size(1):]
+                real_coarse  = tgt_cat[:, :real_coarse.size(1)]
+                real_fine    = tgt_cat[:, real_coarse.size(1):]
 
             x_t_coarse = (1 - t) * noise_coarse + t * real_coarse
             x_t_fine   = (1 - t) * noise_fine   + t * real_fine
@@ -1061,30 +1099,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
             if use_wandb and viz_every and (epoch + 1) % viz_every == 0:
                 import wandb
-                import matplotlib
-                matplotlib.use('Agg')
-                import matplotlib.pyplot as plt
                 from torchvision.utils import make_grid
 
-                figs = plot_level_histograms(eval_model, real_fine_eval,
-                                             fine_level_dims, epoch=epoch+1,
-                                             gen=gen_fine_cpu, level_names=fine_level_names)
-                for lname, fig in figs.items():
-                    log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
-                    plt.close(fig)
-                del figs
-
-                scatters = plot_level_scatter(eval_model, real_fine_eval,
-                                              fine_level_dims, epoch=epoch+1,
-                                              gen=gen_fine_cpu, level_names=fine_level_names)
-                for lname, fig in scatters.items():
-                    is_real = lname.endswith('/real')
-                    if is_real and real_scatter_logged:
-                        fig.data = []
-                        continue
-                    log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
-                real_scatter_logged = True
-                del scatters
+                real_scatter_logged = _wandb_log_viz(
+                    log_dict, eval_model, real_fine_eval, fine_level_dims, epoch+1,
+                    real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names)
 
                 if decoder is not None and pca_models is not None and fine_levels_idx is not None:
                     rolls = decode_flow_to_piano_rolls(
@@ -1094,19 +1113,12 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                     grid = make_grid(rolls[:16], nrow=4, normalize=True)
                     log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
 
-                # Jacobian norm vs t — reveals where the flow makes hard topological decisions
                 real_coarse_eval = dataset.coarse[:len(real_fine_eval)].to(device)
                 with torch.no_grad():
                     cond_eval = coarse_model(real_coarse_eval,
                                              torch.ones(len(real_coarse_eval), 1, device=device) * 0.5)
-                t_vals, jac_norms = eval_jacobian_norm_vs_t(
-                    eval_model, real_fine_eval[:256], n_t=20, n_epsilon=4,
-                    cond=cond_eval[:256], device=device)
-                jac_table = wandb.Table(columns=['t', 'jacobian_norm'],
-                                        data=[[t, n] for t, n in zip(t_vals, jac_norms)])
-                log_dict['eval/jacobian_norm_vs_t'] = wandb.plot.line(
-                    jac_table, 't', 'jacobian_norm', title='Jacobian Frobenius Norm vs t')
-
+                _wandb_log_jacobian(log_dict, eval_model, real_fine_eval[:256],
+                                    cond=cond_eval[:256], device=device)
                 gc.collect()
 
             fine_model.train()
@@ -1116,8 +1128,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             wandb.log(log_dict, step=global_step)
 
         if save_every and (epoch + 1) % save_every == 0:
-            # Save live model (with optimizer) and EMA model separately under distinct tags
-            # so both can be restored independently on resume.
             save_checkpoint(fine_model,    epoch+1, avg_loss, cfg or {},
                             optimizer=optimizer, save_every=save_every,
                             tag='flow2_fine_live')
