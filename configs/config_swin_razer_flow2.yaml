@@ -9,3 +9,4 @@ flow2:
   grad_clip: 0.1             # tight clipping to compensate for high LR
   ema_eta: 0.9               # fast EMA tracking
   fine_source_scales: [1.0, 1.0]
+  batch_size: 1024           # must be < chunk_size (~2556) to avoid per-batch chunk reloads

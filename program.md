@@ -390,6 +390,44 @@ This is a stricter version of what `factorization_metrics` already measures via 
 - **Linear probe on music attributes**: Train a linear classifier on frozen embeddings to predict key, tempo, or instrument — measures semantic content without fine-tuning.
 - **Reconstruction quality vs. encoder quality correlation**: Track whether decoder F1 reliably tracks encoder val_loss across runs (confirmed for exp9→dec1, but more data points needed).
 
+### Classifier-free guidance (CFG) for the conditional fine flow model
+
+The `ConditionalFineFlowModel` conditions L4/L5 generation on the coarse L0-L3 flow output. CFG could sharpen the generated fine-level distribution by training with occasional conditioning dropout and amplifying the conditioning signal at inference.
+
+**How it would work**: During training, randomly zero out (or replace with a learned null embedding) the coarse conditioning input ~10–20% of the time. The model learns both unconditional `p(x_fine)` and conditional `p(x_fine | x_coarse)`. At inference, run two forward passes per step and interpolate: `v_guided = v_uncond + w*(v_cond - v_uncond)`. Scale `w > 1` amplifies the conditioning, sharpening the distribution toward what the coarse context implies.
+
+**Why it might help**: The current symptom — smooth generated marginals vs. spiked real data marginals — could reflect the model being insufficiently "committed" to what the coarse context implies. CFG w > 1 would push generated samples harder toward the conditional distribution, potentially producing tighter/spikier marginals that better match real data. Training cost is minimal (just a random dropout on the conditioning input, no architecture change).
+
+**Why it may not help**: Our conditioning is "hard" — the coarse embeddings are concatenated directly as a dense input vector, giving the model a clear gradient path to use them. The model may already be exploiting the conditioning fully. The spiky-vs-smooth problem may be a capacity or training-time issue that more epochs will resolve on its own. CFG also doubles inference cost (two forward passes per ODE step).
+
+**Verdict**: Low-cost experiment worth trying *after* seeing whether the `source_scales=[1.0,1.0]` and `ema_eta=0.9` fixes improve histogram matching. If marginals are still too smooth after adequate training, CFG w ∈ {1.5, 2.0} is a natural next lever. Implementation: add `cfg_dropout_prob=0.15` to `ConditionalFineFlowModel` training, pass `w` as an inference argument to `train_flow_conditional`/`generate`.
+
+### PCA compression of fine-level embeddings (high priority)
+
+**The core problem**: `flow2` currently trains in the raw fine embedding space: L4 = 256 patches × 16 dims = 4096 dims; L5 = 1024 patches × 8 dims = 8192 dims; total ~12,000 dims. But from PCA analysis, L4 has only ~6 effective dims and L5 only ~3. We are training a flow model in 12,000-dimensional space when the data lives on a ~9-dimensional manifold. The model wastes enormous capacity discovering that 11,991 directions have near-zero variance — likely explaining the "3 big blobs" result and slow convergence.
+
+**The fix**: Fit PCA on the fine levels (L4, L5) exactly as we do for coarse (L0–L3), store the transforms in `POP909_pca_exp26/` as `pca_L4_n6.pkl` and `pca_L5_n3.pkl` (or use n=20 for consistency and let variance explain itself), then pass fine-level PCA projections to `ConditionalFlowDataset` the same way coarse ones are passed. `flow2` would then operate in ~9-dim (or ~40-dim with n=20) space instead of 12K-dim space.
+
+**Why this is different from the coarse levels**: The coarse PCA is per-level (each level's patch embeddings concatenated across patches, then PCA'd). The same approach works for fine levels — treat each level's full embedding tensor as a single vector per sample, fit PCA, project.
+
+**Expected impact**: Large. A 9-dim flow model trained on the same data as a 12K-dim one should converge orders of magnitude faster and produce much tighter distributions. This is the single highest-leverage change to try for the "3 blobs instead of 5 clusters" problem.
+
+**Implementation**: Extend `fit_pca` (or the existing fitpca script) to also fit transforms for fine levels L4/L5. Then update `ConditionalFlowDataset` to optionally load and apply fine-level PCA transforms. The config would add `flow2.fine_pca_n_components: 20` (or similar).
+
+### Ablation: is the conditioning signal actually being used?
+
+Before reaching for advanced techniques, check whether `ConditionalFineFlowModel` is actually using the coarse conditioning input. **Test**: run inference with the coarse conditioning zeroed out vs. real coarse embeddings. If the histograms are identical, the model has learned to ignore the conditioning — the problem is architectural (conditioning not reaching the velocity prediction path) rather than optimization. If they differ noticeably, the conditioning is working and the problem is elsewhere.
+
+### Advanced flow techniques (from Gemini suggestion, lower priority)
+
+These were suggested in the context of disjoint target distributions. Note that our toy 1D Gaussian → 2 disjoint Gaussians worked fine, so none of these are likely the root cause.
+
+- **Divergence matching**: Add `div(v)` term to the FM loss to enforce the continuity equation more strictly near bifurcation regions. Theoretically sound but expensive in high dimensions (needs Hutchinson trace estimator). Skip until the PCA compression approach is tried.
+
+- **Soft-OT / Sinkhorn entropic transport**: Replace hard mini-batch OT (`ann_repair`) with entropy-regularized Sinkhorn assignments. Would smooth the velocity field near cluster boundaries. Harder to scale than `ann_repair` (O(B²) vs O(B log B)) and we already have approximate OT. Low priority.
+
+- **Schrödinger Bridge / cluster-aware prior**: Instead of mapping a standard Gaussian source to the fine embeddings, initialize from a distribution that already knows about the cluster structure. In our case, the coarse embeddings already provide some of this signal via conditioning. A more explicit version: use a GMM fitted on the fine PCA projections as the source distribution instead of a standard Gaussian. This directly addresses the topological mismatch between a unimodal source and a multimodal target.
+
 ### Discrete flow matching on the piano roll lattice (speculative)
 
 Piano roll pixels form a natural binary lattice (note on/off). Discrete flow matching (e.g. MDLM, SEDD, or discrete rectified flow) operates directly on categorical/binary spaces without needing a continuous embedding — the "flow" moves between discrete states rather than interpolating in ℝⁿ. Applied to piano rolls, this would mean learning a generative model directly over the pixel grid rather than in the encoder's continuous latent space.
