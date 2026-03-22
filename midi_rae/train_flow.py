@@ -1004,9 +1004,13 @@ def _run_flow2(cfg: DictConfig):
         t_dim        = cfg.flow.get('t_dim', 64),
     )
     from midi_rae.utils import load_checkpoint
-    coarse_ckpt = os.path.expandvars(os.path.expanduser(str(flow2.coarse_ckpt)))
-    coarse_model = load_checkpoint(coarse_model, coarse_ckpt)
-    print(f"  Loaded coarse model from {coarse_ckpt}")
+    coarse_ckpt = flow2.get('coarse_ckpt', None)
+    if coarse_ckpt and str(coarse_ckpt).lower() not in ('none', 'null', ''):
+        coarse_ckpt = os.path.expandvars(os.path.expanduser(str(coarse_ckpt)))
+        coarse_model = load_checkpoint(coarse_model, coarse_ckpt)
+        print(f"  Loaded coarse model from {coarse_ckpt}")
+    else:
+        print("  coarse_ckpt not set — coarse model starts from random weights")
 
     fine_model = ConditionalFineFlowModel(
         cond_dims    = coarse_level_dims,
@@ -1123,4 +1127,3 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == "__main__":
     train_flow_main()
-
