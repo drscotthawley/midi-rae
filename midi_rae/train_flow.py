@@ -893,6 +893,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     Resume by pointing ++checkpoint at the EMA _best.pt file.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
+    from midi_rae.data import ChunkShuffleSampler, ConditionalFlowDataset
     coarse_model = coarse_model.to(device)
     coarse_model.eval()
     for p in coarse_model.parameters(): p.requires_grad_(False)
@@ -900,8 +901,15 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     fine_model = fine_model.to(device)
     ema_model  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
 
-    dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                    num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
+    # Use ChunkShuffleSampler for lazy datasets to avoid chunk thrashing;
+    # fall back to shuffle=True for fully-loaded datasets.
+    if isinstance(dataset, ConditionalFlowDataset):
+        sampler = ChunkShuffleSampler(dataset)
+        dl = DataLoader(dataset, batch_size=batch_size, sampler=sampler,
+                        num_workers=0, pin_memory=(device != 'cpu'), drop_last=True)
+    else:
+        dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                        num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
     dl_iter = None
     _steps  = steps_per_epoch or len(dl)
 
@@ -927,6 +935,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     fine_level_dims   = dataset.fine_level_dims
     coarse_dim        = dataset.coarse.shape[1]
     coarse_level_dims = dataset.coarse_level_dims
+
+    # Pre-load eval fine data from the first chunk (avoids scanning full dataset)
+    def _get_eval_fine(n=2000):
+        dataset._load_fine_chunk(0)
+        return dataset._fine_chunk_data[:n].float()
 
     for epoch in range(epoch_start, n_epochs):
         fine_model.train()
@@ -987,8 +1000,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                 coarse_level_dims=coarse_level_dims,
                 fine_source_scales=fine_source_scales,
             )
-            idx = torch.randperm(len(dataset))[:2000]
-            real_fine_eval = dataset.fine[idx].float()
+            real_fine_eval = _get_eval_fine(2000)
             gen_fine_cpu = gen_fine.cpu()
 
             metrics = eval_flow(eval_model, real_fine_eval,

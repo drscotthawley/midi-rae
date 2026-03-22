@@ -424,6 +424,8 @@ class EmbeddingDataset(Dataset):
     def __getitem__(self, i): return self.embeddings[i]
 
 # %% ../nbs/01_data.ipynb #jflcahvd7s
+import bisect
+
 class ConditionalFlowDataset(Dataset):
     """Paired dataset for training ConditionalFineFlowModel.
 
@@ -431,8 +433,9 @@ class ConditionalFlowDataset(Dataset):
       x_coarse : flat PCA-compressed L0-L3  [sum_pca_dims]  — matches first-stage flow output
       x_fine   : flat raw L4+L5 embeddings  [N_L4*D_L4 + N_L5*D_L5]
 
-    Chunks are aligned by index: train_chunk00000_pca20.pt pairs with
-    train_chunk00000.pt for guaranteed sample-level correspondence.
+    Coarse PCA data is loaded fully upfront (small: ~70 dims per sample).
+    Fine data is loaded lazily one chunk at a time to avoid exhausting RAM
+    (fine embeddings are ~12K dims per sample across 96 chunks = tens of GB).
 
     Args:
         pca_dir:      directory containing train_chunk*_pca20.pt files (L0-L3)
@@ -452,45 +455,83 @@ class ConditionalFlowDataset(Dataset):
 
         pca_files = sorted(_glob.glob(os.path.join(pca_dir,     f'{split}_chunk*_pca20.pt')))
         raw_files = sorted(_glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
-        # Keep only raw files that are NOT pca files (exclude *_pca20.pt)
         raw_files = [f for f in raw_files if not f.endswith('_pca20.pt')]
         assert pca_files, f"No {split}_chunk*_pca20.pt in {pca_dir}"
         assert raw_files, f"No {split}_chunk*.pt in {encoded_dir}"
         assert len(pca_files) == len(raw_files), \
             f"Chunk count mismatch: {len(pca_files)} pca vs {len(raw_files)} raw"
 
-        coarse_all, fine_all = [], []
-        for pf, rf in zip(pca_files, raw_files):
-            # --- Coarse: PCA L0-L3 ---
+        self._raw_files  = raw_files
+        self._fine_levels = fine_levels
+        self._emb_key    = emb_key
+
+        # Load all coarse PCA data upfront — it's small (~70 dims per sample)
+        print(f"  Loading coarse PCA data ({len(pca_files)} chunks)...", flush=True)
+        coarse_all = []
+        self._chunk_offsets = [0]
+        for pf in pca_files:
             pca_data = torch.load(pf, weights_only=False)
             tensors  = [pca_data[lv].float() for lv in pca_levels]
             tensors  = [t.flatten(1) if t.dim() == 3 else t for t in tensors]
             if not hasattr(self, '_coarse_level_dims'):
                 self._coarse_level_dims = [t.shape[1] for t in tensors]
-            coarse_all.append(torch.cat(tensors, dim=1))  # (N_chunk, sum_pca_dims)
+            chunk = torch.cat(tensors, dim=1)
+            coarse_all.append(chunk)
+            self._chunk_offsets.append(self._chunk_offsets[-1] + len(chunk))
+        self.coarse = torch.cat(coarse_all, dim=0)
+        print(f"  Coarse loaded: {len(self.coarse)} samples, {self.coarse.shape[1]} dims", flush=True)
 
-            # --- Fine: raw L4, L5 from preencode chunks ---
-            raw_data  = torch.load(rf, weights_only=False)   # list of batch-dicts
-            fine_lvls = []
-            for batch_rec in raw_data:
-                levels_tensors = [batch_rec[emb_key][li].float()  # (B, N_patches, D)
+        # Peek at first raw chunk to get fine level dims, without keeping it in memory
+        raw0 = torch.load(raw_files[0], weights_only=False)
+        self._fine_level_dims = [raw0[0][emb_key][li].float().flatten(1).shape[1]
                                   for li in fine_levels]
-                levels_flat = [t.flatten(1) for t in levels_tensors]  # (B, N*D) each
-                fine_lvls.append(torch.cat(levels_flat, dim=1))       # (B, sum_fine_dims)
-            fine_chunk = torch.cat(fine_lvls, dim=0)                  # (N_chunk, sum_fine_dims)
-            if not hasattr(self, '_fine_level_dims'):
-                self._fine_level_dims = [t.flatten(1).shape[1] for t in
-                                         [raw_data[0][emb_key][li].float() for li in fine_levels]]
-            fine_all.append(fine_chunk)
+        del raw0
 
-        self.coarse = torch.cat(coarse_all, dim=0)   # (N_total, sum_pca_dims)
-        self.fine   = torch.cat(fine_all,   dim=0)   # (N_total, sum_fine_dims)
-        assert len(self.coarse) == len(self.fine), \
-            f"Sample count mismatch after loading: {len(self.coarse)} vs {len(self.fine)}"
         self.coarse_level_dims = self._coarse_level_dims
         self.fine_level_dims   = self._fine_level_dims
+
+        # Fine data: lazy — one chunk loaded at a time
+        self._fine_chunk_idx  = -1
+        self._fine_chunk_data = None   # (N_chunk, sum_fine_dims) tensor
+
+    def _load_fine_chunk(self, chunk_idx):
+        if self._fine_chunk_idx == chunk_idx:
+            return
+        raw_data  = torch.load(self._raw_files[chunk_idx], weights_only=False)
+        fine_lvls = []
+        for batch_rec in raw_data:
+            lvl_tensors = [batch_rec[self._emb_key][li].float() for li in self._fine_levels]
+            fine_lvls.append(torch.cat([t.flatten(1) for t in lvl_tensors], dim=1))
+        self._fine_chunk_data = torch.cat(fine_lvls, dim=0)
+        self._fine_chunk_idx  = chunk_idx
 
     def __len__(self): return len(self.coarse)
 
     def __getitem__(self, i):
-        return self.coarse[i], self.fine[i]
+        chunk_idx = bisect.bisect_right(self._chunk_offsets, i) - 1
+        self._load_fine_chunk(chunk_idx)
+        local_i = i - self._chunk_offsets[chunk_idx]
+        return self.coarse[i], self._fine_chunk_data[local_i]
+
+
+class ChunkShuffleSampler(torch.utils.data.Sampler):
+    """Yields indices chunk-by-chunk in shuffled order, with within-chunk shuffle.
+
+    Use instead of shuffle=True in the DataLoader when the dataset loads
+    fine data lazily per chunk — this ensures each chunk is loaded once
+    per epoch rather than being thrashed by fully random access.
+    """
+    def __init__(self, dataset: ConditionalFlowDataset, generator=None):
+        self.offsets   = dataset._chunk_offsets   # [0, N0, N0+N1, ...]
+        self.generator = generator
+
+    def __len__(self):
+        return self.offsets[-1]
+
+    def __iter__(self):
+        n_chunks = len(self.offsets) - 1
+        chunk_order = torch.randperm(n_chunks, generator=self.generator).tolist()
+        for ci in chunk_order:
+            start, end = self.offsets[ci], self.offsets[ci + 1]
+            within = torch.randperm(end - start, generator=self.generator) + start
+            yield from within.tolist()
