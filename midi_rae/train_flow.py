@@ -3,9 +3,9 @@
 # %% auto #0
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'FiLM', 'ConditionalFineFlowModel',
            'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional', 'ann_repair',
-           'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms',
-           'plot_level_scatter', 'decode_flow_to_piano_rolls', 'train_flow', 'make_warmup_cosine_restart_scheduler',
-           'train_flow_conditional', 'train_flow_main']
+           'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow', 'eval_jacobian_norm_vs_t',
+           'plot_level_histograms', 'plot_level_scatter', 'decode_flow_to_piano_rolls', 'train_flow',
+           'make_warmup_cosine_restart_scheduler', 'train_flow_conditional', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -571,6 +571,50 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
         print(f'  {k:{w}s} = {v:.4f}')
     return metrics
 
+# %% ../nbs/12_train_flow.ipynb #lgog7ub4ikl
+def eval_jacobian_norm_vs_t(model, x_sample, n_t=20, n_epsilon=4, cond=None, device='cpu'):
+    """Estimate Frobenius norm of the Jacobian dv/dx as a function of t.
+
+    Uses Hutchinson estimator: E_ε[||J^T ε||²] = ||J||²_F  with Rademacher ε.
+    A peak in the curve at some t* reveals where the flow is making its hardest
+    topological decisions (routing mass to disjoint clusters).
+
+    Args:
+        model:     velocity field; called as model(x, t) or model(x, t, cond)
+        x_sample:  (B, D) batch of real data points
+        n_t:       number of time steps to sweep
+        n_epsilon: number of Rademacher samples per t (more = lower variance)
+        cond:      optional conditioning tensor (B, cond_dim) for conditional models
+        device:    compute device
+    Returns:
+        t_vals (list[float]), norm_vals (list[float])
+    """
+    model.eval()
+    x_sample = x_sample.to(device).float()
+    t_vals, norm_vals = [], []
+
+    for t_val in torch.linspace(0.01, 0.99, n_t).tolist():
+        t = torch.full((len(x_sample), 1), t_val, device=device)
+        x = x_sample.detach().requires_grad_(True)
+
+        est_list = []
+        for _ in range(n_epsilon):
+            epsilon = (torch.randint_like(x, low=0, high=2).float() * 2 - 1)  # Rademacher ±1
+            if cond is not None:
+                v = model(x, t, cond.to(device))
+            else:
+                v = model(x, t)
+            vjp = torch.autograd.grad(v, x, grad_outputs=epsilon,
+                                       retain_graph=True, create_graph=False)[0]
+            # Frobenius norm estimator: E[||J^T ε||²] = ||J||²_F
+            est_list.append(vjp.pow(2).sum(dim=-1))   # (B,)
+
+        norm_sq = torch.stack(est_list).mean(0).mean().item()   # scalar
+        t_vals.append(t_val)
+        norm_vals.append(norm_sq ** 0.5)              # sqrt for Frobenius norm
+
+    return t_vals, norm_vals
+
 # %% ../nbs/12_train_flow.ipynb #52b2733e
 @torch.no_grad()
 def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
@@ -1042,6 +1086,19 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                         fine_levels_idx, cfg, decoder, device, n_samples=16)
                     grid = make_grid(rolls[:16], nrow=4, normalize=True)
                     log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
+
+                # Jacobian norm vs t — reveals where the flow makes hard topological decisions
+                real_coarse_eval = dataset.coarse[:len(real_fine_eval)].to(device)
+                with torch.no_grad():
+                    cond_eval = coarse_model(real_coarse_eval,
+                                             torch.ones(len(real_coarse_eval), 1, device=device) * 0.5)
+                t_vals, jac_norms = eval_jacobian_norm_vs_t(
+                    eval_model, real_fine_eval[:256], n_t=20, n_epsilon=4,
+                    cond=cond_eval[:256], device=device)
+                jac_table = wandb.Table(columns=['t', 'jacobian_norm'],
+                                        data=[[t, n] for t, n in zip(t_vals, jac_norms)])
+                log_dict['eval/jacobian_norm_vs_t'] = wandb.plot.line(
+                    jac_table, 't', 'jacobian_norm', title='Jacobian Frobenius Norm vs t')
 
                 gc.collect()
 
