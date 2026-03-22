@@ -36,8 +36,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "generate" ]]; then
-    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', or 'generate', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', or 'generate', got '${TYPE}'"
     exit 1
 fi
 
@@ -80,6 +80,9 @@ elif [[ "$TYPE" = "fitpca" ]]; then
     MODULE="midi_rae.fit_pca"
 elif [[ "$TYPE" = "generate" ]]; then
     MODULE="midi_rae.generate"
+elif [[ "$TYPE" = "flow2" ]]; then
+    MODULE="midi_rae.train_flow"   # _run_flow2 dispatched via ++flow_stage=2 Hydra override
+    EXTRA_OVERRIDES="++flow_stage=2 ${EXTRA_OVERRIDES}"
 else
     MODULE="midi_rae.train_${TYPE}"
 fi

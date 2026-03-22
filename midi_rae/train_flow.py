@@ -5,7 +5,7 @@ __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLeve
            'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional', 'ann_repair',
            'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms',
            'plot_level_scatter', 'train_flow', 'make_warmup_cosine_restart_scheduler', 'train_flow_main',
-           'train_flow_conditional', 'train_flow2_main']
+           'train_flow_conditional']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -822,6 +822,10 @@ from omegaconf import DictConfig
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def train_flow_main(cfg: DictConfig):
+
+    if cfg.get("flow_stage", 1) == 2:
+        _run_flow2(cfg)
+        return
     import glob as _glob
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"device = {device}")
@@ -1006,8 +1010,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 import hydra
 from omegaconf import DictConfig
 
-@hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
-def train_flow2_main(cfg: DictConfig):
+def _run_flow2(cfg: DictConfig):
     """Entry point for second-stage conditional fine-level flow training."""
     from midi_rae.data import ConditionalFlowDataset
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -1085,5 +1088,4 @@ def train_flow2_main(cfg: DictConfig):
     )
     if use_wandb: wandb.finish()
 
-if __name__ == "__main__":
-    train_flow2_main()
+

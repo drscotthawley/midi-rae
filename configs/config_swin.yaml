@@ -89,6 +89,29 @@ flow:
   n_heads: 8                  # cross_level only: attention heads (h_dim must be divisible by n_heads)
   t_dim: 64                   # sinusoidal time embedding dim (replaces bare scalar t in all model types)
   
+flow2:
+  pca_dir: $HOME/datasets/POP909_pca_exp26         # dir with *_pca20.pt (coarse L0-L3)
+  encoded_dir: $HOME/datasets/POP909_encoded_exp26 # dir with train_chunk*.pt (fine L4/L5)
+  coarse_ckpt: null                                # path to trained coarse flow checkpoint
+  checkpoint_dir: checkpoints/flow2
+  h_dim: 256
+  n_layers: 4
+  n_attn_layers: 2
+  n_heads: 8
+  t_dim: 64
+  n_epochs: 100000
+  lr: 1e-3
+  batch_size: 4096
+  steps_per_epoch: 1000
+  save_every: 10
+  eval_every: 10
+  lr_restart_epochs: 500
+  lr_warmup_frac: 0.15
+  ema_eta: 0.97
+  ema_start_epoch: 0
+  warp_s: 0.5
+  fine_source_scales: [0.5, 0.25]  # scale factors for L4, L5 (finer → smaller scale)
+
 wandb:
   project: ar-mep-swin-midi-rae
   flow_project: midi-rae-flow
