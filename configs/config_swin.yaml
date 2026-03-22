@@ -113,7 +113,7 @@ flow2:
   ema_start_epoch: 0
   warp_s: 0.5
   fine_source_scales: [1.0, 1.0]  # scale factors for L4, L5
-  fine_pca_dir: $HOME/datasets/POP909_pca_exp26
+  fine_pca_dir: $HOME/datasets/POP909_encoded_exp26_pca
   fine_n_components: [5, 3]   # L4=5 (90.1%), L5=3 (95.5%)
 
 fitpca:
