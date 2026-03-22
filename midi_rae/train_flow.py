@@ -619,27 +619,33 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
 @torch.no_grad()
 def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
                        n_steps=20, warp_s=0.5, device='cpu',
-                       source_df=None, source_scales=None, epoch=None):
+                       source_df=None, source_scales=None, epoch=None,
+                       gen=None, level_names=None):
     """Return dict of per-level 3D PCA scatter plots {'L0/real': fig, 'L0/gen': fig, ...}.
-    Subsamples to n_samples, runs pca_project per level, returns plotly figures.
+    gen: optional pre-computed generated samples — skips generate_samples().
+    level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' labels.
     """
     from midi_rae.viz import pca_project, plot_embeddings_3d
-    dim = real_embeddings.shape[1]
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
     real = real_embeddings[idx].float()
-    gen  = generate_samples(model, n_samples, dim, device=device,
-                            n_steps=n_steps, warp_s=warp_s, source_df=source_df,
-                            source_scales=source_scales, level_dims=level_dims).cpu()
+    if gen is None:
+        dim = real_embeddings.shape[1]
+        gen = generate_samples(model, n_samples, dim, device=device,
+                               n_steps=n_steps, warp_s=warp_s, source_df=source_df,
+                               source_scales=source_scales, level_dims=level_dims).cpu()
+    else:
+        gen = gen[:n_samples].float().cpu()
     figs = {}
     offset = 0
     for i, d in enumerate(level_dims):
         r = real[:, offset:offset+d]
         g = gen[:,  offset:offset+d]
+        lname = level_names[i] if level_names else f'L{i}'
         title_sfx = f' — Epoch {epoch}' if epoch is not None else ''
         r3 = pca_project(r)
         g3 = pca_project(g)
-        if r3 is not None: figs[f'L{i}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'L{i} ({d}d) real{title_sfx}')
-        if g3 is not None: figs[f'L{i}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'L{i} ({d}d) gen{title_sfx}')
+        if r3 is not None: figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({d}d) real{title_sfx}')
+        if g3 is not None: figs[f'{lname}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'{lname} ({d}d) gen{title_sfx}')
         offset += d
     return figs
 
@@ -830,7 +836,7 @@ def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0
 def train_flow_conditional(coarse_model, fine_model, dataset,
                            n_epochs=100000, lr=1e-3, batch_size=4096,
                            warp_s=0.5, device='cpu',
-                           checkpoint_dir=None, save_every=10, eval_every=10,
+                           checkpoint_dir=None, save_every=10, eval_every=10, viz_every=20,
                            use_wandb=False, steps_per_epoch=None,
                            fine_source_scales=None, checkpoint=None, cfg=None,
                            lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
@@ -849,6 +855,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     dataset must be a ConditionalFlowDataset returning (x_coarse, x_fine) pairs.
     coarse_model is kept frozen throughout (no gradients, no optimizer step).
     fine_level_names: optional list of strings e.g. ['L4', 'L5'] for metric/histogram labels.
+    viz_every: how often (epochs) to log histograms + scatter plots to W&B (must be multiple of eval_every).
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     coarse_model = coarse_model.to(device)
@@ -870,6 +877,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
     global_step = 0
     epoch_start = 0
+    real_scatter_logged = False
     if checkpoint:
         fine_model, ckpt = load_checkpoint(fine_model, checkpoint, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -944,23 +952,38 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             )
             idx = torch.randperm(len(dataset))[:2000]
             real_fine_eval = dataset.fine[idx].float()
+            gen_fine_cpu = gen_fine.cpu()
 
             metrics = eval_flow(eval_model, real_fine_eval,
                                 n_samples=2000, level_dims=fine_level_dims,
-                                gen=gen_fine.cpu(), level_names=fine_level_names)
+                                gen=gen_fine_cpu, level_names=fine_level_names)
             log_dict.update({f'eval/{k}': v for k, v in metrics.items()})
 
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            figs = plot_level_histograms(eval_model, real_fine_eval,
-                                         fine_level_dims, epoch=epoch+1,
-                                         gen=gen_fine.cpu(), level_names=fine_level_names)
-            if use_wandb:
+            if use_wandb and viz_every and (epoch + 1) % viz_every == 0:
                 import wandb
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                figs = plot_level_histograms(eval_model, real_fine_eval,
+                                             fine_level_dims, epoch=epoch+1,
+                                             gen=gen_fine_cpu, level_names=fine_level_names)
                 for lname, fig in figs.items():
                     log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
                     plt.close(fig)
+                del figs
+                scatters = plot_level_scatter(eval_model, real_fine_eval,
+                                              fine_level_dims, epoch=epoch+1,
+                                              gen=gen_fine_cpu, level_names=fine_level_names)
+                for lname, fig in scatters.items():
+                    is_real = lname.endswith('/real')
+                    if is_real and real_scatter_logged:
+                        fig.data = []
+                        continue
+                    log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
+                real_scatter_logged = True
+                del scatters
+                gc.collect()
+
             fine_model.train()
 
         if use_wandb:
@@ -1048,6 +1071,7 @@ def _run_flow2(cfg: DictConfig):
         checkpoint_dir    = flow2.checkpoint_dir,
         save_every        = flow2.get('save_every', 10),
         eval_every        = flow2.get('eval_every', 10),
+        viz_every         = flow2.get('viz_every', 20),
         use_wandb         = use_wandb,
         steps_per_epoch   = flow2.get('steps_per_epoch', None),
         fine_source_scales= fine_source_scales,
