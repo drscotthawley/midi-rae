@@ -4,8 +4,8 @@
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'FiLM', 'ConditionalFineFlowModel',
            'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional', 'ann_repair',
            'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow', 'plot_level_histograms',
-           'plot_level_scatter', 'train_flow', 'make_warmup_cosine_restart_scheduler', 'train_flow_conditional',
-           'train_flow_main']
+           'plot_level_scatter', 'decode_flow_to_piano_rolls', 'train_flow', 'make_warmup_cosine_restart_scheduler',
+           'train_flow_conditional', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -649,6 +649,48 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
         offset += d
     return figs
 
+# %% ../nbs/12_train_flow.ipynb #9jf9xpgrqr
+@torch.no_grad()
+def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
+                                coarse_level_dims, fine_level_dims, fine_levels_idx,
+                                cfg, decoder, device, n_samples=16):
+    """Decode flow-generated coarse PCA + fine embeddings directly to piano rolls (no HMEP).
+    coarse_pca:  (B, sum_coarse_dims) PCA-compressed coarse embeddings
+    fine_emb:    (B, sum_fine_dims) raw fine-level embeddings from conditional flow
+    fine_levels_idx: list of level indices e.g. [4, 5]
+    """
+    from midi_rae.generate import build_patch_states, batch_patch_states, build_enc_out, make_grid_pos, binarize
+    from midi_rae.core import PatchState
+
+    B = min(n_samples, coarse_pca.shape[0])
+    coarse_pca = coarse_pca[:B].float()
+    fine_emb   = fine_emb[:B].float()
+
+    # Inverse PCA → coarse PatchState list
+    states = [build_patch_states(coarse_pca[b], pca_models, coarse_level_dims, device)
+              for b in range(B)]
+    all_levels = batch_patch_states(states)
+
+    # Fine levels: reshape directly from flat flow output (no HMEP)
+    n_stages  = len(list(cfg.model.depths))
+    embed_dim = cfg.model.embed_dim
+    enc_dims  = [int(embed_dim * 2**(n_stages - 1 - i)) for i in range(n_stages)]
+    offset = 0
+    for j, li in enumerate(fine_levels_idx):
+        d             = fine_level_dims[j]
+        n_patches     = 4 ** li
+        dim_per_patch = enc_dims[li]
+        emb = fine_emb[:, offset:offset+d].reshape(B, n_patches, dim_per_patch).to(device)
+        pos = make_grid_pos(n_patches, device)
+        all_levels.append(PatchState(emb=emb, pos=pos,
+                                     non_empty=torch.ones(B, n_patches, device=device),
+                                     mae_mask=torch.ones(n_patches, device=device)))
+        offset += d
+
+    enc_out = build_enc_out(all_levels)
+    recons  = decoder(enc_out)
+    return binarize(recons)
+
 # %% ../nbs/12_train_flow.ipynb #a5707933
 def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
                warp_s=0.5, device='cpu', checkpoint_dir=None, save_every=10,
@@ -840,22 +882,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                            use_wandb=False, steps_per_epoch=None,
                            fine_source_scales=None, checkpoint=None, cfg=None,
                            lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
-                           ema_eta=0.97, ema_start_epoch=100, fine_level_names=None):
+                           ema_eta=0.97, ema_start_epoch=100, fine_level_names=None,
+                           decoder=None, pca_models=None, fine_levels_idx=None):
     """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
 
-    At each step:
-      1. Sample t, noise_coarse, noise_fine
-      2. Interpolate: x_t_coarse = (1-t)*noise_coarse + t*real_coarse
-                      x_t_fine   = (1-t)*noise_fine   + t*real_fine
-      3. frozen coarse forward: v_coarse = coarse_model(x_t_coarse, t)
-         → x1_pred_coarse = x_t_coarse + (1-t)*v_coarse  (predicted endpoint)
-      4. fine model: v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
-      5. loss = MSE(v_pred, real_fine - noise_fine)
-
-    dataset must be a ConditionalFlowDataset returning (x_coarse, x_fine) pairs.
-    coarse_model is kept frozen throughout (no gradients, no optimizer step).
+    decoder, pca_models, fine_levels_idx: if all provided, decode piano rolls during viz.
     fine_level_names: optional list of strings e.g. ['L4', 'L5'] for metric/histogram labels.
-    viz_every: how often (epochs) to log histograms + scatter plots to W&B (must be multiple of eval_every).
+    viz_every: how often (epochs) to log histograms + scatter plots to W&B.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     coarse_model = coarse_model.to(device)
@@ -942,7 +975,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
         if eval_every and (epoch + 1) % eval_every == 0:
             eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
-            _, gen_fine = generate_samples_conditional(
+            gen_coarse, gen_fine = generate_samples_conditional(
                 coarse_model, eval_model,
                 n_samples=2000, coarse_dim=coarse_dim,
                 target_dims=fine_level_dims, device=device,
@@ -964,6 +997,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                 import matplotlib
                 matplotlib.use('Agg')
                 import matplotlib.pyplot as plt
+                from torchvision.utils import make_grid
+
                 figs = plot_level_histograms(eval_model, real_fine_eval,
                                              fine_level_dims, epoch=epoch+1,
                                              gen=gen_fine_cpu, level_names=fine_level_names)
@@ -971,6 +1006,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                     log_dict[f'media/hist_{lname}'] = wandb.Image(fig, caption=f'Epoch {epoch+1}')
                     plt.close(fig)
                 del figs
+
                 scatters = plot_level_scatter(eval_model, real_fine_eval,
                                               fine_level_dims, epoch=epoch+1,
                                               gen=gen_fine_cpu, level_names=fine_level_names)
@@ -982,6 +1018,15 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                     log_dict[f'media/scatter_{lname.replace("/", "_")}'] = wandb.Html(fig.to_html())
                 real_scatter_logged = True
                 del scatters
+
+                if decoder is not None and pca_models is not None and fine_levels_idx is not None:
+                    rolls = decode_flow_to_piano_rolls(
+                        gen_coarse.cpu(), gen_fine_cpu,
+                        pca_models, coarse_level_dims, fine_level_dims,
+                        fine_levels_idx, cfg, decoder, device, n_samples=16)
+                    grid = make_grid(rolls[:16], nrow=4, normalize=True)
+                    log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
+
                 gc.collect()
 
             fine_model.train()
@@ -1061,6 +1106,30 @@ def _run_flow2(cfg: DictConfig):
     checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
     fine_level_names = [f'L{l}' for l in fine_levels]
 
+    # Load decoder + PCA models for piano roll visualization (optional)
+    decoder, pca_models = None, None
+    decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
+    if decoder_ckpt:
+        import pickle
+        from pathlib import Path
+        from midi_rae.swin import SwinDecoder
+        m = cfg.model
+        decoder = SwinDecoder(
+            img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+            patch_h=m.patch_h, patch_w=m.patch_w, out_channels=cfg.data.in_channels,
+            embed_dim=m.embed_dim, depths=list(m.dec_depths),
+            num_heads=list(m.dec_num_heads), window_size=m.window_size,
+            mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
+        decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
+        for p in decoder.parameters(): p.requires_grad_(False)
+        pca_dir = Path(os.path.expandvars(os.path.expanduser(flow2.pca_dir)))
+        n_coarse = len(coarse_level_dims)
+        pca_models = {}
+        for i in range(n_coarse):
+            with open(pca_dir / f'pca_L{i}_n20.pkl', 'rb') as f:
+                pca_models[i] = pickle.load(f)
+        print(f"  Loaded decoder + {n_coarse} PCA models for piano roll viz")
+
     train_flow_conditional(
         coarse_model, fine_model, dataset,
         n_epochs          = flow2.n_epochs,
@@ -1082,6 +1151,9 @@ def _run_flow2(cfg: DictConfig):
         ema_eta           = flow2.get('ema_eta', 0.97),
         ema_start_epoch   = flow2.get('ema_start_epoch', 100),
         fine_level_names  = fine_level_names,
+        decoder           = decoder,
+        pca_models        = pca_models,
+        fine_levels_idx   = fine_levels,
     )
     if use_wandb: wandb.finish()
 
