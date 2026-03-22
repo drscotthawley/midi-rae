@@ -402,7 +402,7 @@ The `ConditionalFineFlowModel` conditions L4/L5 generation on the coarse L0-L3 f
 
 **Verdict**: Low-cost experiment worth trying *after* seeing whether the `source_scales=[1.0,1.0]` and `ema_eta=0.9` fixes improve histogram matching. If marginals are still too smooth after adequate training, CFG w ∈ {1.5, 2.0} is a natural next lever. Implementation: add `cfg_dropout_prob=0.15` to `ConditionalFineFlowModel` training, pass `w` as an inference argument to `train_flow_conditional`/`generate`.
 
-### PCA compression of fine-level embeddings (high priority)
+### PCA compression of fine-level embeddings ✓ IMPLEMENTED (n=3, fitpca running on lecun + razer)
 
 **The core problem**: `flow2` currently trains in the raw fine embedding space: L4 = 256 patches × 16 dims = 4096 dims; L5 = 1024 patches × 8 dims = 8192 dims; total ~12,000 dims. But from PCA analysis, L4 has only ~6 effective dims and L5 only ~3. We are training a flow model in 12,000-dimensional space when the data lives on a ~9-dimensional manifold. The model wastes enormous capacity discovering that 11,991 directions have near-zero variance — likely explaining the "3 big blobs" result and slow convergence.
 
@@ -413,6 +413,34 @@ The `ConditionalFineFlowModel` conditions L4/L5 generation on the coarse L0-L3 f
 **Expected impact**: Large. A 9-dim flow model trained on the same data as a 12K-dim one should converge orders of magnitude faster and produce much tighter distributions. This is the single highest-leverage change to try for the "3 blobs instead of 5 clusters" problem.
 
 **Implementation**: Extend `fit_pca` (or the existing fitpca script) to also fit transforms for fine levels L4/L5. Then update `ConditionalFlowDataset` to optionally load and apply fine-level PCA transforms. The config would add `flow2.fine_pca_n_components: 20` (or similar).
+
+### Local ancestry prediction (flow2 architecture replacement, high priority after PCA)
+
+**The idea**: Instead of predicting ALL fine patches simultaneously conditioned on a flat global coarse vector, predict each fine patch (or small spatial block of fine patches) conditioned only on its direct ancestor chain in the hierarchy.
+
+**VQ-VAE 2 analogy**: This is exactly the "bottom-level prior conditioned on top-level codes" from Razavi et al. 2019, but with continuous flow matching instead of discrete PixelCNN. The coarse flow sets global structure; the fine flow fills in local detail patch-by-patch.
+
+**Ancestry chain**: For a fine patch at spatial position (i, j) in L4/L5, its ancestors are:
+- L3 patch covering (i, j) — direct parent
+- L2 patch covering (i, j) — grandparent
+- L1 patch — great-grandparent
+- L0 patch — great-great-grandparent
+
+Each ancestor is a 20-dim PCA vector (already computed). So the conditioning input per fine patch is 4 levels × 20 dims = **80 dims** — vs. the current ~1700-dim global flat vector. The output per fine patch is **3 dims** (after fine PCA). The flow model solves 80-dim → 3-dim for each fine patch independently (or in small spatial blocks of 2×2 or 4×4 fine patches).
+
+**Why the global vector is fine too**: You could still concatenate the full 1700-dim global coarse vector as extra conditioning (for long-range coherence) — the model just also always gets the local ancestry. In practice, starting with ancestry-only is cleaner: it explicitly encodes spatial position (each patch has a unique ancestor chain) without needing a separate positional embedding, and the model can't confuse "which part of the global blob is relevant to me."
+
+**Expected impact**: The prediction problem shrinks from (1700-dim cond, ~200-dim output for all fine patches) to (80-dim cond, 3-dim output per patch), run in parallel across all patches. This is an astronomically more tractable problem that should converge rapidly.
+
+**Data structure**: No change to files on disk. `ConditionalFlowDataset` needs a new mode that:
+1. Loads coarse PCA chunk files (already done) — extract per-patch tensors per level, keeping spatial layout (N, H_l, W_l, 20) rather than flattening
+2. Loads fine PCA chunk files (new) — per-patch tensors (N, H_l, W_l, 3)
+3. For each sample, constructs all (ancestry_chain, fine_patch_code) pairs — or yields them grouped by spatial block
+4. Batch contains many (80-dim, 3-dim) pairs from across all samples and spatial positions
+
+**Model**: A small MLP or lightweight transformer taking 80-dim ancestry + time → 3-dim velocity. Much simpler than the current `ConditionalFineFlowModel`. Can optionally add a few neighboring ancestor patches (the "uncle" patches) for a little more spatial context without going fully global.
+
+**Sequencing**: Implement after fine PCA runs are complete and results are evaluated.
 
 ### Ablation: is the conditioning signal actually being used?
 
