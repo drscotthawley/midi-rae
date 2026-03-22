@@ -700,7 +700,8 @@ def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
                                 cfg, decoder, device, n_samples=16):
     """Decode flow-generated coarse PCA + fine embeddings directly to piano rolls (no HMEP).
     coarse_pca:  (B, sum_coarse_dims) PCA-compressed coarse embeddings
-    fine_emb:    (B, sum_fine_dims) raw fine-level embeddings from conditional flow
+    fine_emb:    (B, sum_fine_dims) fine embeddings in PCA space (n_components per patch)
+    pca_models:  dict {level_idx: sklearn PCA} — must include fine levels if fine PCA was used
     fine_levels_idx: list of level indices e.g. [4, 5]
     """
     from midi_rae.generate import build_patch_states, batch_patch_states, build_enc_out, make_grid_pos, binarize
@@ -715,16 +716,19 @@ def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
               for b in range(B)]
     all_levels = batch_patch_states(states)
 
-    # Fine levels: reshape directly from flat flow output (no HMEP)
-    n_stages  = len(list(cfg.model.depths))
-    embed_dim = cfg.model.embed_dim
-    enc_dims  = [int(embed_dim * 2**(n_stages - 1 - i)) for i in range(n_stages)]
+    # Fine levels: inverse-PCA from compressed space → full embedding space, then build PatchStates
     offset = 0
     for j, li in enumerate(fine_levels_idx):
-        d             = fine_level_dims[j]
-        n_patches     = 4 ** li
-        dim_per_patch = enc_dims[li]
-        emb = fine_emb[:, offset:offset+d].reshape(B, n_patches, dim_per_patch).to(device)
+        d         = fine_level_dims[j]          # n_components * n_patches (PCA-compressed)
+        n_patches = d // (d // (4 ** li))       # infer n_patches
+        n_patches = 4 ** li
+        n_comp    = d // n_patches               # PCA components per patch
+        flat_pca  = fine_emb[:, offset:offset+d].reshape(B * n_patches, n_comp).cpu().numpy()
+        if li in pca_models:
+            flat_full = pca_models[li].inverse_transform(flat_pca)   # (B*n_patches, D_full)
+        else:
+            flat_full = flat_pca                                       # no PCA: use as-is
+        emb = torch.tensor(flat_full, dtype=torch.float32).reshape(B, n_patches, -1).to(device)
         pos = make_grid_pos(n_patches, device)
         all_levels.append(PatchState(emb=emb, pos=pos,
                                      non_empty=torch.ones(B, n_patches, device=device),
@@ -734,6 +738,7 @@ def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
     enc_out = build_enc_out(all_levels)
     recons  = decoder(enc_out)
     return binarize(recons)
+
 
 # %% ../nbs/12_train_flow.ipynb #a5707933
 def train_flow(model, dataset, n_epochs=100, lr=3e-4, batch_size=2048,
@@ -1193,7 +1198,7 @@ def _run_flow2(cfg: DictConfig):
     checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
     fine_level_names = [f'L{l}' for l in fine_levels]
 
-    # Load decoder + PCA models for piano roll visualization (optional)
+    # Load decoder + PCA models (coarse + fine) for piano roll visualization (optional)
     decoder, pca_models = None, None
     decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
     if decoder_ckpt:
@@ -1209,13 +1214,24 @@ def _run_flow2(cfg: DictConfig):
             mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
         decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
         for p in decoder.parameters(): p.requires_grad_(False)
+        # Coarse PCA models (L0-L3, n=20)
         pca_dir = Path(os.path.expandvars(os.path.expanduser(flow2.pca_dir)))
         n_coarse = len(coarse_level_dims)
         pca_models = {}
         for i in range(n_coarse):
             with open(pca_dir / f'pca_L{i}_n20.pkl', 'rb') as f:
                 pca_models[i] = pickle.load(f)
-        print(f"  Loaded decoder + {n_coarse} PCA models for piano roll viz")
+        # Fine PCA models (L4/L5, n=5/3) — needed for inverse_transform in decode_flow_to_piano_rolls
+        if fine_pca_dir and fine_n_components:
+            fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
+                      else {l: n for l, n in zip(fine_levels, fine_n_components)})
+            fine_pca_path = Path(fine_pca_dir)
+            for li, n in fn_map.items():
+                pkl = fine_pca_path / f'pca_L{li}_n{n}.pkl'
+                if pkl.exists():
+                    with open(pkl, 'rb') as f:
+                        pca_models[li] = pickle.load(f)
+        print(f"  Loaded decoder + {len(pca_models)} PCA models (coarse+fine) for piano roll viz")
 
     train_flow_conditional(
         coarse_model, fine_model, dataset,
