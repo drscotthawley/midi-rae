@@ -117,6 +117,7 @@ flow2:
 
 fitpca:
   # encoded_dir and output_dir default to cfg.preencode.output_dir and encoded_dir+'_pca'
+  levels: [4, 5]          # only process fine levels (coarse pca20 files already exist)
   fine_levels: [4, 5]
   fine_n_components: 3
 
