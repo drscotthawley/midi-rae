@@ -574,11 +574,12 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
 @torch.no_grad()
 def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
                           n_steps=20, warp_s=0.5, device='cpu', n_bins=100, source_df=None,
-                          source_scales=None, epoch=None, gen=None):
+                          source_scales=None, epoch=None, gen=None, level_names=None):
     """Return dict of per-level histogram figures {'L0': fig, 'L1': fig, ...}.
     level_dims: list of ints, flattened PCA dims per level e.g. [20, 80, 320, 1280]
     real_embeddings: (N, sum(level_dims)) tensor
     gen: optional pre-computed generated samples — skips generate_samples().
+    level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' labels.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -602,16 +603,16 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.hist(r, bins=bins, alpha=0.5, color='steelblue', label='real', density=True)
         ax.hist(g, bins=bins, alpha=0.5, color='darkorange', label='gen',  density=True)
-        title = f'L{i} ({d}d)'
+        lname = level_names[i] if level_names else f'L{i}'
+        title = f'{lname} ({d}d)'
         if epoch is not None: title += f' — Epoch {epoch}'
         ax.set_title(title)
         ax.set_xlabel('value')
         ax.legend(fontsize=8)
         plt.tight_layout()
-        figs[f'L{i}'] = fig
+        figs[lname] = fig
         offset += d
     return figs
-
 
 # %% ../nbs/12_train_flow.ipynb #tqfgy482snf
 @torch.no_grad()
@@ -832,7 +833,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                            use_wandb=False, steps_per_epoch=None,
                            fine_source_scales=None, checkpoint=None, cfg=None,
                            lr_restart_epochs=500, lr_warmup_frac=0.15, grad_clip=1.0,
-                           ema_eta=0.97, ema_start_epoch=100):
+                           ema_eta=0.97, ema_start_epoch=100, fine_level_names=None):
     """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
 
     At each step:
@@ -846,6 +847,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
 
     dataset must be a ConditionalFlowDataset returning (x_coarse, x_fine) pairs.
     coarse_model is kept frozen throughout (no gradients, no optimizer step).
+    fine_level_names: optional list of strings e.g. ['L4', 'L5'] for histogram labels.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     coarse_model = coarse_model.to(device)
@@ -953,7 +955,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             import matplotlib.pyplot as plt
             figs = plot_level_histograms(eval_model, real_fine_eval,
                                          fine_level_dims, epoch=epoch+1,
-                                         gen=gen_fine.cpu())
+                                         gen=gen_fine.cpu(), level_names=fine_level_names)
             if use_wandb:
                 import wandb
                 for lname, fig in figs.items():
@@ -971,7 +973,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
                             optimizer=optimizer, save_every=save_every,
                             tag='flow2_ConditionalFineFlowModel')
 
-
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
 import hydra
@@ -984,11 +985,12 @@ def _run_flow2(cfg: DictConfig):
     print(f"device = {device}")
 
     flow2 = cfg.flow2
+    fine_levels = list(flow2.get('fine_levels', [4, 5]))
     dataset = ConditionalFlowDataset(
         pca_dir     = flow2.pca_dir,
         encoded_dir = flow2.encoded_dir,
         pca_levels  = list(flow2.get('pca_levels',  ['L0','L1','L2','L3'])),
-        fine_levels = list(flow2.get('fine_levels',  [4, 5])),
+        fine_levels = fine_levels,
         emb_key     = flow2.get('emb_key', 'emb1'),
     )
     print(f"  {len(dataset)} samples  "
@@ -1034,6 +1036,7 @@ def _run_flow2(cfg: DictConfig):
 
     fine_source_scales = list(flow2.get('fine_source_scales', [])) or None
     checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
+    fine_level_names = [f'L{l}' for l in fine_levels]
 
     train_flow_conditional(
         coarse_model, fine_model, dataset,
@@ -1054,6 +1057,7 @@ def _run_flow2(cfg: DictConfig):
         lr_warmup_frac    = flow2.get('lr_warmup_frac', 0.15),
         ema_eta           = flow2.get('ema_eta', 0.97),
         ema_start_epoch   = flow2.get('ema_start_epoch', 100),
+        fine_level_names  = fine_level_names,
     )
     if use_wandb: wandb.finish()
 
