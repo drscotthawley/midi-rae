@@ -97,14 +97,12 @@ flow2:
   encoded_dir: $HOME/datasets/POP909_encoded_exp26 # dir with train_chunk*.pt (fine L4/L5)
   coarse_ckpt: $HOME/runs/midi-rae/flow15_cross_mw6I5r/checkpoints/CrossLevelFlowModel_flow_CrossLevelFlowModel_best.pt
   checkpoint_dir: checkpoints/flow2
-  h_dim: 256
+  h_dim: 128
   n_layers: 4
-  n_attn_layers: 2
-  n_heads: 8
   t_dim: 64
   n_epochs: 100000
   lr: 1e-3
-  batch_size: 4096
+  batch_size: 1024
   steps_per_epoch: 1000
   save_every: 10
   eval_every: 10
