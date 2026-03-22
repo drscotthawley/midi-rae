@@ -924,10 +924,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
             wandb.log({'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1},
                       step=global_step)
 
-        if checkpoint_dir and save_every and (epoch + 1) % save_every == 0:
+        if save_every and (epoch + 1) % save_every == 0:
             eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
-            save_checkpoint(eval_model, epoch + 1, optimizer, avg_loss,
-                            checkpoint_dir, cfg=cfg)
+            save_checkpoint(eval_model, epoch + 1, avg_loss, cfg or {},
+                            optimizer=optimizer, save_every=save_every,
+                            tag='flow2_ConditionalFineFlowModel')
 
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
