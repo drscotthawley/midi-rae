@@ -202,11 +202,19 @@ def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, mask_levels=None, m
 # %% ../nbs/09_train_dec.ipynb #kieqb1ep0mc
 import pickle
 
-def load_pca_models(pca_dir, n_levels):
-    "Load sklearn PCA models from pca_dir for levels 0..n_levels-1."
+def load_pca_models(pca_dir, n_levels, fine_levels=None, fine_n_components=None):
+    "Load sklearn PCA models from pca_dir for levels 0..n_levels-1. Fine levels use their own n_components."
+    if fine_levels and fine_n_components is not None:
+        fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
+                  else {l: n for l, n in zip(fine_levels, fine_n_components)})
+    else:
+        fn_map = {}
     pca_models = {}
     for i in range(n_levels):
-        path = os.path.join(os.path.expandvars(os.path.expanduser(str(pca_dir))), f'pca_L{i}_n20.pkl')
+        n = fn_map.get(i, 20)
+        path = os.path.join(os.path.expandvars(os.path.expanduser(str(pca_dir))), f'pca_L{i}_n{n}.pkl')
+        if not os.path.exists(path):
+            continue
         with open(path, 'rb') as f:
             pca_models[i] = pickle.load(f)
     return pca_models
@@ -227,6 +235,7 @@ def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device):
     return EncoderOutput(
         patches=HierarchicalPatchState(levels=new_levels),
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
+
 
 # %% ../nbs/09_train_dec.ipynb #198855af
 def train(cfg: DictConfig):
@@ -265,8 +274,13 @@ def train(cfg: DictConfig):
     pca_aug_levels = cfg.training.get('pca_aug_levels', 6)
     pca_aug_prob = cfg.training.get('pca_aug_prob', 1.0)
     if cfg.training.get('pca_aug', False):
-        pca_models = load_pca_models(cfg.training.pca_dir, pca_aug_levels)
-        cjprint(f"PCA aug enabled: {pca_aug_levels} levels, prob={pca_aug_prob}, dir={cfg.training.pca_dir}", color='magenta')
+        raw_fn = cfg.training.get('pca_fine_n_components', None)
+        fine_n_components = (list(raw_fn) if hasattr(raw_fn, '__iter__') else int(raw_fn)) if raw_fn is not None else None
+        raw_fl = cfg.training.get('pca_fine_levels', None)
+        fine_levels = list(raw_fl) if raw_fl is not None else None
+        pca_models = load_pca_models(cfg.training.pca_dir, pca_aug_levels,
+                                     fine_levels=fine_levels, fine_n_components=fine_n_components)
+        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, prob={pca_aug_prob}, fine_levels={fine_levels}, fine_n={fine_n_components}, dir={cfg.training.pca_dir}", color='magenta')
 
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
                           extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
@@ -321,6 +335,8 @@ def train(cfg: DictConfig):
                         enc_out = emb_levels_to_enc_out(emb_levels, pos_cache, device)
                     else:
                         enc_out, img_real, _ = get_embeddings_batch(batch, encoder, device)
+                    if pca_models is not None:  # always apply during val (matches inference)
+                        enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device)
                     enc_out = mask_enc_out(enc_out, mask_ratio=emb_mask_ratio,
                                            mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
                                            mask_levels=mask_levels, mask_tokens=mask_tokens)
@@ -363,6 +379,7 @@ def train(cfg: DictConfig):
 
     wandb.finish()
     return best_val_loss
+
 
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
