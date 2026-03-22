@@ -431,39 +431,34 @@ class ConditionalFlowDataset(Dataset):
 
     Returns (x_coarse, x_fine) pairs where:
       x_coarse : flat PCA-compressed L0-L3  [sum_pca_dims]  — matches first-stage flow output
-      x_fine   : flat raw L4+L5 embeddings  [N_L4*D_L4 + N_L5*D_L5]
+      x_fine   : flat fine embeddings — PCA-compressed if fine_pca_dir given, else raw from encoded_dir
 
-    Coarse PCA data is loaded fully upfront (small: ~70 dims per sample).
-    Fine data is loaded lazily one chunk at a time to avoid exhausting RAM
-    (fine embeddings are ~12K dims per sample across 96 chunks = tens of GB).
+    Coarse PCA data is always loaded fully upfront (small: ~70 dims per sample).
+    Fine data: loaded fully upfront when fine_pca_dir is set (tiny after PCA, fits in RAM);
+               otherwise loaded lazily one raw chunk at a time from encoded_dir.
 
     Args:
-        pca_dir:      directory containing train_chunk*_pca20.pt files (L0-L3)
-        encoded_dir:  directory containing train_chunk*.pt  files (raw all levels)
-        pca_levels:   which PCA keys to load, default ['L0','L1','L2','L3']
-        fine_levels:  which raw level indices to load, default [4, 5]
-        emb_key:      embedding key in raw chunk dicts, default 'emb1'
-        split:        'train' or 'val' (filters chunk filenames)
+        pca_dir:          directory containing train_chunk*_pca20.pt files (L0-L3)
+        encoded_dir:      directory with raw train_chunk*.pt files; required only if fine_pca_dir is None
+        pca_levels:       which coarse PCA keys to load, default ['L0','L1','L2','L3']
+        fine_levels:      which level indices to use for fine data, default [4, 5]
+        emb_key:          embedding key in raw chunk dicts, default 'emb1'
+        split:            'train' or 'val'
+        fine_pca_dir:     if set, load fine from *_fine_pca{fine_n_components}.pt files (upfront)
+        fine_n_components: required when fine_pca_dir is set; e.g. 3
     """
-    def __init__(self, pca_dir, encoded_dir, pca_levels=None, fine_levels=None,
-                 emb_key='emb1', split='train'):
+    def __init__(self, pca_dir, encoded_dir=None, pca_levels=None, fine_levels=None,
+                 emb_key='emb1', split='train', fine_pca_dir=None, fine_n_components=None):
         import glob as _glob
-        pca_dir     = os.path.expandvars(os.path.expanduser(str(pca_dir)))
-        encoded_dir = os.path.expandvars(os.path.expanduser(str(encoded_dir)))
-        pca_levels  = pca_levels  or ['L0', 'L1', 'L2', 'L3']
+        pca_dir    = os.path.expandvars(os.path.expanduser(str(pca_dir)))
+        pca_levels = pca_levels or ['L0', 'L1', 'L2', 'L3']
         fine_levels = fine_levels or [4, 5]
 
-        pca_files = sorted(_glob.glob(os.path.join(pca_dir,     f'{split}_chunk*_pca20.pt')))
-        raw_files = sorted(_glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
-        raw_files = [f for f in raw_files if not f.endswith('_pca20.pt')]
+        pca_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca20.pt')))
         assert pca_files, f"No {split}_chunk*_pca20.pt in {pca_dir}"
-        assert raw_files, f"No {split}_chunk*.pt in {encoded_dir}"
-        assert len(pca_files) == len(raw_files), \
-            f"Chunk count mismatch: {len(pca_files)} pca vs {len(raw_files)} raw"
 
-        self._raw_files  = raw_files
         self._fine_levels = fine_levels
-        self._emb_key    = emb_key
+        self._emb_key     = emb_key
 
         # Load all coarse PCA data upfront — it's small (~70 dims per sample)
         print(f"  Loading coarse PCA data ({len(pca_files)} chunks)...", flush=True)
@@ -481,23 +476,53 @@ class ConditionalFlowDataset(Dataset):
         self.coarse = torch.cat(coarse_all, dim=0)
         print(f"  Coarse loaded: {len(self.coarse)} samples, {self.coarse.shape[1]} dims", flush=True)
 
-        # Peek at first raw chunk to get fine level dims, without keeping it in memory
-        raw0 = torch.load(raw_files[0], weights_only=False)
-        self._fine_level_dims = [raw0[0][emb_key][li].float().flatten(1).shape[1]
-                                  for li in fine_levels]
-        del raw0
-
         self.coarse_level_dims = self._coarse_level_dims
-        self.fine_level_dims   = self._fine_level_dims
 
-        # Fine data: lazy — one chunk loaded at a time
-        self._fine_chunk_idx  = -1
-        self._fine_chunk_data = None   # (N_chunk, sum_fine_dims) tensor
+        # Fine data: load upfront from PCA-compressed files, or lazily from raw encoded files
+        if fine_pca_dir is not None:
+            assert fine_n_components is not None, "fine_n_components required when fine_pca_dir is set"
+            fine_pca_dir = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
+            fine_files = sorted(_glob.glob(
+                os.path.join(fine_pca_dir, f'{split}_chunk*_fine_pca{fine_n_components}.pt')))
+            assert fine_files, \
+                f"No {split}_chunk*_fine_pca{fine_n_components}.pt in {fine_pca_dir}"
+            assert len(fine_files) == len(pca_files), \
+                f"Chunk count mismatch: {len(pca_files)} coarse vs {len(fine_files)} fine"
+            print(f"  Loading fine PCA data ({len(fine_files)} chunks, n={fine_n_components})...", flush=True)
+            fine_all = []
+            for fp in fine_files:
+                fd = torch.load(fp, weights_only=False)
+                tensors = [fd[f'L{li}'].float() for li in fine_levels]
+                tensors = [t.flatten(1) if t.dim() == 3 else t for t in tensors]
+                if not hasattr(self, '_fine_level_dims'):
+                    self._fine_level_dims = [t.shape[1] for t in tensors]
+                fine_all.append(torch.cat(tensors, dim=1))
+            self.fine = torch.cat(fine_all, dim=0)
+            print(f"  Fine loaded: {len(self.fine)} samples, {self.fine.shape[1]} dims", flush=True)
+            self._use_fine_pca = True
+        else:
+            assert encoded_dir is not None, "encoded_dir required when fine_pca_dir is not set"
+            encoded_dir = os.path.expandvars(os.path.expanduser(str(encoded_dir)))
+            raw_files = sorted(_glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
+            raw_files = [f for f in raw_files if not f.endswith('_pca20.pt')]
+            assert raw_files, f"No {split}_chunk*.pt in {encoded_dir}"
+            assert len(pca_files) == len(raw_files), \
+                f"Chunk count mismatch: {len(pca_files)} pca vs {len(raw_files)} raw"
+            self._raw_files = raw_files
+            raw0 = torch.load(raw_files[0], weights_only=False)
+            self._fine_level_dims = [raw0[0][emb_key][li].float().flatten(1).shape[1]
+                                      for li in fine_levels]
+            del raw0
+            self._use_fine_pca    = False
+            self._fine_chunk_idx  = -1
+            self._fine_chunk_data = None
+
+        self.fine_level_dims = self._fine_level_dims
 
     def _load_fine_chunk(self, chunk_idx):
         if self._fine_chunk_idx == chunk_idx:
             return
-        raw_data  = torch.load(self._raw_files[chunk_idx], weights_only=False)
+        raw_data = torch.load(self._raw_files[chunk_idx], weights_only=False)
         fine_lvls = []
         for batch_rec in raw_data:
             lvl_tensors = [batch_rec[self._emb_key][li].float() for li in self._fine_levels]
@@ -508,6 +533,8 @@ class ConditionalFlowDataset(Dataset):
     def __len__(self): return len(self.coarse)
 
     def __getitem__(self, i):
+        if self._use_fine_pca:
+            return self.coarse[i], self.fine[i]
         chunk_idx = bisect.bisect_right(self._chunk_offsets, i) - 1
         self._load_fine_chunk(chunk_idx)
         local_i = i - self._chunk_offsets[chunk_idx]

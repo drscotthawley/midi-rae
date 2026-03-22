@@ -946,8 +946,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     ema_model  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
 
     # Use ChunkShuffleSampler for lazy datasets to avoid chunk thrashing;
-    # fall back to shuffle=True for fully-loaded datasets.
-    if isinstance(dataset, ConditionalFlowDataset):
+    # use shuffle=True when fine PCA data is fully loaded in RAM.
+    use_fine_pca = getattr(dataset, '_use_fine_pca', False)
+    if isinstance(dataset, ConditionalFlowDataset) and not use_fine_pca:
         sampler = ChunkShuffleSampler(dataset)
         dl = DataLoader(dataset, batch_size=batch_size, sampler=sampler,
                         num_workers=0, pin_memory=(device != 'cpu'), drop_last=True)
@@ -980,8 +981,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset,
     coarse_dim        = dataset.coarse.shape[1]
     coarse_level_dims = dataset.coarse_level_dims
 
-    # Pre-load eval fine data from the first chunk (avoids scanning full dataset)
     def _get_eval_fine(n=2000):
+        if getattr(dataset, '_use_fine_pca', False):
+            return dataset.fine[:n].float()
         dataset._load_fine_chunk(0)
         return dataset._fine_chunk_data[:n].float()
 
@@ -1130,12 +1132,21 @@ def _run_flow2(cfg: DictConfig):
 
     flow2 = cfg.flow2
     fine_levels = list(flow2.get('fine_levels', [4, 5]))
+
+    fine_pca_dir      = flow2.get('fine_pca_dir', None)
+    fine_n_components = flow2.get('fine_n_components', None)
+    if fine_pca_dir:
+        fine_pca_dir      = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
+        fine_n_components = int(fine_n_components)
+
     dataset = ConditionalFlowDataset(
-        pca_dir     = flow2.pca_dir,
-        encoded_dir = flow2.encoded_dir,
-        pca_levels  = list(flow2.get('pca_levels',  ['L0','L1','L2','L3'])),
-        fine_levels = fine_levels,
-        emb_key     = flow2.get('emb_key', 'emb1'),
+        pca_dir           = flow2.pca_dir,
+        encoded_dir       = flow2.get('encoded_dir', None),
+        pca_levels        = list(flow2.get('pca_levels',  ['L0','L1','L2','L3'])),
+        fine_levels       = fine_levels,
+        emb_key           = flow2.get('emb_key', 'emb1'),
+        fine_pca_dir      = fine_pca_dir,
+        fine_n_components = fine_n_components,
     )
     print(f"  {len(dataset)} samples  "
           f"coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")

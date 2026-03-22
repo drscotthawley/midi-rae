@@ -34,86 +34,96 @@ def load_level_embeddings(encoded_dir: Path, split: str, level: int = 0, key: st
 
 # %% ../nbs/11_fit_pca.ipynb #aa110006
 def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
-                     n_components: int = 20, key: str = 'emb2'):
+                     n_components: int = 20, key: str = 'emb2',
+                     fine_levels: list = None, fine_n_components: int = None):
     """Fit PCA on per-patch training embeddings for each level, then project and save per-chunk.
 
     PCA is fit on (N_total * N_patches, D) — all patches from all samples, preserving spatial variance.
     Levels where D <= n_components skip PCA (identity) to avoid fitting on hundreds of millions of rows.
-    Output files mirror the input chunk naming:
-      <output_dir>/{split}_chunk{idx:05d}_pca{n}.pt
-    Each file is a dict with keys 'L0', 'L1', ... each a (N_chunk, N_patches, n_components) tensor.
-    One file per input chunk.
+
+    Coarse levels (not in fine_levels) use n_components and are saved as:
+      <output_dir>/{split}_chunk{idx}_pca{n_components}.pt   — keys 'L0', 'L1', ...
+    Fine levels (in fine_levels, if provided) use fine_n_components and are saved as:
+      <output_dir>/{split}_chunk{idx}_fine_pca{fine_n_components}.pt  — keys 'L4', 'L5', ...
     """
-    encoded_dir = Path(encoded_dir)
-    output_dir  = Path(output_dir)
+    encoded_dir     = Path(encoded_dir)
+    output_dir      = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    fine_levels_set = set(fine_levels) if fine_levels else set()
 
     # Detect number of levels from first chunk if not specified
     if levels is None:
         sample = torch.load(sorted(encoded_dir.glob("train_chunk*.pt"))[0], weights_only=False)
         levels = list(range(len(sample[0][key])))
 
-    # --- Step 1: fit one PCA per level on all training patches ---
-    pcas = {}
-    for level in levels:
-        # Peek at embedding dim without loading everything
-        sample = torch.load(sorted(encoded_dir.glob("train_chunk*.pt"))[0], weights_only=False)
-        D = sample[0][key][level].shape[-1]
-        n_comp = min(n_components, D)
+    coarse_levels = [l for l in levels if l not in fine_levels_set]
+    active_fine   = [l for l in levels if l in fine_levels_set]
 
-        if D <= n_components:
-            print(f"L{level}: D={D} <= n_components={n_components}, skipping PCA (saving raw embeddings)")
-            pcas[level] = None
-            continue
+    def _fit_and_project(level_list, n_comp, file_suffix):
+        """Fit PCA on level_list at n_comp components; save PKLs + per-chunk files."""
+        if not level_list:
+            return {}
+        pcas = {}
+        for level in level_list:
+            sample = torch.load(sorted(encoded_dir.glob("train_chunk*.pt"))[0], weights_only=False)
+            D = sample[0][key][level].shape[-1]
+            n = min(n_comp, D)
+            if D <= n_comp:
+                print(f"L{level}: D={D} <= n_components={n_comp}, saving raw")
+                pcas[level] = None
+                continue
+            print(f"Fitting PCA(n={n}) on L{level} ...")
+            train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key)
+            print(f"  shape: {train_emb.shape}")
+            pca = PCA(n_components=n, whiten=False)
+            pca.fit(train_emb)
+            var = pca.explained_variance_ratio_.cumsum()[-1]
+            print(f"  variance explained: {var:.1%}")
+            with open(output_dir / f"pca_L{level}_n{n_comp}.pkl", "wb") as f:
+                pickle.dump(pca, f)
+            pcas[level] = pca
+            del train_emb
 
-        print(f"Fitting PCA(n={n_comp}) on L{level}...")
-        train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key)
-        print(f"  shape: {train_emb.shape}")  # (N_total * N_patches, D)
-        pca = PCA(n_components=n_comp, whiten=False)
-        pca.fit(train_emb)
-        var = pca.explained_variance_ratio_.cumsum()[-1]
-        print(f"  variance explained: {var:.1%}")
-        pca_path = output_dir / f"pca_L{level}_n{n_components}.pkl"
-        with open(pca_path, "wb") as f: pickle.dump(pca, f)
-        pcas[level] = pca
-        del train_emb
+        for split in ["train", "val"]:
+            chunks = sorted(encoded_dir.glob(f"{split}_chunk*.pt"))
+            print(f"\nProjecting {len(chunks)} {split} chunks [{file_suffix}]...")
+            for chunk_path in tqdm(chunks, desc=split):
+                data = torch.load(chunk_path, weights_only=False)
+                out = {}
+                for level in level_list:
+                    embs = torch.cat([rec[key][level].float() for rec in data], dim=0)
+                    N, P, D = embs.shape
+                    if pcas[level] is None:
+                        out[f"L{level}"] = embs
+                    else:
+                        flat = embs.reshape(N * P, D).numpy()
+                        proj = torch.tensor(pcas[level].transform(flat),
+                                            dtype=torch.float32).reshape(N, P, -1)
+                        out[f"L{level}"] = proj
+                torch.save(out, output_dir / f"{chunk_path.stem}_{file_suffix}.pt")
+            print(f"  done → {output_dir}")
+        return pcas
 
-    # --- Step 2: project each chunk, save all levels in one dict file ---
-    for split in ["train", "val"]:
-        chunks = sorted(encoded_dir.glob(f"{split}_chunk*.pt"))
-        print(f"\nProjecting {len(chunks)} {split} chunks...")
-        for chunk_path in tqdm(chunks, desc=split):
-            data = torch.load(chunk_path, weights_only=False)
-            out = {}
-            for level in levels:
-                # stack all batches: (N_chunk, N_patches, D)
-                embs = torch.cat([batch_rec[key][level].float() for batch_rec in data], dim=0)
-                N, P, D = embs.shape
-                if pcas[level] is None:
-                    # No PCA: save raw embeddings as-is
-                    out[f"L{level}"] = embs
-                else:
-                    flat = embs.reshape(N * P, D).numpy()
-                    proj = pcas[level].transform(flat)                          # (N*P, n_comp)
-                    proj = torch.tensor(proj, dtype=torch.float32).reshape(N, P, -1)  # (N, P, n_comp)
-                    out[f"L{level}"] = proj
-            save_path = output_dir / f"{chunk_path.stem}_pca{n_components}.pt"
-            torch.save(out, save_path)
-        print(f"  done → {output_dir}")
-
-    return pcas
+    coarse_pcas = _fit_and_project(coarse_levels, n_components, f"pca{n_components}")
+    fine_pcas   = (_fit_and_project(active_fine, fine_n_components, f"fine_pca{fine_n_components}")
+                   if active_fine else {})
+    return coarse_pcas, fine_pcas
 
 # %% ../nbs/11_fit_pca.ipynb #aa110009
 #| eval: false
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def fit_pca_main(cfg: DictConfig):
     fc = cfg.get('fitpca', {})
-    encoded_dir = os.path.expandvars(os.path.expanduser(str(fc.get('encoded_dir', cfg.preencode.output_dir))))
-    output_dir  = os.path.expandvars(os.path.expanduser(str(fc.get('output_dir', encoded_dir + '_pca'))))
-    levels      = list(fc.levels) if fc.get('levels') else None
-    n_components = int(fc.get('n_components', 20))
-    key         = str(fc.get('key', 'emb2'))
-    fit_and_save_pca(encoded_dir, output_dir, levels, n_components, key)
+    encoded_dir       = os.path.expandvars(os.path.expanduser(str(fc.get('encoded_dir', cfg.preencode.output_dir))))
+    output_dir        = os.path.expandvars(os.path.expanduser(str(fc.get('output_dir', encoded_dir + '_pca'))))
+    levels            = list(fc.levels) if fc.get('levels') else None
+    n_components      = int(fc.get('n_components', 20))
+    key               = str(fc.get('key', 'emb2'))
+    fine_levels       = list(fc.fine_levels) if fc.get('fine_levels') else None
+    fine_n_components = int(fc.fine_n_components) if fc.get('fine_n_components') else None
+    fit_and_save_pca(encoded_dir, output_dir, levels, n_components, key,
+                     fine_levels=fine_levels, fine_n_components=fine_n_components)
 
 if __name__ == '__main__' and 'ipykernel' not in __import__('sys').modules:
     fit_pca_main()

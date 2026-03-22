@@ -111,6 +111,14 @@ flow2:
   ema_start_epoch: 0
   warp_s: 0.5
   fine_source_scales: [1.0, 1.0]  # scale factors for L4, L5
+  # Uncomment after running fitpca with fine_levels=[4,5], fine_n_components=3:
+  # fine_pca_dir: $HOME/datasets/POP909_pca_exp26
+  # fine_n_components: 3
+
+fitpca:
+  # encoded_dir and output_dir default to cfg.preencode.output_dir and encoded_dir+'_pca'
+  fine_levels: [4, 5]
+  fine_n_components: 3
 
 wandb:
   project: ar-mep-swin-midi-rae
