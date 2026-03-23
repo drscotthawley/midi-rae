@@ -63,6 +63,12 @@ preencode:
   output_dir: $HOME/datasets/POP909_encoded_exp26
   num_passes: 3           # number of passes through the dataset
 
+fitpca:
+  output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here
+  levels: [0, 1, 2, 3, 4, 5]
+  n_per_lvl: [17, 31, 37, 23, 8, 5]  # from fitpca95 run: 95% variance per level
+
+
 flow:
   mode: fine                                        # coarse | fine | both
   pca_dir: $HOME/datasets/POP909_pca_exp26          # unified dir with *_pca.pt (all levels)
@@ -83,7 +89,7 @@ flow:
   steps_per_epoch: 1000
   warp_s: 0.5
   save_every: 10
-  eval_every: 10
+  eval_every: 5
   viz_every: 5                                      # must be a multiple of eval_every
   lr_restart_epochs: 500                            # T_0 for warm-restart schedule; periods double (T_mult=2)
   lr_warmup_frac: 0.15                              # fraction of each cycle spent on linear warmup
@@ -93,12 +99,8 @@ flow:
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 1
   repair_chunk_size: null
-  source_scales: [3, 2.0, 1.1, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
+  source_scales: [3, 2.0, 0.8, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
 
-fitpca:
-  output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here
-  levels: [0, 1, 2, 3, 4, 5]
-  n_per_lvl: [17, 31, 37, 23, 8, 5]  # from fitpca95 run: 95% variance per level
 
 wandb:
   project: ar-mep-swin-midi-rae
