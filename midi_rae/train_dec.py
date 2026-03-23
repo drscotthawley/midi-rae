@@ -202,17 +202,22 @@ def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, mask_levels=None, m
 # %% ../nbs/09_train_dec.ipynb #kieqb1ep0mc
 import pickle
 
-def load_pca_models(pca_dir, n_levels, fine_levels=None, fine_n_components=None):
-    "Load sklearn PCA models from pca_dir for levels 0..n_levels-1. Fine levels use their own n_components."
-    if fine_levels and fine_n_components is not None:
-        fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
-                  else {l: n for l, n in zip(fine_levels, fine_n_components)})
+def load_pca_models(pca_dir, n_levels, fine_levels=None, fine_n_components=None,
+                    n_per_lvl=None):
+    "Load sklearn PCA models from pca_dir for levels 0..n_levels-1."
+    pca_dir = os.path.expandvars(os.path.expanduser(str(pca_dir)))
+    if n_per_lvl is not None:
+        n_map = {i: n_per_lvl[i] for i in range(min(len(n_per_lvl), n_levels))}
     else:
-        fn_map = {}
+        if fine_levels and fine_n_components is not None:
+            fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
+                      else {l: n for l, n in zip(fine_levels, fine_n_components)})
+        else:
+            fn_map = {}
+        n_map = {i: fn_map.get(i, 20) for i in range(n_levels)}
     pca_models = {}
-    for i in range(n_levels):
-        n = fn_map.get(i, 20)
-        path = os.path.join(os.path.expandvars(os.path.expanduser(str(pca_dir))), f'pca_L{i}_n{n}.pkl')
+    for i, n in n_map.items():
+        path = os.path.join(pca_dir, f'pca_L{i}_n{n}.pkl')
         if not os.path.exists(path):
             continue
         with open(path, 'rb') as f:
@@ -277,13 +282,16 @@ def train(cfg: DictConfig):
     pca_aug_prob     = cfg.training.get('pca_aug_prob', 1.0)
     pca_aug_noise_std = cfg.training.get('pca_aug_noise_std', 0.0)
     if cfg.training.get('pca_aug', False):
+        raw_npl = cfg.training.get('pca_n_per_lvl', None)
+        n_per_lvl = list(raw_npl) if raw_npl is not None else None
         raw_fn = cfg.training.get('pca_fine_n_components', None)
         fine_n_components = (list(raw_fn) if hasattr(raw_fn, '__iter__') else int(raw_fn)) if raw_fn is not None else None
         raw_fl = cfg.training.get('pca_fine_levels', None)
         fine_levels = list(raw_fl) if raw_fl is not None else None
         pca_models = load_pca_models(cfg.training.pca_dir, pca_aug_levels,
-                                     fine_levels=fine_levels, fine_n_components=fine_n_components)
-        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, prob={pca_aug_prob}, noise_std={pca_aug_noise_std}, fine_levels={fine_levels}, fine_n={fine_n_components}, dir={cfg.training.pca_dir}", color='magenta')
+                                     fine_levels=fine_levels, fine_n_components=fine_n_components,
+                                     n_per_lvl=n_per_lvl)
+        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, n_per_lvl={n_per_lvl}, prob={pca_aug_prob}, noise_std={pca_aug_noise_std}, dir={cfg.training.pca_dir}", color='magenta')
 
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
                           extra_params=list(mask_tokens.parameters()) if mask_tokens else None)

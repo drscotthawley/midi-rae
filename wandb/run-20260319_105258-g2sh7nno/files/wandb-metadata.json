@@ -1,0 +1,42 @@
+{
+  "os": "macOS-26.1-arm64-arm-64bit",
+  "python": "CPython 3.12.9",
+  "startedAt": "2026-03-19T15:52:58.936566Z",
+  "args": [
+    "--config-name",
+    "config_swin_hmep_local",
+    "++tag=hmep1",
+    "++encoder_ckpt=/Users/shawley/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt",
+    "++hmep_init_ckpt=/Users/shawley/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinMaskedEmbeddingPredictor_exp24_Lcbvz8_best.pt",
+    "++preencode.output_dir=../datasets/POP909_encoded"
+  ],
+  "program": "-m midi_rae.train_hmep",
+  "git": {
+    "remote": "https://github.com/drscotthawley/midi-rae.git",
+    "commit": "74366a36b1c6f941ac54ab334f9ef4811705c53a"
+  },
+  "root": "/Users/shawley/ClaudeCode-Mar12/midi-rae",
+  "host": "Chonk",
+  "executable": "/Users/shawley/envs/midi-rae/bin/python",
+  "cpu_count": 10,
+  "cpu_count_logical": 10,
+  "disk": {
+    "/": {
+      "total": "3996329328640",
+      "used": "2006816104448"
+    }
+  },
+  "memory": {
+    "total": "68719476736"
+  },
+  "apple": {
+    "name": "Apple M1 Max",
+    "ecpuCores": 2,
+    "pcpuCores": 8,
+    "gpuCores": 32,
+    "memoryGb": 64,
+    "swapTotalBytes": "4294967296",
+    "ramTotalBytes": "68719476736"
+  },
+  "writerId": "q5t8fbe3ci5mjwjhv248qizvbwlmtd3g"
+}

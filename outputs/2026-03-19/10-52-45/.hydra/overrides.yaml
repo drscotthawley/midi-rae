@@ -1,0 +1,4 @@
+- ++tag=hmep1
+- ++encoder_ckpt=/Users/shawley/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt
+- ++hmep_init_ckpt=/Users/shawley/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinMaskedEmbeddingPredictor_exp24_Lcbvz8_best.pt
+- ++preencode.output_dir=../datasets/POP909_encoded

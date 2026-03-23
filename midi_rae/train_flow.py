@@ -1248,6 +1248,18 @@ def _run_flow2(cfg: DictConfig):
     else:
         print("  coarse_ckpt not set — coarse model starts from random weights")
 
+    # Determine fine_n_components for ConditionalFineFlowModel
+    # In unified mode (no fine_pca_dir), derive from training.pca_n_per_lvl or dataset dims
+    if fine_n_components is None:
+        raw_npl = cfg.training.get('pca_n_per_lvl', None)
+        if raw_npl is not None:
+            fine_n_components = [list(raw_npl)[li] for li in fine_levels]
+        else:
+            # Fallback: infer from dataset fine_level_dims and number of patches
+            # (dataset.fine_level_dims[i] = n_patches * n_comp)
+            # We can't recover n_comp without n_patches, so warn
+            print("  WARNING: fine_n_components not set; ConditionalFineFlowModel may fail")
+
     fine_model = ConditionalFineFlowModel(
         cond_dims     = coarse_level_dims,
         target_dims   = dataset.fine_level_dims,
@@ -1259,13 +1271,14 @@ def _run_flow2(cfg: DictConfig):
     n_params = sum(p.numel() for p in fine_model.parameters())
     print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
 
-    # Load decoder + PCA models (coarse + fine) for piano roll visualization (optional)
+    # Load decoder + PCA models for piano roll visualization (optional)
     decoder, pca_models = None, None
     decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
     if decoder_ckpt:
         import pickle
         from pathlib import Path
         from midi_rae.swin import SwinDecoder
+        from midi_rae.train_dec import load_pca_models
         m = cfg.model
         decoder = SwinDecoder(
             img_height=cfg.data.image_size, img_width=cfg.data.image_size,
@@ -1275,22 +1288,12 @@ def _run_flow2(cfg: DictConfig):
             mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
         decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
         for p in decoder.parameters(): p.requires_grad_(False)
+        raw_npl = cfg.training.get('pca_n_per_lvl', None)
+        n_per_lvl = list(raw_npl) if raw_npl is not None else None
         pca_dir = Path(os.path.expandvars(os.path.expanduser(flow2.pca_dir)))
-        n_coarse = len(coarse_level_dims)
-        pca_models = {}
-        for i in range(n_coarse):
-            with open(pca_dir / f'pca_L{i}_n20.pkl', 'rb') as f:
-                pca_models[i] = pickle.load(f)
-        if fine_pca_dir and fine_n_components:
-            fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
-                      else {l: n for l, n in zip(fine_levels, fine_n_components)})
-            fine_pca_path = Path(fine_pca_dir)
-            for li, n in fn_map.items():
-                pkl = fine_pca_path / f'pca_L{li}_n{n}.pkl'
-                if pkl.exists():
-                    with open(pkl, 'rb') as f:
-                        pca_models[li] = pickle.load(f)
-        print(f"  Loaded decoder + {len(pca_models)} PCA models (coarse+fine) for piano roll viz")
+        n_all_levels = len(coarse_level_dims) + len(fine_levels)
+        pca_models = load_pca_models(str(pca_dir), n_all_levels, n_per_lvl=n_per_lvl)
+        print(f"  Loaded decoder + {len(pca_models)} PCA models for piano roll viz")
 
     train_flow_conditional(coarse_model, fine_model, dataset, cfg,
                            device=device, decoder=decoder, pca_models=pca_models)
@@ -1298,44 +1301,10 @@ def _run_flow2(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def train_flow_main(cfg: DictConfig):
-
-    if cfg.get("flow_stage", 1) == 2:
+    tag = cfg.get('tag', '???')
+    mode = cfg.get('flow_mode', 'flow')
+    if mode == 'flow2':
         _run_flow2(cfg)
-        return
-
-    import glob as _glob
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"device = {device}")
-
-    paths = sorted(_glob.glob(os.path.expandvars(os.path.expanduser(cfg.flow.embedding_glob))))
-    assert paths, f"No files found matching {cfg.flow.embedding_glob}"
-    print(f"Loading {len(paths)} file(s)...")
-
-    source_scales = list(cfg.flow.source_scales) if cfg.flow.get("source_scales") else None
-    n_levels = len(source_scales) if source_scales else None
-    levels = [f'L{i}' for i in range(n_levels)] if n_levels else None
-    dataset = EmbeddingDataset(paths, levels=levels)
-    dim = dataset.embeddings.shape[1]
-    print(f"  {len(dataset)} samples, dim={dim}, level_dims={dataset.level_dims}")
-
-    self_condition = cfg.flow.get('self_condition', False)
-    t_dim = cfg.flow.get('t_dim', 64)
-    model_type = cfg.flow.get('model_type', 'per_level')
-    if model_type == 'cross_level':
-        model = CrossLevelFlowModel(level_dims=dataset.level_dims,
-                                    h_dim=cfg.flow.h_dim, n_layers=cfg.flow.n_layers,
-                                    n_attn_layers=cfg.flow.get('n_attn_layers', 2),
-                                    n_heads=cfg.flow.get('n_heads', 8),
-                                    self_condition=self_condition, t_dim=t_dim)
     else:
-        model = PerLevelFlowModel(level_dims=dataset.level_dims,
-                                  h_dim=cfg.flow.h_dim, n_layers=cfg.flow.n_layers,
-                                  self_condition=self_condition, t_dim=t_dim)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"  {model.__class__.__name__}: {n_params:,} parameters (self_condition={self_condition}, t_dim={t_dim})")
-
-    train_flow(model, dataset, cfg, device=device)
-
-if __name__ == "__main__":
-    train_flow_main()
+        _run_flow(cfg)
 

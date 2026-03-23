@@ -1,0 +1,4 @@
+- ++tag=hmep_test
+- ++training.hmep_epochs=2
+- ++training.batch_size=4
+- ++no_wandb=true

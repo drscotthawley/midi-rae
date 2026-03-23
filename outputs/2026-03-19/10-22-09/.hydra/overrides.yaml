@@ -1,0 +1,3 @@
+- ++preencode.output_dir=/workspaces/ClaudeCode-Mar12/datasets/POP909_encoded
+- ++encoder_ckpt=/Users/shawley/runs/midi-rae/exp24_Lcbvz8/checkpoints/SwinEncoder_exp24_Lcbvz8_best.pt
+- ++data.path=/Users/shawley/datasets/POP909_images_basic

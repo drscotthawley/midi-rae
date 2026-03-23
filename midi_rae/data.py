@@ -430,23 +430,23 @@ class ConditionalFlowDataset(Dataset):
     """Paired dataset for training ConditionalFineFlowModel.
 
     Returns (x_coarse, x_fine) pairs where:
-      x_coarse : flat PCA-compressed L0-L3  [sum_pca_dims]  — matches first-stage flow output
-      x_fine   : flat fine embeddings — PCA-compressed if fine_pca_dir given, else raw from encoded_dir
+      x_coarse : flat PCA-compressed coarse levels  — matches first-stage flow output
+      x_fine   : flat PCA-compressed fine levels
 
-    Coarse PCA data is always loaded fully upfront (small: ~70 dims per sample).
-    Fine data: loaded fully upfront when fine_pca_dir is set (tiny after PCA, fits in RAM);
-               otherwise loaded lazily one raw chunk at a time from encoded_dir.
+    Unified mode (preferred): pca_dir contains {split}_chunk*_pca.pt files with all
+    levels (L0-L5) as keys. Coarse and fine are loaded from the same files in one pass.
+
+    Legacy mode: pca_dir has *_pca20.pt (coarse) + fine_pca_dir has *_fine_pca*.pt (fine).
 
     Args:
-        pca_dir:          directory containing train_chunk*_pca20.pt files (L0-L3)
-        encoded_dir:      directory with raw train_chunk*.pt files; required only if fine_pca_dir is None
-        pca_levels:       which coarse PCA keys to load, default ['L0','L1','L2','L3']
-        fine_levels:      which level indices to use for fine data, default [4, 5]
-        emb_key:          embedding key in raw chunk dicts, default 'emb1'
+        pca_dir:          directory with PCA chunk files (unified *_pca.pt or legacy *_pca20.pt)
+        encoded_dir:      raw encoded dir; required only for legacy lazy-load fine mode
+        pca_levels:       coarse level keys to load, default ['L0','L1','L2','L3']
+        fine_levels:      fine level indices, default [4, 5]
+        emb_key:          embedding key for raw encoded chunks, default 'emb1'
         split:            'train' or 'val'
-        fine_pca_dir:     if set, load fine from *_fine_pca{suffix}.pt files (upfront)
-        fine_n_components: int or list-of-ints; required when fine_pca_dir is set.
-                           e.g. 4 → suffix 'fine_pca4'; [4,3] → suffix 'fine_pca4_3'
+        fine_pca_dir:     legacy: directory with *_fine_pca*.pt files
+        fine_n_components: legacy: int or list; determines suffix for fine_pca files
     """
     def __init__(self, pca_dir, encoded_dir=None, pca_levels=None, fine_levels=None,
                  emb_key='emb1', split='train', fine_pca_dir=None, fine_n_components=None):
@@ -455,41 +455,63 @@ class ConditionalFlowDataset(Dataset):
         pca_levels = pca_levels or ['L0', 'L1', 'L2', 'L3']
         fine_levels = fine_levels or [4, 5]
 
-        pca_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca20.pt')))
-        assert pca_files, f"No {split}_chunk*_pca20.pt in {pca_dir}"
-
         self._fine_levels = fine_levels
         self._emb_key     = emb_key
 
-        # Load all coarse PCA data upfront — it's small (~70 dims per sample)
-        print(f"  Loading coarse PCA data ({len(pca_files)} chunks)...", flush=True)
+        # Detect unified vs legacy format
+        unified_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca.pt')))
+        use_unified   = len(unified_files) > 0
+
+        if use_unified:
+            pca_files = unified_files
+        else:
+            pca_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca20.pt')))
+        assert pca_files, f"No {split}_chunk*_pca.pt or *_pca20.pt in {pca_dir}"
+
+        # Load coarse (and fine in unified mode) upfront
+        print(f"  Loading {'unified' if use_unified else 'coarse'} PCA data ({len(pca_files)} chunks)...", flush=True)
         coarse_all = []
+        fine_all_unified = [] if use_unified else None
         self._chunk_offsets = [0]
+
         for pf in pca_files:
             pca_data = torch.load(pf, weights_only=False)
-            tensors  = [pca_data[lv].float() for lv in pca_levels]
-            tensors  = [t.flatten(1) if t.dim() == 3 else t for t in tensors]
+
+            # Coarse levels
+            coarse_tensors = [pca_data[lv].float() for lv in pca_levels]
+            coarse_tensors = [t.flatten(1) if t.dim() == 3 else t for t in coarse_tensors]
             if not hasattr(self, '_coarse_level_dims'):
-                self._coarse_level_dims = [t.shape[1] for t in tensors]
-            chunk = torch.cat(tensors, dim=1)
-            coarse_all.append(chunk)
-            self._chunk_offsets.append(self._chunk_offsets[-1] + len(chunk))
+                self._coarse_level_dims = [t.shape[1] for t in coarse_tensors]
+            coarse_chunk = torch.cat(coarse_tensors, dim=1)
+            coarse_all.append(coarse_chunk)
+            self._chunk_offsets.append(self._chunk_offsets[-1] + len(coarse_chunk))
+
+            # Fine levels (unified mode only)
+            if use_unified:
+                fine_tensors = [pca_data[f'L{li}'].float() for li in fine_levels]
+                fine_tensors = [t.flatten(1) if t.dim() == 3 else t for t in fine_tensors]
+                if not hasattr(self, '_fine_level_dims'):
+                    self._fine_level_dims = [t.shape[1] for t in fine_tensors]
+                fine_all_unified.append(torch.cat(fine_tensors, dim=1))
+
         self.coarse = torch.cat(coarse_all, dim=0)
         print(f"  Coarse loaded: {len(self.coarse)} samples, {self.coarse.shape[1]} dims", flush=True)
-
         self.coarse_level_dims = self._coarse_level_dims
 
-        # Fine data: load upfront from PCA-compressed files, or lazily from raw encoded files
-        if fine_pca_dir is not None:
+        if use_unified:
+            self.fine = torch.cat(fine_all_unified, dim=0)
+            print(f"  Fine loaded: {len(self.fine)} samples, {self.fine.shape[1]} dims", flush=True)
+            self._use_fine_pca = True
+
+        elif fine_pca_dir is not None:
+            # Legacy: load fine from separate *_fine_pca*.pt files
             assert fine_n_components is not None, "fine_n_components required when fine_pca_dir is set"
             fine_pca_dir = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
-            # Build filename suffix: int → 'fine_pca4'; list → 'fine_pca4_3'
             if isinstance(fine_n_components, int):
                 fn_suffix = f"fine_pca{fine_n_components}"
             else:
                 fn_suffix = "fine_pca" + "_".join(str(n) for n in fine_n_components)
-            fine_files = sorted(_glob.glob(
-                os.path.join(fine_pca_dir, f'{split}_chunk*_{fn_suffix}.pt')))
+            fine_files = sorted(_glob.glob(os.path.join(fine_pca_dir, f'{split}_chunk*_{fn_suffix}.pt')))
             assert fine_files, f"No {split}_chunk*_{fn_suffix}.pt in {fine_pca_dir}"
             assert len(fine_files) == len(pca_files), \
                 f"Chunk count mismatch: {len(pca_files)} coarse vs {len(fine_files)} fine"
@@ -505,7 +527,9 @@ class ConditionalFlowDataset(Dataset):
             self.fine = torch.cat(fine_all, dim=0)
             print(f"  Fine loaded: {len(self.fine)} samples, {self.fine.shape[1]} dims", flush=True)
             self._use_fine_pca = True
+
         else:
+            # Legacy lazy-load from raw encoded_dir
             assert encoded_dir is not None, "encoded_dir required when fine_pca_dir is not set"
             encoded_dir = os.path.expandvars(os.path.expanduser(str(encoded_dir)))
             raw_files = sorted(_glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
@@ -567,3 +591,4 @@ class ConditionalFlowChunkSampler(torch.utils.data.Sampler):
             start, end = self.offsets[ci], self.offsets[ci + 1]
             within = torch.randperm(end - start, generator=self.generator) + start
             yield from within.tolist()
+
