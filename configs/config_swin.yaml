@@ -44,7 +44,7 @@ training:
   dec_batch_size: 360     # decoder-training batch size
   dec_epochs: 100 # 500
   dec_lr: 2e-3
-  pos_weight: 1.7
+  pos_weight: 2.0
   gan_warmup: 100000      # number of epochs before adversarial training starts
   enc_ft_lr: -1           # lr for fine-tuning enc via end-to-end training w/ decoder
   emb_mask_ratio: 0.4     # finest-level patch mask ratio for robustness training (0=disabled, L0 never masked)
