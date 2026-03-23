@@ -99,7 +99,7 @@ flow:
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 1
   repair_chunk_size: null
-  source_scales: [3, 2.0, 0.8, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
+  source_scales: [4, 2.5, 1.0, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
 
 
 wandb:

@@ -1143,6 +1143,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                              optimizer=optimizer, save_every=save_every, tag=cfg.tag + '_fine')
 
     if (wandb.run is not None): wandb.finish()
+    print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false

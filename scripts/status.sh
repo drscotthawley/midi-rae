@@ -28,8 +28,8 @@ echo ""
 LOG="\$RUN_DIR/run.log"
 if [ ! -f "\$LOG" ]; then
     echo "(no run.log found)"
-elif grep -q "FINISHED\. Best metric" "\$LOG"; then
-    RESULT=\$(grep "FINISHED\. Best metric" "\$LOG" | tail -1)
+elif grep -q "FINISHED" "\$LOG"; then
+    RESULT=\$(grep "FINISHED" "\$LOG" | tail -1)
     echo "Result: \$RESULT"
     echo ""
     echo "--- Last 5 lines of run.log ---"
