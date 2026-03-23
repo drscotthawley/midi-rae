@@ -16,6 +16,36 @@ These apply to all encoder runs unless explicitly overridden:
 
 ## Key Findings
 
+### PCA variance target fitting — 2026-03-23
+
+**Decision**: Use `fitpca.n_per_lvl: [0.95, 0.95, ...]` (float) to auto-determine component counts for 95% variance per level. The 95%-variance fit on razer (fitpca95_w0tzfa) gave: `[17, 31, 37, 23, 8, 5]` (vs old `[18, 24, 32, 20, 5, 3]`). Key changes: L1 24→31, L2 32→37, L4 5→8, L5 3→5. L0 dropped from 18→17.
+
+**Why old F1 was poor (86.5%)**: L1 was retaining only 24/128 components and L4 only 5/16 — significant information loss. The 95% fit more than doubles L1 and nearly doubles L4.
+
+**Workflow**: Before running fitpca, delete the output PCA directory (or at least the `*.pkl` files) to avoid stale files accumulating. `load_pca_models` uses `mtime` to pick the newest PKL when multiple exist, but deletion is cleaner.
+
+```bash
+ssh <host> "rm -f ~/datasets/POP909_pca_exp26/pca_L*.pkl ~/datasets/POP909_pca_exp26/*_pca.pt"
+```
+
+Then launch fitpca. After it finishes, update `fitpca.n_per_lvl` and `training.pca_n_per_lvl` in the config to the actual integer counts printed in the log. `load_pca_models` auto-discovers PKL files by glob (no config update needed for PKL loading).
+
+**Active run**: dec29pca95_qAOvFv on razer-docker — decoder fine-tuned from dec28_pw20_xMCamf best checkpoint, with new 95%-variance PCA augmentation.
+
+### Two-stage flow training: coarse then fine — 2026-03-23
+
+**Decision**: Train the flow model in two separate stages rather than jointly.
+
+- **Stage 1 (coarse)**: Train `CrossLevelFlowModel` on L0–L2 (coarse PCA levels, ~626 dims total). Unconditional flow matching. Launch with `++flow.mode=coarse`.
+- **Stage 2 (fine)**: Train `ConditionalFineFlowModel` on L3–L5 (per-patch fine levels, ~5632 dims total), conditioned on the frozen coarse model's predicted L0–L2 endpoint. Launch with `++flow.mode=fine ++flow.coarse_ckpt=<path>`.
+- **Joint option**: `++flow.mode=both` trains both simultaneously using teacher forcing (fine model conditioned on ground-truth real_coarse, not the coarse model's prediction).
+
+**Config**: `flow` and `flow2` sections merged into a single `flow:` block in `config_swin.yaml`. Mode selected by `flow.mode` (default: `fine`). Coarse model uses `coarse_h_dim: 512`; fine model uses `h_dim: 128`.
+
+**VRAM observation**: Coarse training at `batch_size=512` uses only ~4% of lecun's 24 GB VRAM. The coarse model processes 3 tokens (L0–L2) through cross-attention — trivially small. A `coarse_batch_size` config key should be added to use the GPU more fully (suggest 4096–8192). Fine training at batch_size=512 is already near the VRAM limit.
+
+**Active run**: `coarse1_F1fnPk` on lecun, launched 2026-03-23.
+
 ### Coarse levels provide suppression context; fine levels drive recall — 2026-03-21
 
 **Finding**: Decoder ablation (dec28, `mask_levels=[0,1,2,3]`, train + val masking applied) shows that training with only L4/L5 visible produces lower precision than recall (precision ~0.80, recall ~0.90 at epoch 20), compared to full-embedding runs where precision ≥ 0.91 by the same point.
