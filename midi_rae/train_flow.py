@@ -1176,10 +1176,19 @@ def _run_flow(cfg: DictConfig):
                 fine_n_components = [list(raw_npl)[li] for li in fine_levels]
             else:
                 print("  WARNING: fine_n_components not set; ConditionalFineFlowModel may fail")
+        # Derive per-coarse-level PCA component counts from pca_n_per_lvl
+        pca_levels_str = list(fc.get('pca_levels', ['L0', 'L1', 'L2']))
+        raw_npl = cfg.training.get('pca_n_per_lvl', None)
+        if raw_npl is not None:
+            coarse_n_comp = [list(raw_npl)[int(l.replace('L', ''))] for l in pca_levels_str]
+        else:
+            coarse_n_comp = [d // max(1, round((d / 20) ** 0.5) ** 2) for d in coarse_level_dims]
+            print("  WARNING: pca_n_per_lvl not set; guessing cond_n_comp")
         fine_model = ConditionalFineFlowModel(
             cond_dims     = coarse_level_dims,
             target_dims   = dataset.fine_level_dims,
             target_n_comp = fine_n_components,
+            cond_n_comp   = coarse_n_comp,
             h_dim         = fc.h_dim,
             n_layers      = fc.n_layers,
             t_dim         = fc.get('t_dim', 64),
