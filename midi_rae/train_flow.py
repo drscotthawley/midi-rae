@@ -1300,7 +1300,8 @@ def _run_flow2(cfg: DictConfig):
 def train_flow_main(cfg: DictConfig):
     tag = cfg.get('tag', '???')
     mode = cfg.get('flow_mode', 'flow')
-    if mode == 'flow2':
+    stage = int(cfg.get('flow_stage', 1))
+    if mode == 'flow2' or stage == 2:
         _run_flow2(cfg)
     else:
         _run_flow(cfg)
