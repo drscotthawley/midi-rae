@@ -102,7 +102,7 @@ def fit_and_save_pca(cfg):
     encoded_dir = Path(os.path.expandvars(cfg.preencode.output_dir))
     output_dir  = Path(os.path.expandvars(fc.output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
-    key = "embeddings"
+    key = str(fc.get('key', 'emb2'))
 
     _wipe_pca_dir(output_dir)
 
