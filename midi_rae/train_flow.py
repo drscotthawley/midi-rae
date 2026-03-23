@@ -841,51 +841,53 @@ def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0
 # %% ../nbs/12_train_flow.ipynb #tss6l3odpb
 def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                            decoder=None, pca_models=None):
-    """Train ConditionalFineFlowModel with a frozen coarse model as conditioning.
-    All hyperparameters read from cfg.flow2.  Manages W&B init/finish internally.
-
-    decoder, pca_models: if both provided, decode piano rolls during viz.
+    """Train flow model(s).  Mode is read from cfg.flow.mode:
+      'coarse' – train coarse_model only (unconditional CrossLevelFlowModel)
+      'fine'   – train fine_model with frozen coarse as conditioning signal (default)
+      'both'   – train both jointly: separate losses, teacher-forcing for fine conditioning
+    All hyperparameters read from cfg.flow.  Manages W&B init/finish internally.
+    decoder, pca_models: optional piano-roll viz (fine/both only).
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     from midi_rae.data import ConditionalFlowChunkSampler, ConditionalFlowDataset
     from hydra.core.hydra_config import HydraConfig
     from torchvision.utils import make_grid
 
-    cjprint(f"config file: {HydraConfig.get().job.config_name}\nconfig: {cfg}\ndevice = {device}",color="green")
+    cjprint(f"config file: {HydraConfig.get().job.config_name}\nconfig: {cfg}\ndevice = {device}", color="green")
 
-    fc = cfg.flow2
+    fc   = cfg.flow
+    mode = fc.get('mode', 'fine')
+    assert mode in ('coarse', 'fine', 'both'), f"cfg.flow.mode must be coarse/fine/both; got {mode!r}"
+    do_fine = mode in ('fine', 'both')
 
-    # --- Hyperparameters from cfg ---
-    n_epochs          = fc.n_epochs
-    lr                = fc.lr
-    batch_size        = fc.batch_size
-    warp_s            = fc.warp_s
-    save_every        = fc.get('save_every', 10)
-    viz_every         = fc.get('viz_every', 10)
-    eval_every        = min(viz_every, fc.get('eval_every', 10))
-    steps_per_epoch   = fc.get('steps_per_epoch', None)
-    lr_restart_epochs = fc.get('lr_restart_epochs', 500)
-    lr_warmup_frac    = fc.get('lr_warmup_frac', 0.15)
-    grad_clip         = fc.get('grad_clip', 1.0)
-    ema_eta           = fc.get('ema_eta', 0.97)
-    ema_start_epoch   = fc.get('ema_start_epoch', 100)
-    repair_every      = fc.get('repair_every', 1)
+    # --- Hyperparameters ---
+    n_epochs             = fc.n_epochs
+    lr                   = fc.lr
+    batch_size           = fc.batch_size
+    warp_s               = fc.warp_s
+    save_every           = fc.get('save_every', 10)
+    viz_every            = fc.get('viz_every', 10)
+    eval_every           = min(viz_every, fc.get('eval_every', 10))
+    steps_per_epoch      = fc.get('steps_per_epoch', None)
+    lr_restart_epochs    = fc.get('lr_restart_epochs', 500)
+    lr_warmup_frac       = fc.get('lr_warmup_frac', 0.15)
+    grad_clip            = fc.get('grad_clip', 1.0)
+    ema_eta              = fc.get('ema_eta', 0.97)
+    ema_start_epoch      = fc.get('ema_start_epoch', 0)
+    repair_every         = fc.get('repair_every', 1)
     n_repair_projections = fc.get('n_repair_projections', 1)
-    repair_chunk_size = fc.get('repair_chunk_size', None)
-
-    # Unified source_scales [L0..L5]; split at coarse/fine boundary after dataset is loaded
-    all_source_scales = list(fc.get('source_scales', [])) or None
-
-    fine_levels = list(fc.get('fine_levels', [4, 5]))
-    fine_level_names = [f'L{l}' for l in fine_levels]
-    fine_levels_idx  = fine_levels
+    repair_chunk_size    = fc.get('repair_chunk_size', None)
+    all_source_scales    = list(fc.get('source_scales', [])) or None
+    fine_levels          = list(fc.get('fine_levels', [4, 5]))
+    fine_level_names     = [f'L{l}' for l in fine_levels]
+    fine_levels_idx      = fine_levels
 
     raw_fn = fc.get('fine_n_components', None)
     fine_n_components = (list(raw_fn) if hasattr(raw_fn, '__iter__') else int(raw_fn)) if raw_fn is not None else None
     fn_list = (fine_n_components if isinstance(fine_n_components, list)
                else [fine_n_components] * len(fine_levels)) if fine_n_components else None
 
-    checkpoint = os.path.expandvars(os.path.expanduser(cfg.get('checkpoint', '') or '')) or None
+    checkpoint = os.path.expandvars(os.path.expanduser(fc.get('checkpoint', '') or '')) or None
 
     use_wandb = not cfg.get('no_wandb', False) and hasattr(cfg.wandb, 'flow_project')
     if use_wandb:
@@ -894,13 +896,28 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         wandb.define_metric("*", step_metric="epoch")
         if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
 
+    # --- Model setup ---
     coarse_model = coarse_model.to(device)
-    coarse_model.eval()
-    for p in coarse_model.parameters(): p.requires_grad_(False)
+    coarse_ema   = EMAModel(coarse_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+    if mode == 'coarse':
+        coarse_model.train()
+        fine_ema  = None
+        optimizer = optim.Adam(coarse_model.parameters(), lr=lr)
+    elif mode == 'fine':
+        coarse_model.eval()
+        for p in coarse_model.parameters(): p.requires_grad_(False)
+        fine_model = fine_model.to(device)
+        fine_ema   = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+        optimizer  = optim.Adam(fine_model.parameters(), lr=lr)
+    else:  # both: both models train; fine conditioned on real_coarse (teacher forcing)
+        coarse_model.train()
+        fine_model = fine_model.to(device)
+        fine_model.train()
+        fine_ema  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+        optimizer = optim.Adam(
+            list(coarse_model.parameters()) + list(fine_model.parameters()), lr=lr)
 
-    fine_model = fine_model.to(device)
-    ema_model  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
-
+    # --- DataLoader ---
     use_fine_pca = getattr(dataset, '_use_fine_pca', False)
     if isinstance(dataset, ConditionalFlowDataset) and not use_fine_pca:
         sampler = ConditionalFlowChunkSampler(dataset)
@@ -912,7 +929,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     dl_iter = None
     _steps  = steps_per_epoch or len(dl)
 
-    optimizer = optim.Adam(fine_model.parameters(), lr=lr)
     loss_fn   = nn.MSELoss()
     scheduler = make_warmup_cosine_restart_scheduler(
         optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
@@ -921,33 +937,37 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     epoch_start = 0
     real_scatter_logged = False
 
+    # --- Checkpoint resume ---
     if checkpoint:
-        fine_model, ckpt = load_checkpoint(fine_model, checkpoint, return_all=True)
+        resume_model = coarse_model if mode == 'coarse' else fine_model
+        resume_model, ckpt = load_checkpoint(resume_model, checkpoint, return_all=True)
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch']
         global_step = epoch_start * _steps
         for _ in range(epoch_start): scheduler.step()
-        ema_model.ema.load_state_dict(fine_model.state_dict())
+        (coarse_ema if mode == 'coarse' else fine_ema).ema.load_state_dict(resume_model.state_dict())
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
 
-    fine_level_dims   = dataset.fine_level_dims
-    coarse_dim        = dataset.coarse.shape[1]
-    coarse_level_dims = dataset.coarse_level_dims
-    coarse_level_names = [f'L{i}' for i in range(len(coarse_level_dims))]
-
-    # Split unified source_scales at coarse/fine boundary
-    n_coarse = len(coarse_level_dims)
+    # --- Dataset dims ---
+    coarse_level_dims    = dataset.coarse_level_dims
+    coarse_level_names   = [f'L{i}' for i in range(len(coarse_level_dims))]
+    coarse_dim           = dataset.coarse.shape[1]
+    fine_level_dims      = dataset.fine_level_dims if do_fine else None
+    n_coarse             = len(coarse_level_dims)
     coarse_source_scales = all_source_scales[:n_coarse] if all_source_scales else None
-    fine_source_scales   = all_source_scales[n_coarse:] if all_source_scales else None
+    fine_source_scales   = all_source_scales[n_coarse:]  if all_source_scales else None
 
     def _get_eval_fine(n=2000):
-        if getattr(dataset, '_use_fine_pca', False):
-            return dataset.fine[:n].float()
+        if getattr(dataset, '_use_fine_pca', False): return dataset.fine[:n].float()
         dataset._load_fine_chunk(0)
         return dataset._fine_chunk_data[:n].float()
 
+    # --- Training loop ---
     for epoch in range(epoch_start, n_epochs):
-        fine_model.train()
+        if mode == 'fine': coarse_model.eval()
+        else:              coarse_model.train()
+        if do_fine: fine_model.train()
+
         epoch_loss = 0.
         if steps_per_epoch:
             if dl_iter is None:
@@ -955,45 +975,61 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             batches = (next(dl_iter) for _ in range(_steps))
         else:
             batches = dl
-        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch+1}/{n_epochs}', leave=False)
+        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch+1}/{n_epochs} [{mode}]', leave=False)
+
         for real_coarse, real_fine in pbar:
             real_coarse = real_coarse.to(device)
-            real_fine   = real_fine.to(device)
             B = real_coarse.size(0)
-
             t = warp_time(torch.rand(B, 1, device=device), s=warp_s)
+
             noise_coarse = sample_source((B, real_coarse.size(1)), device=device,
                                          source_scales=coarse_source_scales,
                                          level_dims=coarse_level_dims)
-            noise_fine   = sample_source((B, real_fine.size(1)), device=device,
-                                         source_scales=fine_source_scales,
-                                         level_dims=fine_level_dims)
+            if do_fine:
+                real_fine  = real_fine.to(device)
+                noise_fine = sample_source((B, real_fine.size(1)), device=device,
+                                            source_scales=fine_source_scales,
+                                            level_dims=fine_level_dims)
 
-            # Repair coarse and fine independently to avoid cross-level distance dominance
             if repair_every and global_step % repair_every == 0:
                 noise_coarse, real_coarse = ann_repair(noise_coarse, real_coarse,
-                                                       n_projections=n_repair_projections,
-                                                       chunk_size=repair_chunk_size)
-                noise_fine, real_fine = ann_repair(noise_fine, real_fine,
-                                                   n_projections=n_repair_projections,
-                                                   chunk_size=repair_chunk_size)
+                                                        n_projections=n_repair_projections,
+                                                        chunk_size=repair_chunk_size)
+                if do_fine:
+                    noise_fine, real_fine = ann_repair(noise_fine, real_fine,
+                                                        n_projections=n_repair_projections,
+                                                        chunk_size=repair_chunk_size)
 
-            x_t_coarse = (1 - t) * noise_coarse + t * real_coarse
-            x_t_fine   = (1 - t) * noise_fine   + t * real_fine
-            v_fine_target = real_fine - noise_fine
-
-            with torch.no_grad():
-                v_coarse       = coarse_model(x_t_coarse, t)
-                x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
+            x_t_coarse      = (1 - t) * noise_coarse + t * real_coarse
+            v_coarse_target = real_coarse - noise_coarse
 
             optimizer.zero_grad()
-            v_pred = fine_model(x_t_fine, t, x1_pred_coarse)
-            loss   = loss_fn(v_pred, v_fine_target)
+            if mode == 'coarse':
+                loss = loss_fn(coarse_model(x_t_coarse, t), v_coarse_target)
+
+            elif mode == 'fine':
+                x_t_fine      = (1 - t) * noise_fine + t * real_fine
+                v_fine_target = real_fine - noise_fine
+                with torch.no_grad():
+                    v_coarse       = coarse_model(x_t_coarse, t)
+                    x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
+                loss = loss_fn(fine_model(x_t_fine, t, x1_pred_coarse), v_fine_target)
+
+            else:  # both: separate losses, teacher-forcing conditioning for fine
+                x_t_fine      = (1 - t) * noise_fine + t * real_fine
+                v_fine_target = real_fine - noise_fine
+                coarse_loss   = loss_fn(coarse_model(x_t_coarse, t), v_coarse_target)
+                fine_loss     = loss_fn(fine_model(x_t_fine, t, real_coarse), v_fine_target)
+                loss          = coarse_loss + fine_loss
+
             loss.backward()
             if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(fine_model.parameters(), max_norm=grad_clip)
+                clip_params = (list(coarse_model.parameters()) if mode != 'fine' else []) + \
+                              (list(fine_model.parameters()) if do_fine else [])
+                torch.nn.utils.clip_grad_norm_(clip_params, max_norm=grad_clip)
             optimizer.step()
-            ema_model.update(fine_model)
+            if mode != 'fine': coarse_ema.update(coarse_model)
+            if do_fine:        fine_ema.update(fine_model)
 
             epoch_loss += loss.item()
             pbar.set_postfix(loss=f'{loss.item():.4f}')
@@ -1002,162 +1038,177 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         scheduler.step()
         avg_loss = epoch_loss / _steps
         cur_lr   = scheduler.get_last_lr()[0]
-        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}')
-
+        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  [{mode}]')
         log_dict = {'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1}
 
         if eval_every and (epoch + 1) % eval_every == 0:
-            eval_model = ema_model.ema if (epoch + 1) >= ema_start_epoch else fine_model
-            gen_coarse, gen_fine = generate_samples_conditional(
-                coarse_model, eval_model,
-                n_samples=2000, coarse_dim=coarse_dim,
-                target_dims=fine_level_dims, device=device,
-                n_steps=20, warp_s=warp_s,
-                coarse_level_dims=coarse_level_dims,
-                coarse_source_scales=coarse_source_scales,
-                fine_source_scales=fine_source_scales,
-            )
-            real_fine_eval = _get_eval_fine(2000)
-            gen_fine_cpu   = gen_fine.cpu()
-            gen_coarse_cpu = gen_coarse.cpu()
+            use_ema     = (epoch + 1) >= ema_start_epoch
+            eval_coarse = coarse_ema.ema if (mode != 'fine' and use_ema) else coarse_model
+            eval_fine   = fine_ema.ema   if (do_fine and use_ema)        else (fine_model if do_fine else None)
             real_coarse_eval = dataset.coarse[:2000].float()
 
-            # Fine-level metrics
-            metrics = eval_flow(eval_model, real_fine_eval,
-                                n_samples=2000, level_dims=fine_level_dims,
-                                gen=gen_fine_cpu, level_names=fine_level_names)
-            log_dict.update({f'eval/{k}': v for k, v in metrics.items()})
+            if do_fine:
+                real_fine_eval = _get_eval_fine(2000)
+                gen_coarse, gen_fine = generate_samples_conditional(
+                    eval_coarse, eval_fine,
+                    n_samples=2000, coarse_dim=coarse_dim,
+                    target_dims=fine_level_dims, device=device,
+                    n_steps=20, warp_s=warp_s,
+                    coarse_level_dims=coarse_level_dims,
+                    coarse_source_scales=coarse_source_scales,
+                    fine_source_scales=fine_source_scales)
+                gen_fine_cpu   = gen_fine.cpu()
+                gen_coarse_cpu = gen_coarse.cpu()
+                fine_metrics = eval_flow(eval_fine, real_fine_eval, n_samples=2000,
+                                          level_dims=fine_level_dims, gen=gen_fine_cpu,
+                                          level_names=fine_level_names)
+                log_dict.update({f'eval/{k}': v for k, v in fine_metrics.items()})
+            else:
+                gen_coarse_cpu = generate_samples(eval_coarse, n_samples=2000,
+                                                   dim=coarse_dim, device=device,
+                                                   n_steps=20, warp_s=warp_s,
+                                                   source_scales=coarse_source_scales,
+                                                   level_dims=coarse_level_dims).cpu()
 
-            # Coarse-level metrics (frozen model, no grad)
-            coarse_metrics = eval_flow(coarse_model, real_coarse_eval,
-                                       n_samples=2000, level_dims=coarse_level_dims,
-                                       gen=gen_coarse_cpu, level_names=coarse_level_names)
+            coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=2000,
+                                        level_dims=coarse_level_dims, gen=gen_coarse_cpu,
+                                        level_names=coarse_level_names)
             log_dict.update({f'eval/{k}': v for k, v in coarse_metrics.items()})
 
             if (wandb.run is not None) and viz_every and (epoch + 1) % viz_every == 0:
-                real_scatter_logged = _wandb_log_viz(
-                    log_dict, eval_model, real_fine_eval, fine_level_dims, epoch+1,
-                    real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names,
-                    level_n_components=fn_list)
-
-                _wandb_log_viz(log_dict, coarse_model, real_coarse_eval, coarse_level_dims, epoch+1,
-                               False, gen=gen_coarse_cpu, level_names=coarse_level_names)
-
-                if decoder is not None and pca_models is not None:
+                if do_fine:
+                    real_scatter_logged = _wandb_log_viz(
+                        log_dict, eval_fine, real_fine_eval, fine_level_dims, epoch+1,
+                        real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names,
+                        level_n_components=fn_list)
+                _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
+                               epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names)
+                if do_fine and decoder is not None and pca_models is not None:
                     rolls = decode_flow_to_piano_rolls(
-                        gen_coarse_cpu, gen_fine_cpu,
-                        pca_models, coarse_level_dims, fine_level_dims,
-                        fine_levels_idx, cfg, decoder, device, n_samples=16)
+                        gen_coarse_cpu, gen_fine_cpu, pca_models,
+                        coarse_level_dims, fine_level_dims, fine_levels_idx,
+                        cfg, decoder, device, n_samples=16)
                     grid = make_grid(rolls[:16], nrow=4, normalize=True)
                     log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
-
-                _wandb_log_jacobian(log_dict, eval_model, real_fine_eval[:256],
-                                    cond=real_coarse_eval[:256].to(device), device=device)
+                _wandb_log_jacobian(log_dict, eval_fine if do_fine else eval_coarse,
+                                    (real_fine_eval if do_fine else real_coarse_eval)[:256],
+                                    cond=real_coarse_eval[:256].to(device) if do_fine else None,
+                                    device=device)
                 gc.collect()
 
-            fine_model.train()
+            if mode == 'fine': coarse_model.eval()
+            else:              coarse_model.train()
+            if do_fine: fine_model.train()
 
         if (wandb.run is not None): wandb.log(log_dict, step=global_step)
 
-        save_checkpoint((ema_model, fine_model), epoch+1, avg_loss, cfg or {},
-                         optimizer=optimizer, save_every=save_every, tag=cfg.tag)
+        if mode == 'coarse':
+            save_checkpoint((coarse_ema, coarse_model), epoch+1, avg_loss, cfg or {},
+                             optimizer=optimizer, save_every=save_every, tag=cfg.tag)
+        elif mode == 'fine':
+            save_checkpoint((fine_ema, fine_model), epoch+1, avg_loss, cfg or {},
+                             optimizer=optimizer, save_every=save_every, tag=cfg.tag)
+        else:
+            save_checkpoint((coarse_ema, coarse_model), epoch+1, avg_loss, cfg or {},
+                             optimizer=optimizer, save_every=save_every, tag=cfg.tag + '_coarse')
+            save_checkpoint((fine_ema, fine_model), epoch+1, avg_loss, cfg or {},
+                             optimizer=optimizer, save_every=save_every, tag=cfg.tag + '_fine')
 
     if (wandb.run is not None): wandb.finish()
-
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
 import hydra
 from omegaconf import DictConfig
 
-def _run_flow2(cfg: DictConfig):
-    """Second-stage conditional fine-level flow training (called from train_flow_main)."""
+def _run_flow(cfg: DictConfig):
+    """Build coarse and (if needed) fine model, then call train_flow_conditional."""
     from midi_rae.data import ConditionalFlowDataset
+    from midi_rae.utils import load_checkpoint
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"device = {device}")
 
-    flow2 = cfg.flow2
-    fine_levels = list(flow2.get('fine_levels', [4, 5]))
+    fc      = cfg.flow
+    mode    = fc.get('mode', 'fine')
+    do_fine = mode in ('fine', 'both')
+    fine_levels = list(fc.get('fine_levels', [4, 5]))
 
-    fine_pca_dir      = flow2.get('fine_pca_dir', None)
-    fine_n_components = flow2.get('fine_n_components', None)
+    fine_pca_dir      = fc.get('fine_pca_dir', None)
+    fine_n_components = fc.get('fine_n_components', None)
     if fine_pca_dir:
-        fine_pca_dir      = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
-        fine_n_components = (list(fine_n_components) if hasattr(fine_n_components, '__iter__') else int(fine_n_components)) if fine_n_components is not None else None
+        fine_pca_dir = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
+        fine_n_components = (list(fine_n_components) if hasattr(fine_n_components, '__iter__')
+                             else int(fine_n_components)) if fine_n_components is not None else None
 
     dataset = ConditionalFlowDataset(
-        pca_dir           = flow2.pca_dir,
-        encoded_dir       = flow2.get('encoded_dir', None),
-        pca_levels        = list(flow2.get('pca_levels',  ['L0','L1','L2','L3'])),
+        pca_dir           = fc.pca_dir,
+        encoded_dir       = fc.get('encoded_dir', None),
+        pca_levels        = list(fc.get('pca_levels', ['L0', 'L1', 'L2'])),
         fine_levels       = fine_levels,
-        emb_key           = flow2.get('emb_key', 'emb1'),
+        emb_key           = fc.get('emb_key', 'emb1'),
         fine_pca_dir      = fine_pca_dir,
         fine_n_components = fine_n_components,
     )
-    print(f"  {len(dataset)} samples  "
-          f"coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
+    print(f"  {len(dataset)} samples  coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
 
     coarse_level_dims = dataset.coarse_level_dims
     coarse_model = CrossLevelFlowModel(
-        level_dims   = coarse_level_dims,
-        h_dim        = cfg.flow.h_dim,
-        n_layers     = cfg.flow.n_layers,
-        n_attn_layers= cfg.flow.get('n_attn_layers', 2),
-        n_heads      = cfg.flow.get('n_heads', 8),
-        t_dim        = cfg.flow.get('t_dim', 64),
+        level_dims    = coarse_level_dims,
+        h_dim         = fc.get('coarse_h_dim', fc.h_dim),
+        n_layers      = fc.get('coarse_n_layers', fc.n_layers),
+        n_attn_layers = fc.get('n_attn_layers', 2),
+        n_heads       = fc.get('n_heads', 8),
+        t_dim         = fc.get('t_dim', 64),
     )
-    from midi_rae.utils import load_checkpoint
-    coarse_ckpt = flow2.get('coarse_ckpt', None)
+    coarse_ckpt = fc.get('coarse_ckpt', None)
     if coarse_ckpt and str(coarse_ckpt).lower() not in ('none', 'null', ''):
-        coarse_ckpt = os.path.expandvars(os.path.expanduser(str(coarse_ckpt)))
+        coarse_ckpt  = os.path.expandvars(os.path.expanduser(str(coarse_ckpt)))
         coarse_model = load_checkpoint(coarse_model, coarse_ckpt)
         print(f"  Loaded coarse model from {coarse_ckpt}")
-    else:
-        print("  coarse_ckpt not set — coarse model starts from random weights")
+    elif mode != 'coarse':
+        print("  WARNING: coarse_ckpt not set — coarse model starts from random weights")
 
-    # Determine fine_n_components for ConditionalFineFlowModel
-    # In unified mode (no fine_pca_dir), derive from training.pca_n_per_lvl or dataset dims
-    if fine_n_components is None:
-        raw_npl = cfg.training.get('pca_n_per_lvl', None)
-        if raw_npl is not None:
-            fine_n_components = [list(raw_npl)[li] for li in fine_levels]
-        else:
-            print("  WARNING: fine_n_components not set; ConditionalFineFlowModel may fail")
+    fine_model = None
+    if do_fine:
+        if fine_n_components is None:
+            raw_npl = cfg.training.get('pca_n_per_lvl', None)
+            if raw_npl is not None:
+                fine_n_components = [list(raw_npl)[li] for li in fine_levels]
+            else:
+                print("  WARNING: fine_n_components not set; ConditionalFineFlowModel may fail")
+        fine_model = ConditionalFineFlowModel(
+            cond_dims     = coarse_level_dims,
+            target_dims   = dataset.fine_level_dims,
+            target_n_comp = fine_n_components,
+            h_dim         = fc.h_dim,
+            n_layers      = fc.n_layers,
+            t_dim         = fc.get('t_dim', 64),
+        )
+        n_params = sum(p.numel() for p in fine_model.parameters())
+        print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
 
-    fine_model = ConditionalFineFlowModel(
-        cond_dims     = coarse_level_dims,
-        target_dims   = dataset.fine_level_dims,
-        target_n_comp = fine_n_components,
-        h_dim         = flow2.h_dim,
-        n_layers      = flow2.n_layers,
-        t_dim         = cfg.flow.get('t_dim', 64),
-    )
-    n_params = sum(p.numel() for p in fine_model.parameters())
-    print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
-
-    # Load decoder + PCA models for piano roll visualization (optional)
     decoder, pca_models = None, None
-    decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
-    if decoder_ckpt:
-        import pickle
-        from pathlib import Path
-        from midi_rae.swin import SwinDecoder
-        from midi_rae.train_dec import load_pca_models
-        m = cfg.model
-        decoder = SwinDecoder(
-            img_height=cfg.data.image_size, img_width=cfg.data.image_size,
-            patch_h=m.patch_h, patch_w=m.patch_w, out_channels=cfg.data.in_channels,
-            embed_dim=m.embed_dim, depths=list(m.dec_depths),
-            num_heads=list(m.dec_num_heads), window_size=m.window_size,
-            mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
-        decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
-        for p in decoder.parameters(): p.requires_grad_(False)
-        raw_npl = cfg.training.get('pca_n_per_lvl', None)
-        n_per_lvl = list(raw_npl) if raw_npl is not None else None
-        pca_dir = Path(os.path.expandvars(os.path.expanduser(flow2.pca_dir)))
-        n_all_levels = len(coarse_level_dims) + len(fine_levels)
-        pca_models = load_pca_models(str(pca_dir), n_all_levels, n_per_lvl=n_per_lvl)
-        print(f"  Loaded decoder + {len(pca_models)} PCA models for piano roll viz")
+    if do_fine:
+        decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
+        if decoder_ckpt:
+            from pathlib import Path
+            from midi_rae.swin import SwinDecoder
+            from midi_rae.train_dec import load_pca_models
+            m = cfg.model
+            decoder = SwinDecoder(
+                img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+                patch_h=m.patch_h, patch_w=m.patch_w, out_channels=cfg.data.in_channels,
+                embed_dim=m.embed_dim, depths=list(m.dec_depths),
+                num_heads=list(m.dec_num_heads), window_size=m.window_size,
+                mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
+            decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
+            for p in decoder.parameters(): p.requires_grad_(False)
+            raw_npl    = cfg.training.get('pca_n_per_lvl', None)
+            n_per_lvl  = list(raw_npl) if raw_npl is not None else None
+            pca_dir    = Path(os.path.expandvars(os.path.expanduser(fc.pca_dir)))
+            pca_models = load_pca_models(str(pca_dir), len(coarse_level_dims) + len(fine_levels),
+                                          n_per_lvl=n_per_lvl)
+            print(f"  Loaded decoder + {len(pca_models)} PCA models for piano roll viz")
 
     train_flow_conditional(coarse_model, fine_model, dataset, cfg,
                            device=device, decoder=decoder, pca_models=pca_models)
@@ -1165,14 +1216,7 @@ def _run_flow2(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def train_flow_main(cfg: DictConfig):
-    tag = cfg.get('tag', '???')
-    mode = cfg.get('flow_mode', 'flow2')
-    stage = int(cfg.get('flow_stage', 1))
-    if mode == 'flow2' or stage == 2:
-        _run_flow2(cfg)
-    else:
-        _run_flow(cfg)
+    _run_flow(cfg)
 
 if __name__ == '__main__':
     train_flow_main()
-

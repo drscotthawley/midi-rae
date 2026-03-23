@@ -64,56 +64,36 @@ preencode:
   num_passes: 3           # number of passes through the dataset
 
 flow:
-  embedding_glob: $HOME/datasets/POP909_pca_exp26/train_chunk*_pca20.pt
+  mode: fine                                        # coarse | fine | both
+  pca_dir: $HOME/datasets/POP909_pca_exp26          # unified dir with *_pca.pt (all levels)
+  encoded_dir: $HOME/datasets/POP909_encoded_exp26  # dir with train_chunk*.pt (raw)
+  coarse_ckpt: null                                 # pre-trained coarse checkpoint (required for mode=fine)
   checkpoint_dir: checkpoints/flow
-  h_dim: 512
+  pca_levels: ['L0', 'L1', 'L2']                   # coarse levels
+  fine_levels: [3, 4, 5]                            # fine per-patch levels
+  coarse_h_dim: 512                                 # CrossLevelFlowModel hidden dim
+  h_dim: 128                                        # ConditionalFineFlowModel hidden dim
   n_layers: 4
-  n_epochs: 100000
-  lr: 1e-3
-  batch_size: 4096
-  steps_per_epoch: 1000
-  warp_s: 0.5
-  save_every: 10
-  eval_every: 10
-  viz_every: 5               # how often to log histograms + scatter plots to W&B (must be multiple of eval_every)
-  lr_restart_epochs: 500      # T_0 (first cycle length) for warm-restart schedule; periods double (T_mult=2)
-  lr_warmup_frac: 0.15        # fraction of each cycle spent on linear warmup to peak lr
-  source_df: [null, null, null, 3.0, 3.0, 3.0]  # per-level: null=Gaussian (coarse), 3.0=Student-t (fine)
-  source_scales: [8.0, 4.0, 2.0, 0.5]  # per-level scale factors; len sets n_levels to model (L0-L3 only; L4/L5 too small for PCA)
-  repair_every: 1             # mini-batch OT re-pairing every N batches (0=disabled)
-  n_repair_projections: 1     # random projections per ann_repair call
-  repair_chunk_size: null     # chunk size for ann_repair (null=full batch)
-  ema_eta: 0.9                # EMA decay rate (updated every batch)
-  ema_start_epoch: 0          # epoch at which eval/sampling switches to EMA model (0 = always use EMA)
-  self_condition: false       # if true, 50% of batches use self-conditioning (predict x1 first, detach, re-feed)
-  model_type: per_level       # 'per_level' (PerLevelFlowModel) or 'cross_level' (CrossLevelFlowModel w/ attention)
-  n_attn_layers: 2            # cross_level only: transformer encoder layers for cross-level attention
-  n_heads: 8                  # cross_level only: attention heads (h_dim must be divisible by n_heads)
-  t_dim: 64                   # sinusoidal time embedding dim (replaces bare scalar t in all model types)
-  
-flow2:
-  pca_dir: $HOME/datasets/POP909_pca_exp26         # unified dir with *_pca.pt (all levels)
-  encoded_dir: $HOME/datasets/POP909_encoded_exp26 # dir with train_chunk*.pt (raw)
-  coarse_ckpt: null                                # coarse model now covers L0-L2 only; retrain from scratch
-  checkpoint_dir: checkpoints/flow2
-  pca_levels: ['L0', 'L1', 'L2']                  # coarse: L0-L2 (18+96+512=626 dims)
-  fine_levels: [3, 4, 5]                           # fine per-patch: L3+L4+L5
-  h_dim: 128
-  n_layers: 4
-  t_dim: 64
+  n_attn_layers: 2                                  # coarse transformer encoder layers
+  n_heads: 8                                        # coarse attention heads (coarse_h_dim must be divisible)
+  t_dim: 64                                         # sinusoidal time embedding dim
   n_epochs: 100000
   lr: 1e-3
   batch_size: 512
   steps_per_epoch: 1000
+  warp_s: 0.5
   save_every: 10
   eval_every: 10
-  viz_every: 5
-  lr_restart_epochs: 500
-  lr_warmup_frac: 0.15
+  viz_every: 5                                      # must be a multiple of eval_every
+  lr_restart_epochs: 500                            # T_0 for warm-restart schedule; periods double (T_mult=2)
+  lr_warmup_frac: 0.15                              # fraction of each cycle spent on linear warmup
+  grad_clip: 1.0
   ema_eta: 0.97
-  ema_start_epoch: 0
-  warp_s: 0.5
-  source_scales: [7.5, 4.0, 3.0, 1.0, 1.0, 1.0]  # per-level [L0..L5]; split at coarse/fine boundary in code
+  ema_start_epoch: 0                                # epoch at which eval switches to EMA model
+  repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
+  n_repair_projections: 1
+  repair_chunk_size: null
+  source_scales: [3, 2.0, 1.5, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
 
 fitpca:
   output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here

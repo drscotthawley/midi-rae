@@ -48,7 +48,7 @@ def cjprint(*args, color=None, justify="left", width=None, bright=True, revert=T
     elif justify.startswith("c"): text = text.center(width)
     if color:  text = f"\033[{colors[color]}m{text}"
     if revert: text += "\033[0m"
-    print(text, end=end)
+    print(text, end=end, flush=True)
 
 def rprint(text, color=None, width=None):
     "Prints right-justified text. For backwards compatibility"
