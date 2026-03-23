@@ -969,16 +969,14 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                          source_scales=fine_source_scales,
                                          level_dims=fine_level_dims)
 
+            # Repair coarse and fine independently to avoid cross-level distance dominance
             if repair_every and global_step % repair_every == 0:
-                src_cat = torch.cat([noise_coarse, noise_fine], dim=1)
-                tgt_cat = torch.cat([real_coarse,  real_fine],  dim=1)
-                src_cat, tgt_cat = ann_repair(src_cat, tgt_cat,
-                                              n_projections=n_repair_projections,
-                                              chunk_size=repair_chunk_size)
-                noise_coarse = src_cat[:, :noise_coarse.size(1)]
-                noise_fine   = src_cat[:, noise_coarse.size(1):]
-                real_coarse  = tgt_cat[:, :real_coarse.size(1)]
-                real_fine    = tgt_cat[:, real_coarse.size(1):]
+                noise_coarse, real_coarse = ann_repair(noise_coarse, real_coarse,
+                                                       n_projections=n_repair_projections,
+                                                       chunk_size=repair_chunk_size)
+                noise_fine, real_fine = ann_repair(noise_fine, real_fine,
+                                                   n_projections=n_repair_projections,
+                                                   chunk_size=repair_chunk_size)
 
             x_t_coarse = (1 - t) * noise_coarse + t * real_coarse
             x_t_fine   = (1 - t) * noise_fine   + t * real_fine
