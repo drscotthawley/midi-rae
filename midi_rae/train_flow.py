@@ -678,6 +678,7 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
     level_n_components: optional list of ints (one per level). If provided, each level's data is
         reshaped from (B, n_patches × n_comp) → (B × n_patches, n_comp) before PCA so that each
         patch is a point — matching the encoder training viz style (make_emb_viz / _gather_level).
+        After reshape, subsampled back to n_samples points to keep plots manageable.
     """
     from midi_rae.viz import pca_project, plot_embeddings_3d
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
@@ -701,6 +702,11 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
             n_patches = d // n_comp
             r = r.reshape(-1, n_comp)   # (B × n_patches, n_comp) — each patch is a point
             g = g.reshape(-1, n_comp)
+            # subsample after reshape so scatter stays at ~n_samples points
+            if r.shape[0] > n_samples:
+                sub = torch.randperm(r.shape[0])[:n_samples]
+                r = r[sub]
+                g = g[sub]
         r3 = pca_project(r)
         g3 = pca_project(g)
         if r3 is not None: figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) real{title_sfx}')
