@@ -6,7 +6,7 @@
 __all__ = ['SCHEME_NAMES', 'TARGET_NAMES', 'shift_no_wrap', 'sample_shift', 'note_length_weights', 'AnchorDataset',
            'sample_shifts', 'PRPairDataset', 'ShiftedTripletDataset', 'PreEncodedChunkDataset', 'ChunkShuffleSampler',
            'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out', 'EmbeddingDataset',
-           'ConditionalFlowDataset']
+           'ConditionalFlowDataset', 'ConditionalFlowChunkSampler']
 
 # %% ../nbs/01_data.ipynb #b96051a7
 import os 
@@ -546,7 +546,7 @@ class ConditionalFlowDataset(Dataset):
         return self.coarse[i], self._fine_chunk_data[local_i]
 
 
-class ChunkShuffleSampler(torch.utils.data.Sampler):
+class ConditionalFlowChunkSampler(torch.utils.data.Sampler):
     """Yields indices chunk-by-chunk in shuffled order, with within-chunk shuffle.
 
     Use instead of shuffle=True in the DataLoader when the dataset loads

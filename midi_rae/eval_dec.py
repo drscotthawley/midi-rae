@@ -13,13 +13,21 @@ from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
 
-from .core import HierarchicalPatchState, EncoderOutput
+from .core import PatchState, HierarchicalPatchState, EncoderOutput
 from .swin import SwinDecoder
-from .train_dec import setup_models, load_pca_models, pca_roundtrip_enc_out
-from .data import PreEncodedChunkDataset, collate_preencode, emb_levels_to_enc_out
+from .train_dec import load_pca_models, pca_roundtrip_enc_out
+from .data import PreEncodedChunkDataset, collate_preencode
 from .utils import load_checkpoint, cjprint
 
 # %% ../nbs/15_eval_dec.ipynb #collect-probs
+def _emb_levels_to_enc_out(emb_levels, device):
+    "Build a minimal EncoderOutput from a list of level tensors (no pos cache needed)."
+    levels = [PatchState(emb=emb.to(device), pos=None, non_empty=None, mae_mask=None)
+              for emb in emb_levels]
+    return EncoderOutput(patches=HierarchicalPatchState(levels=levels),
+                         full_pos=None, full_non_empty=None, mae_mask=None)
+
+
 @torch.no_grad()
 def collect_probs(decoder, val_dl, device, pca_models=None, n_aug_levels=0, noise_std=0.0,
                   n_batches=None):
@@ -34,8 +42,10 @@ def collect_probs(decoder, val_dl, device, pca_models=None, n_aug_levels=0, nois
     for i, batch in enumerate(tqdm(val_dl, desc='collecting probs')):
         if n_batches is not None and i >= n_batches:
             break
-        img_real = batch['img'].to(device)  # (B, 1, H, W)
-        enc_out = emb_levels_to_enc_out(batch, device)
+        # collate_preencode returns (emb_levels, img) tuple
+        emb_levels, img_real = batch
+        img_real = img_real.to(device)          # (B, 1, H, W)
+        enc_out = _emb_levels_to_enc_out(emb_levels, device)
         if pca_models and n_aug_levels > 0:
             enc_out = pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device, noise_std=noise_std)
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):

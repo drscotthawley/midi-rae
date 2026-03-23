@@ -987,7 +987,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     decoder, pca_models: if both provided, decode piano rolls during viz.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
-    from midi_rae.data import ChunkShuffleSampler, ConditionalFlowDataset
+    from midi_rae.data import ConditionalFlowChunkSampler, ConditionalFlowDataset
     fc = cfg.flow2
 
     # --- Hyperparameters from cfg ---
@@ -1037,7 +1037,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     use_fine_pca = getattr(dataset, '_use_fine_pca', False)
     if isinstance(dataset, ConditionalFlowDataset) and not use_fine_pca:
-        sampler = ChunkShuffleSampler(dataset)
+        sampler = ConditionalFlowChunkSampler(dataset)
         dl = DataLoader(dataset, batch_size=batch_size, sampler=sampler,
                         num_workers=0, pin_memory=(device != 'cpu'), drop_last=True)
     else:
@@ -1191,7 +1191,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                             save_every=save_every, tag='flow2_fine_ema')
 
     if use_wandb: wandb.finish()
-
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
