@@ -113,7 +113,7 @@ flow2:
   ema_eta: 0.97
   ema_start_epoch: 0
   warp_s: 0.5
-  fine_source_scales: [1.0, 1.0, 1.0]  # scale factors for L3, L4, L5
+  source_scales: [7.5, 4.0, 3.0, 1.0, 1.0, 1.0]  # per-level [L0..L5]; split at coarse/fine boundary in code
 
 fitpca:
   output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here

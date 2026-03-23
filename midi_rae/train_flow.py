@@ -872,7 +872,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     repair_every      = fc.get('repair_every', 1)
     n_repair_projections = fc.get('n_repair_projections', 1)
     repair_chunk_size = fc.get('repair_chunk_size', None)
-    fine_source_scales = list(fc.get('fine_source_scales', [])) or None
+
+    # Unified source_scales [L0..L5]; split at coarse/fine boundary after dataset is loaded
+    all_source_scales = list(fc.get('source_scales', [])) or None
 
     fine_levels = list(fc.get('fine_levels', [4, 5]))
     fine_level_names = [f'L{l}' for l in fine_levels]
@@ -933,6 +935,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     coarse_level_dims = dataset.coarse_level_dims
     coarse_level_names = [f'L{i}' for i in range(len(coarse_level_dims))]
 
+    # Split unified source_scales at coarse/fine boundary
+    n_coarse = len(coarse_level_dims)
+    coarse_source_scales = all_source_scales[:n_coarse] if all_source_scales else None
+    fine_source_scales   = all_source_scales[n_coarse:] if all_source_scales else None
+
     def _get_eval_fine(n=2000):
         if getattr(dataset, '_use_fine_pca', False):
             return dataset.fine[:n].float()
@@ -955,7 +962,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             B = real_coarse.size(0)
 
             t = warp_time(torch.rand(B, 1, device=device), s=warp_s)
-            noise_coarse = torch.randn_like(real_coarse)
+            noise_coarse = sample_source((B, real_coarse.size(1)), device=device,
+                                         source_scales=coarse_source_scales,
+                                         level_dims=coarse_level_dims)
             noise_fine   = sample_source((B, real_fine.size(1)), device=device,
                                          source_scales=fine_source_scales,
                                          level_dims=fine_level_dims)
@@ -1007,6 +1016,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                 target_dims=fine_level_dims, device=device,
                 n_steps=20, warp_s=warp_s,
                 coarse_level_dims=coarse_level_dims,
+                coarse_source_scales=coarse_source_scales,
                 fine_source_scales=fine_source_scales,
             )
             real_fine_eval = _get_eval_fine(2000)
