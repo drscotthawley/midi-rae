@@ -14,9 +14,9 @@ from omegaconf import DictConfig
 from tqdm.auto import tqdm
 
 from .core import HierarchicalPatchState, EncoderOutput
-from .swin import SwinEncoder, SwinDecoder
+from .swin import SwinDecoder
 from .train_dec import setup_models, load_pca_models, pca_roundtrip_enc_out
-from .data import PreEncodedChunkDataset, ChunkShuffleSampler, collate_preencode, emb_levels_to_enc_out
+from .data import PreEncodedChunkDataset, collate_preencode, emb_levels_to_enc_out
 from .utils import load_checkpoint, cjprint
 
 # %% ../nbs/15_eval_dec.ipynb #collect-probs
@@ -156,8 +156,7 @@ def eval_decoder(cfg: DictConfig, n_batches=None, output_dir=None):
     encoded_dir = os.path.expandvars(os.path.expanduser(str(cfg.preencode.output_dir)))
     val_ds = PreEncodedChunkDataset(encoded_dir, split='val')
     val_dl = DataLoader(val_ds, batch_size=cfg.training.dec_batch_size,
-                        sampler=ChunkShuffleSampler(val_ds, shuffle=False),
-                        num_workers=2, persistent_workers=True,
+                        shuffle=False, num_workers=2, persistent_workers=True,
                         collate_fn=collate_preencode)
     cjprint(f'Val set: {len(val_ds)} samples', color='cyan')
 
