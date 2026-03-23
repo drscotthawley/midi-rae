@@ -91,63 +91,62 @@ class PerLevelFlowModel(nn.Module):
 
 # %% ../nbs/12_train_flow.ipynb #hda1ntkr1
 class CrossLevelFlowModel(nn.Module):
-    """Flow model with cross-level attention for joint velocity prediction.
-    Each level is projected to h_dim, t is embedded sinusoidally and added to every token,
-    a small transformer cross-attends across all levels (so L3 attends to L0-L2 without
-    cascading), per-level residual MLPs refine, per-level heads decode velocity.
-    Sequence length = n_levels (typically 4) so attention cost is negligible.
-    Uses norm_first=True (pre-LN) for training stability.
-    self_condition: same 50%-dropout self-conditioning as VelocityNet.
-    t_dim: sinusoidal time embedding dim, projected to h_dim and added to each level token.
+    """Per-patch flow model for coarse levels (L0, L1, L2).
+
+    Each patch gets its own token (shared Linear weights within a level), so L2's 16 patches
+    each have an independent token rather than being squashed into one.  The transformer
+    cross-attends over all 1+4+16=21 patch tokens jointly.  No spatial conditioning — the
+    fine model handles that for finer levels.
+
+    level_dims:   flattened dims per level, e.g. [17, 124, 592]
+    level_n_comp: PCA components per patch per level, e.g. [17, 31, 37]
+                  n_patches per level is derived as level_dims[i] // level_n_comp[i]
     """
-    def __init__(self, level_dims, h_dim=512, n_layers=4, n_attn_layers=2, n_heads=8,
-                 self_condition=False, t_dim=64):
+    def __init__(self, level_dims, level_n_comp, h_dim=512, n_layers=4, n_attn_layers=2,
+                 n_heads=8, t_dim=64):
         super().__init__()
-        self.self_condition = self_condition
-        self.level_dims = level_dims
+        self.level_dims   = list(level_dims)
+        self.level_n_comp = list(level_n_comp)
+        self.level_n_patches = [max(1, d // nc) for d, nc in zip(level_dims, level_n_comp)]
         self.t_dim = t_dim
-        in_mul = 2 if self_condition else 1
-        # Per-level input projections: [x_level, (x_sc)] → h_dim  (t added separately)
-        self.level_in  = nn.ModuleList([nn.Linear(d * in_mul, h_dim) for d in level_dims])
-        # Time embedding: sinusoidal t_dim → h_dim (added to every level token)
+        # Per-level input projection: shared across patches within a level
+        self.level_in  = nn.ModuleList([nn.Linear(nc, h_dim) for nc in level_n_comp])
+        # Time embedding added to every patch token
         self.t_proj = nn.Sequential(nn.Linear(t_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim))
-        # Cross-level transformer (seq_len = n_levels ≈ 4; norm_first=True for stability)
+        # Cross-attention over all patch tokens (seq_len = sum of n_patches ≈ 21)
         enc_layer = nn.TransformerEncoderLayer(h_dim, n_heads, dim_feedforward=h_dim * 4,
                                                batch_first=True, dropout=0.0, norm_first=True)
         self.cross_attn = nn.TransformerEncoder(enc_layer, num_layers=n_attn_layers)
-        # Per-level residual MLPs (operate in h_dim space)
+        # Per-level residual MLPs and output heads (shared across patches within level)
         self.level_mlp = nn.ModuleList([
             nn.ModuleList([nn.Linear(h_dim, h_dim) for _ in range(n_layers - 1)])
             for _ in level_dims])
-        # Per-level output heads → velocity
-        self.level_out = nn.ModuleList([nn.Linear(h_dim, d) for d in level_dims])
+        self.level_out = nn.ModuleList([nn.Linear(h_dim, nc) for nc in level_n_comp])
 
     def forward(self, x, t, x_self_cond=None):
         if t.dim() > 1: t = t.squeeze(-1)
         elif t.dim() == 0: t = t.unsqueeze(0).expand(x.size(0))
-        t_emb = self.t_proj(sinusoidal_time_emb(t, self.t_dim))   # [B, h_dim]
-        # Build per-level tokens
-        tokens, offset = [], 0
-        for proj, d in zip(self.level_in, self.level_dims):
-            xd = x[:, offset:offset+d]
-            if self.self_condition:
-                sc = x_self_cond[:, offset:offset+d] if x_self_cond is not None else torch.zeros_like(xd)
-                inp = torch.cat([xd, sc], dim=1)
-            else:
-                inp = xd
-            tokens.append(F.gelu(proj(inp)) + t_emb)   # add time additively
+        B = x.size(0)
+        t_emb = self.t_proj(sinusoidal_time_emb(t, self.t_dim))  # [B, h_dim]
+        # Build per-patch tokens for each level
+        all_tokens, offset = [], 0
+        for proj, nc, np_ in zip(self.level_in, self.level_n_comp, self.level_n_patches):
+            d = np_ * nc
+            xd = x[:, offset:offset+d].reshape(B, np_, nc)      # [B, P, nc]
+            all_tokens.append(F.gelu(proj(xd)) + t_emb.unsqueeze(1))  # [B, P, h_dim]
             offset += d
-        # Cross-attend across levels: [B, n_levels, h_dim]
-        tokens = self.cross_attn(torch.stack(tokens, dim=1))
-        # Per-level residual MLP + output head
-        outs = []
-        for mlp_layers, out_proj, tok in zip(self.level_mlp, self.level_out, tokens.unbind(1)):
+        tokens = torch.cat(all_tokens, dim=1)                    # [B, total_patches, h_dim]
+        tokens = self.cross_attn(tokens)
+        # Per-level output: slice tokens, apply shared MLP+head, flatten
+        outs, patch_offset = [], 0
+        for mlp_layers, out_proj, np_, nc in zip(
+                self.level_mlp, self.level_out, self.level_n_patches, self.level_n_comp):
+            tok = tokens[:, patch_offset:patch_offset+np_, :]    # [B, P, h_dim]
             h = tok
-            for layer in mlp_layers:
-                h = F.gelu(layer(h)) + h
-            outs.append(out_proj(h))
+            for layer in mlp_layers: h = F.gelu(layer(h)) + h
+            outs.append(out_proj(h).reshape(B, np_ * nc))        # [B, P*nc]
+            patch_offset += np_
         return torch.cat(outs, dim=1)
-
 
 # %% ../nbs/12_train_flow.ipynb #phrnuqnyv3
 class FiLM(nn.Module):
@@ -1152,14 +1151,26 @@ def _run_flow(cfg: DictConfig):
     print(f"  {len(dataset)} samples  coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
 
     coarse_level_dims = dataset.coarse_level_dims
+    # Derive per-patch PCA component counts for all coarse levels
+    pca_levels_str = list(fc.get('pca_levels', ['L0', 'L1', 'L2']))
+    raw_npl = cfg.training.get('pca_n_per_lvl', None)
+    if raw_npl is not None:
+        coarse_n_comp = [list(raw_npl)[int(l.replace('L', ''))] for l in pca_levels_str]
+    else:
+        coarse_n_comp = [d // max(1, round((d / 20) ** 0.5) ** 2) for d in coarse_level_dims]
+        print("  WARNING: pca_n_per_lvl not set; guessing coarse_n_comp")
+
     coarse_model = CrossLevelFlowModel(
         level_dims    = coarse_level_dims,
+        level_n_comp  = coarse_n_comp,
         h_dim         = fc.get('coarse_h_dim', fc.h_dim),
         n_layers      = fc.get('coarse_n_layers', fc.n_layers),
         n_attn_layers = fc.get('n_attn_layers', 2),
         n_heads       = fc.get('n_heads', 8),
         t_dim         = fc.get('t_dim', 64),
     )
+    n_params = sum(p.numel() for p in coarse_model.parameters())
+    print(f"  CrossLevelFlowModel: {n_params:,} parameters  patch_counts={coarse_model.level_n_patches}")
     coarse_ckpt = fc.get('coarse_ckpt', None)
     if coarse_ckpt and str(coarse_ckpt).lower() not in ('none', 'null', ''):
         coarse_ckpt  = os.path.expandvars(os.path.expanduser(str(coarse_ckpt)))
@@ -1171,19 +1182,10 @@ def _run_flow(cfg: DictConfig):
     fine_model = None
     if do_fine:
         if fine_n_components is None:
-            raw_npl = cfg.training.get('pca_n_per_lvl', None)
             if raw_npl is not None:
                 fine_n_components = [list(raw_npl)[li] for li in fine_levels]
             else:
                 print("  WARNING: fine_n_components not set; ConditionalFineFlowModel may fail")
-        # Derive per-coarse-level PCA component counts from pca_n_per_lvl
-        pca_levels_str = list(fc.get('pca_levels', ['L0', 'L1', 'L2']))
-        raw_npl = cfg.training.get('pca_n_per_lvl', None)
-        if raw_npl is not None:
-            coarse_n_comp = [list(raw_npl)[int(l.replace('L', ''))] for l in pca_levels_str]
-        else:
-            coarse_n_comp = [d // max(1, round((d / 20) ** 0.5) ** 2) for d in coarse_level_dims]
-            print("  WARNING: pca_n_per_lvl not set; guessing cond_n_comp")
         fine_model = ConditionalFineFlowModel(
             cond_dims     = coarse_level_dims,
             target_dims   = dataset.fine_level_dims,
@@ -1212,7 +1214,6 @@ def _run_flow(cfg: DictConfig):
                 mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
             decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
             for p in decoder.parameters(): p.requires_grad_(False)
-            raw_npl    = cfg.training.get('pca_n_per_lvl', None)
             n_per_lvl  = list(raw_npl) if raw_npl is not None else None
             pca_dir    = Path(os.path.expandvars(os.path.expanduser(fc.pca_dir)))
             pca_models = load_pca_models(str(pca_dir), len(coarse_level_dims) + len(fine_levels),
