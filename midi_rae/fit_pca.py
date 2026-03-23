@@ -17,20 +17,36 @@ from omegaconf import DictConfig
 import hydra
 
 # %% ../nbs/11_fit_pca.ipynb #aa110005
-def load_level_embeddings(encoded_dir: Path, split: str, level: int = 0, key: str = 'emb2'):
-    """Load all patch embeddings at a given hierarchy level from pre-encoded chunk files.
-    Returns (N_total * N_patches, D) — all patches flattened for PCA fitting.
+def load_level_embeddings(encoded_dir: Path, split: str, level: int = 0, key: str = 'emb2',
+                          max_rows: int = None):
+    """Load patch embeddings at a given hierarchy level from pre-encoded chunk files.
+    Returns (N_total * N_patches, D) as float16 numpy array — caller converts to float32 before fitting.
+    max_rows: if set, subsample proportionally per chunk during loading to cap peak RAM usage.
     key: 'emb1', 'emb2', or 'emb3' (which image from the triplet)."""
+    import numpy as np
     chunks = sorted(encoded_dir.glob(f"{split}_chunk*.pt"))
     assert chunks, f"No chunks found for split={split} in {encoded_dir}"
     all_embs = []
     for chunk_path in tqdm(chunks, desc=f"Loading {split} L{level}"):
         chunk = torch.load(chunk_path, weights_only=False)
+        parts = []
         for batch_rec in chunk:
-            emb = batch_rec[key][level]          # (B, N_patches, D)
+            emb = batch_rec[key][level]          # (B, N_patches, D) float16
             B, P, D = emb.shape
-            all_embs.append(emb.reshape(B * P, D))   # flatten patches
-    return torch.cat(all_embs, dim=0).float().numpy()  # (N_total * N_patches, D)
+            parts.append(emb.reshape(B * P, D).numpy())   # stay float16
+        chunk_emb = np.concatenate(parts, axis=0)          # float16
+        if max_rows is not None:
+            frac = max_rows / (len(chunks) * chunk_emb.shape[0] + 1)
+            if frac < 1.0:
+                idx = np.random.choice(chunk_emb.shape[0], max(1, int(chunk_emb.shape[0] * frac)), replace=False)
+                chunk_emb = chunk_emb[idx]
+        all_embs.append(chunk_emb)
+    result = np.concatenate(all_embs, axis=0)              # float16
+    if max_rows is not None and result.shape[0] > max_rows:
+        idx = np.random.choice(result.shape[0], max_rows, replace=False)
+        result = result[idx]
+    return result  # float16; caller does .astype(np.float32) before sklearn PCA
+
 
 # %% ../nbs/11_fit_pca.ipynb #aa110006
 def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
@@ -40,8 +56,8 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
                      max_fit_rows: int = 10_000_000):
     """Fit PCA on per-patch training embeddings for each level, then project and save per-chunk.
 
-    PCA is fit on (N_total * N_patches, D) — all patches from all samples.
-    max_fit_rows: randomly subsample to this many rows for fitting if exceeded (default 10M).
+    max_fit_rows: subsample during loading (chunk-by-chunk) to cap RAM usage.
+    Embeddings are stored as float16; converted to float32 only right before pca.fit().
 
     Two modes:
       Unified (preferred): pass n_per_lvl=[n0,n1,...] for all levels.
@@ -75,14 +91,11 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
                 pcas[level] = None
                 continue
             print(f"Fitting PCA(n={n}) on L{level} (D={D})...")
-            train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key)
+            train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key,
+                                              max_rows=max_fit_rows)
             print(f"  shape: {train_emb.shape}")
-            if max_fit_rows and train_emb.shape[0] > max_fit_rows:
-                idx = np.random.choice(train_emb.shape[0], max_fit_rows, replace=False)
-                train_emb = train_emb[idx]
-                print(f"  subsampled to {train_emb.shape[0]} rows for fitting")
             pca = PCA(n_components=n, whiten=False)
-            pca.fit(train_emb)
+            pca.fit(train_emb.astype(np.float32))
             var = pca.explained_variance_ratio_.cumsum()[-1]
             print(f"  variance explained: {var:.1%}")
             with open(output_dir / f"pca_L{level}_n{n_comp}.pkl", "wb") as f:
@@ -139,14 +152,11 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
                 pcas[level] = None
                 continue
             print(f"Fitting PCA(n={n}) on L{level} ...")
-            train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key)
+            train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key,
+                                              max_rows=max_fit_rows)
             print(f"  shape: {train_emb.shape}")
-            if max_fit_rows and train_emb.shape[0] > max_fit_rows:
-                idx = np.random.choice(train_emb.shape[0], max_fit_rows, replace=False)
-                train_emb = train_emb[idx]
-                print(f"  subsampled to {train_emb.shape[0]} rows for fitting")
             pca = PCA(n_components=n, whiten=False)
-            pca.fit(train_emb)
+            pca.fit(train_emb.astype(np.float32))
             var = pca.explained_variance_ratio_.cumsum()[-1]
             print(f"  variance explained: {var:.1%}")
             with open(output_dir / f"pca_L{level}_n{n_comp}.pkl", "wb") as f:

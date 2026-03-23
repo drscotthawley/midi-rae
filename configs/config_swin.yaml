@@ -92,10 +92,12 @@ flow:
   t_dim: 64                   # sinusoidal time embedding dim (replaces bare scalar t in all model types)
   
 flow2:
-  pca_dir: $HOME/datasets/POP909_pca_exp26         # dir with *_pca20.pt (coarse L0-L3)
-  encoded_dir: $HOME/datasets/POP909_encoded_exp26 # dir with train_chunk*.pt (fine L4/L5)
-  coarse_ckpt: $HOME/runs/midi-rae/flow15_cross_mw6I5r/checkpoints/CrossLevelFlowModel_flow_CrossLevelFlowModel_best.pt
+  pca_dir: $HOME/datasets/POP909_pca_exp26         # unified dir with *_pca.pt (all levels)
+  encoded_dir: $HOME/datasets/POP909_encoded_exp26 # dir with train_chunk*.pt (raw)
+  coarse_ckpt: null                                # coarse model now covers L0-L2 only; retrain from scratch
   checkpoint_dir: checkpoints/flow2
+  pca_levels: ['L0', 'L1', 'L2']                  # coarse: L0-L2 (18+96+512=626 dims)
+  fine_levels: [3, 4, 5]                           # fine per-patch: L3+L4+L5
   h_dim: 128
   n_layers: 4
   t_dim: 64
@@ -111,9 +113,7 @@ flow2:
   ema_eta: 0.97
   ema_start_epoch: 0
   warp_s: 0.5
-  fine_source_scales: [1.0, 1.0]  # scale factors for L4, L5
-  fine_pca_dir: $HOME/datasets/POP909_pca_exp26  # same unified dir as training.pca_dir
-  fine_n_components: [5, 3]   # L4=5 (90.1%), L5=3 (95.5%)
+  fine_source_scales: [1.0, 1.0, 1.0]  # scale factors for L3, L4, L5
 
 fitpca:
   output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here
