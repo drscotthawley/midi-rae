@@ -55,7 +55,7 @@ training:
   pca_aug_levels: 6       # apply PCA to this many levels (skips levels without a pkl file)
   pca_aug_prob: 0.9       # fraction of training batches that get PCA roundtrip (10% clean acts as implicit regularization)
   pca_aug_noise_std: 0.05  # Gaussian noise injected after roundtrip to simulate flow model generation error
-  pca_n_per_lvl: [18, 24, 32, 20, 5, 3]  # per-level PCA components
+  pca_n_per_lvl: [17, 31, 37, 23, 8, 5]  # per-level PCA components (95% variance from fitpca95 run)
   dec_init_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
 
 
@@ -93,12 +93,12 @@ flow:
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 1
   repair_chunk_size: null
-  source_scales: [3, 2.0, 1.5, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
+  source_scales: [3, 2.0, 1.1, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
 
 fitpca:
   output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here
   levels: [0, 1, 2, 3, 4, 5]
-  n_per_lvl: [18, 24, 32, 20, 5, 3]  # L0:18 L1:24 L2:32 L3:20 L4:5 L5:3
+  n_per_lvl: [17, 31, 37, 23, 8, 5]  # from fitpca95 run: 95% variance per level
 
 wandb:
   project: ar-mep-swin-midi-rae

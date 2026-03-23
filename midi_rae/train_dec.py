@@ -207,18 +207,20 @@ def load_pca_models(pca_dir, n_levels, fine_levels=None, fine_n_components=None,
     """Load sklearn PCA models from pca_dir for levels 0..n_levels-1.
 
     Auto-discovers PKL files by globbing for pca_L{i}_n*.pkl — no need to specify
-    the exact component count.  n_per_lvl / fine_levels / fine_n_components are
-    accepted for backwards compatibility but ignored when PKL files can be found.
+    the exact component count.  When multiple files exist for a level (e.g. from
+    different fitpca runs), the most recently modified one is used.
+    n_per_lvl / fine_levels / fine_n_components accepted for backwards compatibility.
     """
     pca_dir = os.path.expandvars(os.path.expanduser(str(pca_dir)))
     pca_models = {}
     for i in range(n_levels):
-        matches = sorted(_glob.glob(os.path.join(pca_dir, f'pca_L{i}_n*.pkl')))
+        matches = _glob.glob(os.path.join(pca_dir, f'pca_L{i}_n*.pkl'))
         if not matches:
             continue
+        path = max(matches, key=os.path.getmtime)  # newest file wins
         if len(matches) > 1:
-            print(f"  load_pca_models: multiple PKL files for L{i}: {[os.path.basename(m) for m in matches]}; using {os.path.basename(matches[-1])}")
-        with open(matches[-1], 'rb') as f:
+            print(f"  load_pca_models L{i}: {len(matches)} PKL files found; using newest: {os.path.basename(path)}")
+        with open(path, 'rb') as f:
             pca_models[i] = pickle.load(f)
     return pca_models
 
