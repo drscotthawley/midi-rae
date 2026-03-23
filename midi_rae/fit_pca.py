@@ -59,6 +59,11 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
     max_fit_rows: subsample during loading (chunk-by-chunk) to cap RAM usage.
     Embeddings are stored as float16; converted to float32 only right before pca.fit().
 
+    n_per_lvl entries may be integers (fixed component count) or floats in (0,1)
+    (variance fraction target, e.g. 0.95).  When a float is given, sklearn determines
+    the component count automatically; the actual count is printed and used for the PKL
+    filename.  After the run, update training.pca_n_per_lvl in the config to match.
+
     Two modes:
       Unified (preferred): pass n_per_lvl=[n0,n1,...] for all levels.
         Saves one chunk file per split: {split}_chunk*_pca.pt with keys 'L0','L1',...
@@ -81,27 +86,36 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
         assert len(n_per_lvl) >= len(levels), \
             "n_per_lvl must have one entry per level"
         pcas = {}
+        actual_n_per_lvl = {}  # records true component count after fitting
         for level in levels:
             n_comp = n_per_lvl[level]
+            is_var_target = isinstance(n_comp, float) and 0.0 < n_comp < 1.0
             sample = torch.load(sorted(encoded_dir.glob("train_chunk*.pt"))[0], weights_only=False)
             D = sample[0][key][level].shape[-1]
-            n = min(n_comp, D)
-            if D <= n_comp:
+            if not is_var_target and int(n_comp) >= D:
                 print(f"L{level}: D={D} <= n_per_lvl={n_comp}, saving raw (identity)")
                 pcas[level] = None
+                actual_n_per_lvl[level] = D
                 continue
-            print(f"Fitting PCA(n={n}) on L{level} (D={D})...")
+            n = n_comp if is_var_target else min(int(n_comp), D)
+            print(f"Fitting PCA(n={'%.0f%%' % (n*100) if is_var_target else n}) on L{level} (D={D})...")
             train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key,
                                               max_rows=max_fit_rows)
             print(f"  shape: {train_emb.shape}")
             pca = PCA(n_components=n, whiten=False)
             pca.fit(train_emb.astype(np.float32))
+            actual_n = pca.n_components_
             var = pca.explained_variance_ratio_.cumsum()[-1]
-            print(f"  variance explained: {var:.1%}")
-            with open(output_dir / f"pca_L{level}_n{n_comp}.pkl", "wb") as f:
+            actual_n_per_lvl[level] = actual_n
+            print(f"  L{level}: {actual_n} components → {var:.1%} variance explained")
+            with open(output_dir / f"pca_L{level}_n{actual_n}.pkl", "wb") as f:
                 pickle.dump(pca, f)
             pcas[level] = pca
             del train_emb
+
+        print("\n--- Actual component counts (update training.pca_n_per_lvl in config) ---")
+        print(f"pca_n_per_lvl: {[actual_n_per_lvl[l] for l in levels]}")
+        print("---\n")
 
         for split in ["train", "val"]:
             chunks = sorted(encoded_dir.glob(f"{split}_chunk*.pt"))
@@ -110,7 +124,6 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
                 data = torch.load(chunk_path, weights_only=False)
                 out = {}
                 for level in levels:
-                    n_comp = n_per_lvl[level]
                     embs = torch.cat([rec[key][level].float() for rec in data], dim=0)
                     N, P, D = embs.shape
                     if pcas[level] is None:
@@ -187,7 +200,6 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
     coarse_pcas = _fit_and_project(coarse_levels, [n_components]*len(coarse_levels), f"pca{n_components}")
     fine_pcas   = _fit_and_project(active_fine, fn_list, fn_suffix) if active_fine else {}
     return coarse_pcas, fine_pcas
-
 
 # %% ../nbs/11_fit_pca.ipynb #aa110009
 #| eval: false

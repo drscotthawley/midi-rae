@@ -200,27 +200,25 @@ def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, mask_levels=None, m
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
 
 # %% ../nbs/09_train_dec.ipynb #kieqb1ep0mc
-import pickle
+import pickle, glob as _glob
 
 def load_pca_models(pca_dir, n_levels, fine_levels=None, fine_n_components=None,
                     n_per_lvl=None):
-    "Load sklearn PCA models from pca_dir for levels 0..n_levels-1."
+    """Load sklearn PCA models from pca_dir for levels 0..n_levels-1.
+
+    Auto-discovers PKL files by globbing for pca_L{i}_n*.pkl — no need to specify
+    the exact component count.  n_per_lvl / fine_levels / fine_n_components are
+    accepted for backwards compatibility but ignored when PKL files can be found.
+    """
     pca_dir = os.path.expandvars(os.path.expanduser(str(pca_dir)))
-    if n_per_lvl is not None:
-        n_map = {i: n_per_lvl[i] for i in range(min(len(n_per_lvl), n_levels))}
-    else:
-        if fine_levels and fine_n_components is not None:
-            fn_map = ({l: fine_n_components for l in fine_levels} if isinstance(fine_n_components, int)
-                      else {l: n for l, n in zip(fine_levels, fine_n_components)})
-        else:
-            fn_map = {}
-        n_map = {i: fn_map.get(i, 20) for i in range(n_levels)}
     pca_models = {}
-    for i, n in n_map.items():
-        path = os.path.join(pca_dir, f'pca_L{i}_n{n}.pkl')
-        if not os.path.exists(path):
+    for i in range(n_levels):
+        matches = sorted(_glob.glob(os.path.join(pca_dir, f'pca_L{i}_n*.pkl')))
+        if not matches:
             continue
-        with open(path, 'rb') as f:
+        if len(matches) > 1:
+            print(f"  load_pca_models: multiple PKL files for L{i}: {[os.path.basename(m) for m in matches]}; using {os.path.basename(matches[-1])}")
+        with open(matches[-1], 'rb') as f:
             pca_models[i] = pickle.load(f)
     return pca_models
 
@@ -242,7 +240,6 @@ def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device, noise_std=0
     return EncoderOutput(
         patches=HierarchicalPatchState(levels=new_levels),
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
-
 
 # %% ../nbs/09_train_dec.ipynb #198855af
 def train(cfg: DictConfig):
