@@ -88,6 +88,7 @@ flow:
   batch_size: 512
   steps_per_epoch: 1000
   warp_s: 0.5
+  time_schedule: sine                                   # 'sine' | 'warp' | 'linear'; sine concentrates t near 1 (high-Jacobian region)
   save_every: 10
   eval_every: 5
   viz_every: 5                                      # must be a multiple of eval_every

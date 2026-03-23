@@ -2,8 +2,8 @@
 
 # %% auto #0
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'FiLM', 'ConditionalFineFlowModel',
-           'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional', 'ann_repair',
-           'generate_samples', 'generate_samples_diffeq', 'mmd_rbf', 'wasserstein_score', 'eval_flow',
+           'warp_time', 'sample_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional',
+           'ann_repair', 'generate_samples', 'generate_samples_diffeq', 'mmd_rbf', 'wasserstein_score', 'eval_flow',
            'eval_jacobian_norm_vs_t', 'plot_level_histograms', 'plot_level_scatter', 'decode_flow_to_piano_rolls',
            'make_warmup_cosine_restart_scheduler', 'train_flow_conditional', 'train_flow_main']
 
@@ -305,6 +305,20 @@ def warp_time(t, s=0.5):
     s=1 → linear; s<1 → slower near middle; s=1.5 ≈ cosine schedule.
     Works on scalar, 1-D or 2-D tensors."""
     return 4*(1-s)*t**3 + 6*(s-1)*t**2 + (3-2*s)*t
+
+def sample_time(shape, schedule='warp', warp_s=0.5, device='cpu'):
+    """Sample flow timesteps t∈[0,1] with schedule warping.
+    schedule='sine'   → t = sin(π/2·τ); density ∝ 1/√(1-t²), concentrates near t=1 (high-Jacobian region)
+    schedule='warp'   → polynomial warp_time (default)
+    schedule='linear' → uniform, no warping
+    """
+    tau = torch.rand(*shape, device=device)
+    if schedule == 'sine':
+        return torch.sin(math.pi / 2 * tau)
+    elif schedule == 'warp':
+        return warp_time(tau, s=warp_s)
+    else:
+        return tau
 
 # %% ../nbs/12_train_flow.ipynb #aa120006
 @torch.no_grad()
@@ -893,6 +907,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     lr                   = fc.lr
     batch_size           = fc.batch_size
     warp_s               = fc.warp_s
+    time_schedule        = fc.get('time_schedule', 'warp')
     save_every           = fc.get('save_every', 10)
     viz_every            = fc.get('viz_every', 10)
     eval_every           = min(viz_every, fc.get('eval_every', 10))
@@ -1008,7 +1023,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         for real_coarse, real_fine in pbar:
             real_coarse = real_coarse.to(device)
             B = real_coarse.size(0)
-            t = warp_time(torch.rand(B, 1, device=device), s=warp_s)
+            t = sample_time((B, 1), schedule=time_schedule, warp_s=warp_s, device=device)
 
             noise_coarse = sample_source((B, real_coarse.size(1)), device=device,
                                          source_scales=coarse_source_scales,
