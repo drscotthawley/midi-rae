@@ -35,7 +35,8 @@ def load_level_embeddings(encoded_dir: Path, split: str, level: int = 0, key: st
 # %% ../nbs/11_fit_pca.ipynb #aa110006
 def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
                      n_components: int = 20, key: str = 'emb2',
-                     fine_levels: list = None, fine_n_components = None):
+                     fine_levels: list = None, fine_n_components = None,
+                     max_fit_rows: int = 10_000_000):
     """Fit PCA on per-patch training embeddings for each level, then project and save per-chunk.
 
     PCA is fit on (N_total * N_patches, D) — all patches from all samples, preserving spatial variance.
@@ -43,6 +44,8 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
 
     fine_n_components: int (same for all fine levels) or list (one per fine level).
       e.g. fine_n_components=[4, 3] for L4=4 components, L5=3 components.
+
+    max_fit_rows: cap on rows used for PCA fitting (randomly subsampled if exceeded). Default 10M.
 
     Coarse output: <output_dir>/{split}_chunk{idx}_pca{n_components}.pt   — keys 'L0', 'L1', ...
     Fine output:   <output_dir>/{split}_chunk{idx}_fine_pca{suffix}.pt    — keys 'L4', 'L5', ...
@@ -88,6 +91,10 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
             print(f"Fitting PCA(n={n}) on L{level} ...")
             train_emb = load_level_embeddings(encoded_dir, "train", level=level, key=key)
             print(f"  shape: {train_emb.shape}")
+            if max_fit_rows and train_emb.shape[0] > max_fit_rows:
+                idx = np.random.choice(train_emb.shape[0], max_fit_rows, replace=False)
+                train_emb = train_emb[idx]
+                print(f"  subsampled to {train_emb.shape[0]} rows for fitting")
             pca = PCA(n_components=n, whiten=False)
             pca.fit(train_emb)
             var = pca.explained_variance_ratio_.cumsum()[-1]
