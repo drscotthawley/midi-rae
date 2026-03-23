@@ -79,8 +79,8 @@ flow:
   fine_levels: [3, 4, 5]                            # fine per-patch levels
   coarse_h_dim: 512                                 # CrossLevelFlowModel hidden dim
   h_dim: 128                                        # ConditionalFineFlowModel hidden dim
-  n_layers: 4
-  n_attn_layers: 2                                  # coarse transformer encoder layers
+  n_layers: 6
+  n_attn_layers: 4                                  # coarse transformer encoder layers
   n_heads: 8                                        # coarse attention heads (coarse_h_dim must be divisible)
   t_dim: 64                                         # sinusoidal time embedding dim
   n_epochs: 100000
