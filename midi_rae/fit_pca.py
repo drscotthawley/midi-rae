@@ -85,6 +85,11 @@ def fit_and_save_pca(encoded_dir: str, output_dir: str, levels: list = None,
     if n_per_lvl is not None:
         assert len(n_per_lvl) >= len(levels), \
             "n_per_lvl must have one entry per level"
+        # Wipe stale PKL and projected chunk files before fitting
+        stale = list(output_dir.glob("pca_L*.pkl")) + list(output_dir.glob("*_pca.pt"))
+        if stale:
+            print(f"Removing {len(stale)} stale PCA files from {output_dir}...")
+            for f in stale: f.unlink()
         pcas = {}
         actual_n_per_lvl = {}  # records true component count after fitting
         for level in levels:
