@@ -3,8 +3,8 @@
 # %% auto #0
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'FiLM', 'ConditionalFineFlowModel',
            'warp_time', 'rk4_step', 'euler_step', 'sample_source', 'generate_samples_conditional', 'ann_repair',
-           'generate_samples', 'mmd_rbf', 'wasserstein_score', 'eval_flow', 'eval_jacobian_norm_vs_t',
-           'plot_level_histograms', 'plot_level_scatter', 'decode_flow_to_piano_rolls',
+           'generate_samples', 'generate_samples_diffeq', 'mmd_rbf', 'wasserstein_score', 'eval_flow',
+           'eval_jacobian_norm_vs_t', 'plot_level_histograms', 'plot_level_scatter', 'decode_flow_to_piano_rolls',
            'make_warmup_cosine_restart_scheduler', 'train_flow_conditional', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
@@ -485,6 +485,26 @@ def generate_samples(model, n_samples, dim, device='cpu',
         y  = step_fn(model, y, ts[i].item(), dt)
     return y
 
+# %% ../nbs/12_train_flow.ipynb #imrmtri1e6i
+@torch.no_grad()
+def generate_samples_diffeq(model, n_samples, dim, device='cpu',
+                             source_df=None, source_scales=None, level_dims=None,
+                             rtol=1e-5, atol=1e-5, method='dopri5'):
+    """Adaptive ODE sampler via torchdiffeq (default: dopri5).
+    Automatically concentrates evaluations where the velocity field is stiff
+    (around t≈0.85-0.93 for our coarse model) — no manual time warping needed.
+    For unconditional models only (coarse); fine model uses generate_samples_conditional.
+    """
+    from torchdiffeq import odeint
+    y0 = sample_source((n_samples, dim), device=device, source_df=source_df,
+                       source_scales=source_scales, level_dims=level_dims)
+    model.eval()
+    def func(t, y):
+        t_ = t.expand(y.size(0), 1)
+        return model(y, t_)
+    t_span = torch.tensor([0.0, 1.0], device=device)
+    return odeint(func, y0, t_span, method=method, rtol=rtol, atol=atol)[1]
+
 # %% ../nbs/12_train_flow.ipynb #aa120011
 def mmd_rbf(x, y, n_sub=2000):
     """Unbiased MMD² with RBF kernel, median bandwidth heuristic.
@@ -528,28 +548,38 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
 # %% ../nbs/12_train_flow.ipynb #9d7ef6b6
 @torch.no_grad()
 def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, device='cpu',
-              source_df=None, source_scales=None, level_dims=None, gen=None, level_names=None):
+              source_df=None, source_scales=None, level_dims=None, gen=None, level_names=None,
+              use_diffeq=True, rtol=1e-5, atol=1e-5):
     """Compare distributional statistics of real vs generated embeddings, per level.
     Returns flat dict with keys like 'L0/mmd', 'L0/wasserstein', 'L0/real_std', etc.
     Also returns global 'mmd' and 'wasserstein' for backward compatibility.
     real_embeddings: (N, D) tensor.
     gen: optional pre-computed generated samples (N, D) tensor — skips generate_samples().
     level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' keys.
+    use_diffeq: use adaptive dopri5 solver (torchdiffeq) instead of fixed-step RK4.
     """
     from scipy.stats import skew, kurtosis
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
     real = real_embeddings[idx].float()
     if gen is None:
         dim = real_embeddings.shape[1]
-        gen = generate_samples(model, n_samples, dim, device=device,
-                               n_steps=n_steps, warp_s=warp_s, source_df=source_df,
-                               source_scales=source_scales, level_dims=level_dims).cpu()
+        try:
+            if use_diffeq:
+                gen = generate_samples_diffeq(model, n_samples, dim, device=device,
+                                              source_df=source_df, source_scales=source_scales,
+                                              level_dims=level_dims, rtol=rtol, atol=atol).cpu()
+            else:
+                raise ImportError  # fall through to RK4
+        except (ImportError, Exception) as e:
+            if use_diffeq: print(f"  torchdiffeq unavailable ({e}), falling back to RK4")
+            gen = generate_samples(model, n_samples, dim, device=device,
+                                   n_steps=n_steps, warp_s=warp_s, source_df=source_df,
+                                   source_scales=source_scales, level_dims=level_dims).cpu()
     else:
         gen = gen[:n_samples].float().cpu()
     r, g = real.numpy(), gen.numpy()
 
     metrics = {}
-    # Global stats
     metrics['real_mean']  = float(r.mean())
     metrics['real_std']   = float(r.std())
     metrics['real_skew']  = float(skew(r.ravel()))
@@ -561,7 +591,6 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
     metrics['mmd']        = mmd_rbf(real, gen)
     metrics['wasserstein'] = wasserstein_score(r, g)
 
-    # Per-level stats
     if level_dims is not None:
         offset = 0
         for i, d in enumerate(level_dims):
