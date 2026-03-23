@@ -1255,9 +1255,6 @@ def _run_flow2(cfg: DictConfig):
         if raw_npl is not None:
             fine_n_components = [list(raw_npl)[li] for li in fine_levels]
         else:
-            # Fallback: infer from dataset fine_level_dims and number of patches
-            # (dataset.fine_level_dims[i] = n_patches * n_comp)
-            # We can't recover n_comp without n_patches, so warn
             print("  WARNING: fine_n_components not set; ConditionalFineFlowModel may fail")
 
     fine_model = ConditionalFineFlowModel(
@@ -1307,4 +1304,7 @@ def train_flow_main(cfg: DictConfig):
         _run_flow2(cfg)
     else:
         _run_flow(cfg)
+
+if __name__ == '__main__':
+    train_flow_main()
 
