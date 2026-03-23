@@ -477,8 +477,11 @@ class ConditionalFlowDataset(Dataset):
         for pf in pca_files:
             pca_data = torch.load(pf, weights_only=False)
 
-            # Coarse levels
+            # Coarse levels — record n_comp and n_patches before flattening
             coarse_tensors = [pca_data[lv].float() for lv in pca_levels]
+            if not hasattr(self, '_coarse_n_comp'):
+                self._coarse_n_comp    = [t.shape[-1] for t in coarse_tensors]
+                self._coarse_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in coarse_tensors]
             coarse_tensors = [t.flatten(1) if t.dim() == 3 else t for t in coarse_tensors]
             if not hasattr(self, '_coarse_level_dims'):
                 self._coarse_level_dims = [t.shape[1] for t in coarse_tensors]
@@ -486,9 +489,12 @@ class ConditionalFlowDataset(Dataset):
             coarse_all.append(coarse_chunk)
             self._chunk_offsets.append(self._chunk_offsets[-1] + len(coarse_chunk))
 
-            # Fine levels (unified mode only)
+            # Fine levels (unified mode only) — record n_comp before flattening
             if use_unified:
                 fine_tensors = [pca_data[f'L{li}'].float() for li in fine_levels]
+                if not hasattr(self, '_fine_n_comp'):
+                    self._fine_n_comp    = [t.shape[-1] for t in fine_tensors]
+                    self._fine_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in fine_tensors]
                 fine_tensors = [t.flatten(1) if t.dim() == 3 else t for t in fine_tensors]
                 if not hasattr(self, '_fine_level_dims'):
                     self._fine_level_dims = [t.shape[1] for t in fine_tensors]
@@ -497,6 +503,8 @@ class ConditionalFlowDataset(Dataset):
         self.coarse = torch.cat(coarse_all, dim=0)
         print(f"  Coarse loaded: {len(self.coarse)} samples, {self.coarse.shape[1]} dims", flush=True)
         self.coarse_level_dims = self._coarse_level_dims
+        self.coarse_n_comp     = self._coarse_n_comp     # PCA components per patch per coarse level
+        self.coarse_n_patches  = self._coarse_n_patches  # patches per coarse level
 
         if use_unified:
             self.fine = torch.cat(fine_all_unified, dim=0)
@@ -520,6 +528,9 @@ class ConditionalFlowDataset(Dataset):
             for fp in fine_files:
                 fd = torch.load(fp, weights_only=False)
                 tensors = [fd[f'L{li}'].float() for li in fine_levels]
+                if not hasattr(self, '_fine_n_comp'):
+                    self._fine_n_comp    = [t.shape[-1] for t in tensors]
+                    self._fine_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in tensors]
                 tensors = [t.flatten(1) if t.dim() == 3 else t for t in tensors]
                 if not hasattr(self, '_fine_level_dims'):
                     self._fine_level_dims = [t.shape[1] for t in tensors]
@@ -541,12 +552,16 @@ class ConditionalFlowDataset(Dataset):
             raw0 = torch.load(raw_files[0], weights_only=False)
             self._fine_level_dims = [raw0[0][emb_key][li].float().flatten(1).shape[1]
                                       for li in fine_levels]
+            self._fine_n_comp    = self._fine_level_dims  # no PCA; full dims
+            self._fine_n_patches = [1] * len(fine_levels)
             del raw0
             self._use_fine_pca    = False
             self._fine_chunk_idx  = -1
             self._fine_chunk_data = None
 
         self.fine_level_dims = self._fine_level_dims
+        self.fine_n_comp     = self._fine_n_comp     # PCA components per patch per fine level
+        self.fine_n_patches  = self._fine_n_patches  # patches per fine level
 
     def _load_fine_chunk(self, chunk_idx):
         if self._fine_chunk_idx == chunk_idx:
@@ -591,4 +606,3 @@ class ConditionalFlowChunkSampler(torch.utils.data.Sampler):
             start, end = self.offsets[ci], self.offsets[ci + 1]
             within = torch.randperm(end - start, generator=self.generator) + start
             yield from within.tolist()
-

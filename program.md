@@ -347,6 +347,22 @@ Start with low-risk, high-payoff changes before architectural surgery:
 
 ## Future experiment ideas
 
+### Learned AE frontend replacing PCA (for decoder recall improvement)
+
+**Motivation**: Decoder trained on PCA-roundtripped embeddings shows lower recall than precision, even at 95% variance. The 5% dropped variance likely contains the note/silence decision boundary (low-variance directions encode rare "note on" patches). PCA is blind to reconstruction loss — it cannot learn to preserve what matters for decoding.
+
+**Idea**: Replace per-level PCA with a small nonlinear MLP autoencoder (encoder + decoder), same bottleneck dims as current PCA. Weights shared across patches within a level (same as encoder treats patches uniformly). Train AE jointly end-to-end with the piano roll decoder — reconstruction loss backpropagates through both.
+
+**Pipeline (replaces fitpca + pca_aug)**:
+1. Train AE + decoder jointly (AE replaces PCA roundtrip augmentation; no `pca_aug` needed)
+2. Freeze AE; preencode dataset using frozen AE encoder → save latent codes (same format as current PCA chunks)
+3. Train coarse flow in AE latent space (same as now)
+4. Train fine flow with frozen coarse + frozen AE (for viz)
+
+**Whitening**: AE latent space won't be whitened like PCA. Options: (a) add KL/whitening regularizer, (b) "residual PCA" variant — AE learns residual on top of PCA scaffold (`z = PCA(emb) + AE_enc(emb)`; `emb_recon = PCA_inv(z_pca) + AE_dec(z)`), which keeps flow-friendly whitening while capturing what PCA misses.
+
+**Status**: Deferred — try 99% variance PCA first (cheaper). Revisit if recall gap persists.
+
 ### Revisit deeper finest-level encoder blocks (post-exp20)
 
 Earlier experiments with `depths=[4,4,4,6,2,1]` (more transformer blocks at L4/L5) showed no benefit. However, those runs had LeJEPA losses active at the finest levels, meaning the extra capacity was being used to fight an inappropriate Gaussian prior. Now that `n_skip_finest_levels=2` skips LeJEPA at both L4 and L5, the finest-level blocks are supervised only by MEP — a much more appropriate objective. More capacity at these levels could now meaningfully improve MEP quality and the richness of the discrete vocabulary organized there.
