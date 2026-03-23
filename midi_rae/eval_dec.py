@@ -20,10 +20,20 @@ from .data import PreEncodedChunkDataset, collate_preencode
 from .utils import load_checkpoint, cjprint
 
 # %% ../nbs/15_eval_dec.ipynb #collect-probs
+def _make_grid_pos(n_patches, device):
+    "Compute (N, 2) row/col grid positions for a square patch grid."
+    g = int(n_patches ** 0.5)
+    rows, cols = torch.meshgrid(torch.arange(g), torch.arange(g), indexing='ij')
+    return torch.stack([rows.flatten(), cols.flatten()], dim=1).float().to(device)
+
+
 def _emb_levels_to_enc_out(emb_levels, device):
-    "Build a minimal EncoderOutput from a list of level tensors (no pos cache needed)."
-    levels = [PatchState(emb=emb.to(device), pos=None, non_empty=None, mae_mask=None)
-              for emb in emb_levels]
+    "Build a minimal EncoderOutput from a list of level tensors, computing grid positions."
+    levels = []
+    for emb in emb_levels:
+        emb = emb.to(device)
+        pos = _make_grid_pos(emb.shape[1], device)  # emb: (B, N, D) → N patches
+        levels.append(PatchState(emb=emb, pos=pos, non_empty=None, mae_mask=None))
     return EncoderOutput(patches=HierarchicalPatchState(levels=levels),
                          full_pos=None, full_non_empty=None, mae_mask=None)
 
