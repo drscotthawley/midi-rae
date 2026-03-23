@@ -180,10 +180,10 @@ def eval_decoder(cfg: DictConfig, n_batches=None, output_dir=None):
                         collate_fn=collate_preencode)
     cjprint(f'Val set: {len(val_ds)} samples', color='cyan')
 
-    # --- PCA models ---
+    # --- PCA models (all levels from one unified pca_dir) ---
     pca_dir = os.path.expandvars(os.path.expanduser(str(cfg.training.pca_dir)))
-    n_aug_levels = cfg.training.get('pca_aug_levels', 6)
-    noise_std    = cfg.training.get('pca_aug_noise_std', 0.05)
+    n_aug_levels      = cfg.training.get('pca_aug_levels', 6)
+    noise_std         = cfg.training.get('pca_aug_noise_std', 0.05)
     fine_levels       = list(cfg.training.get('pca_fine_levels', []))
     fine_n_components = list(cfg.training.get('pca_fine_n_components', []))
     pca_models = load_pca_models(pca_dir, n_aug_levels,

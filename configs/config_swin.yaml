@@ -113,14 +113,15 @@ flow2:
   ema_start_epoch: 0
   warp_s: 0.5
   fine_source_scales: [1.0, 1.0]  # scale factors for L4, L5
-  fine_pca_dir: $HOME/datasets/POP909_encoded_exp26_pca
+  fine_pca_dir: $HOME/datasets/POP909_pca_exp26  # same unified dir as training.pca_dir
   fine_n_components: [5, 3]   # L4=5 (90.1%), L5=3 (95.5%)
 
 fitpca:
-  # encoded_dir and output_dir default to cfg.preencode.output_dir and encoded_dir+'_pca'
-  levels: [4, 5]          # only process fine levels (coarse pca20 files already exist)
+  output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here
+  levels: [0, 1, 2, 3, 4, 5]  # all levels; fine_levels below get per-level n_components
+  n_components: 20             # L0-L3: 20 components each
   fine_levels: [4, 5]
-  fine_n_components: [5, 3]   # L4: 5 components (90.1%); L5: 3 components (95.5%)
+  fine_n_components: [5, 3]   # L4: 5 components (~90% var); L5: 3 components (~95% var)
 
 wandb:
   project: ar-mep-swin-midi-rae
