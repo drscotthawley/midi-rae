@@ -55,7 +55,6 @@ training:
   pca_aug_levels: 6       # apply PCA to this many levels (skips levels without a pkl file)
   pca_aug_prob: 0.9       # fraction of training batches that get PCA roundtrip (10% clean acts as implicit regularization)
   pca_aug_noise_std: 0.05  # Gaussian noise injected after roundtrip to simulate flow model generation error
-  pca_n_per_lvl: [17, 31, 37, 23, 8, 5]  # per-level PCA components (95% variance from fitpca95 run)
   dec_init_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
 
 
@@ -66,7 +65,7 @@ preencode:
 fitpca:
   output_dir: $HOME/datasets/POP909_pca_exp26  # unified dir: all PKL + chunk files here
   levels: [0, 1, 2, 3, 4, 5]
-  n_per_lvl: [17, 31, 37, 23, 8, 5]  # from fitpca95 run: 95% variance per level
+  n_per_lvl: [0.95, 0.95, 0.95, 0.95, 0.95, 0.95]  # variance threshold per level
 
 
 flow:
