@@ -536,12 +536,13 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
     """Sliced Wasserstein distance: average 1-D Wasserstein over random projections.
     Falls back gracefully if geomloss is unavailable.
     Returns nan on numerical failure (overflow, diverged samples, etc.).
-    x, y: (N, D) numpy arrays."""
+    x, y: (N, D) numpy arrays. Blur is auto-scaled to median pairwise distance."""
     try:
         import geomloss
-        loss = geomloss.SamplesLoss("sinkhorn", p=2, blur=0.05)
         xt = torch.tensor(x[:n_sub]).float()
         yt = torch.tensor(y[:n_sub]).float()
+        scale = torch.cdist(xt[:256], xt[:256]).median().clamp(min=1e-3).item()
+        loss = geomloss.SamplesLoss("sinkhorn", p=2, blur=0.05 * scale)
         return loss(xt, yt).item()
     except ImportError:
         pass
@@ -558,18 +559,19 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
     except Exception:
         return float('nan')
 
-
 # %% ../nbs/12_train_flow.ipynb #9d7ef6b6
 @torch.no_grad()
 def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, device='cpu',
               source_df=None, source_scales=None, level_dims=None, gen=None, level_names=None,
-              use_diffeq=True, rtol=1e-5, atol=1e-5):
+              use_diffeq=True, rtol=1e-5, atol=1e-5, level_n_patches=None):
     """Compare distributional statistics of real vs generated embeddings, per level.
     Returns flat dict with keys like 'L0/mmd', 'L0/wasserstein', 'L0/real_std', etc.
     Also returns global 'mmd' and 'wasserstein' for backward compatibility.
     real_embeddings: (N, D) tensor.
     gen: optional pre-computed generated samples (N, D) tensor — skips generate_samples().
     level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' keys.
+    level_n_patches: list of ints, one per level. If n_patches>1, metrics are computed per patch
+                     (reshape (N, n_patches*n_comp) → (N*n_patches, n_comp)) for reliability.
     use_diffeq: use adaptive dopri5 solver (torchdiffeq) instead of fixed-step RK4.
     """
     from scipy.stats import skew, kurtosis
@@ -610,6 +612,11 @@ def eval_flow(model, real_embeddings, n_samples=10000, n_steps=20, warp_s=0.5, d
         for i, d in enumerate(level_dims):
             rl = r[:, offset:offset+d]
             gl = g[:, offset:offset+d]
+            n_patches = level_n_patches[i] if level_n_patches else 1
+            if n_patches > 1:
+                n_comp = d // n_patches
+                rl = rl.reshape(-1, n_comp)
+                gl = gl.reshape(-1, n_comp)
             rt, gt = torch.tensor(rl), torch.tensor(gl)
             lname = level_names[i] if level_names else f'L{i}'
             metrics[f'{lname}/real_std']    = float(rl.std())
@@ -1104,7 +1111,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                 gen_coarse_cpu = gen_coarse.cpu()
                 fine_metrics = eval_flow(eval_fine, real_fine_eval, n_samples=2000,
                                           level_dims=fine_level_dims, gen=gen_fine_cpu,
-                                          level_names=fine_level_names)
+                                          level_names=fine_level_names,
+                                          level_n_patches=dataset.fine_n_patches)
                 log_dict.update({f'eval/{k}': v for k, v in fine_metrics.items()})
             else:
                 gen_coarse_cpu = generate_samples(eval_coarse, n_samples=2000,
@@ -1115,7 +1123,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
             coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=2000,
                                         level_dims=coarse_level_dims, gen=gen_coarse_cpu,
-                                        level_names=coarse_level_names)
+                                        level_names=coarse_level_names,
+                                        level_n_patches=dataset.coarse_n_patches)
             log_dict.update({f'eval/{k}': v for k, v in coarse_metrics.items()})
 
             if (wandb.run is not None) and viz_every and (epoch + 1) % viz_every == 0:
