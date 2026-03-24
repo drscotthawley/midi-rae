@@ -88,7 +88,7 @@ flow:
   batch_size: 512
   steps_per_epoch: 1000
   warp_s: 0.5
-  time_schedule: sine                                   # 'sine' | 'warp' | 'linear'; sine concentrates t near 1 (high-Jacobian region)
+  time_schedule: warp                                   # 'sine' | 'warp' | 'linear'; sine concentrates t near 1 (high-Jacobian region)
   save_every: 10
   eval_every: 5
   viz_every: 5                                      # must be a multiple of eval_every
@@ -100,7 +100,7 @@ flow:
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 1
   repair_chunk_size: null
-  source_scales: [4, 2.5, 1.0, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
+  source_scales: [5, 3, 1.5, 1.0, 1.0, 1.0]     # per-level [L0..L5]; split at coarse/fine boundary in code
 
 
 wandb:
