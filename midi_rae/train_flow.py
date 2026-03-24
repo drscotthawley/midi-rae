@@ -991,7 +991,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     if checkpoint:
         resume_model = coarse_model if mode == 'coarse' else fine_model
         resume_model, ckpt = load_checkpoint(resume_model, checkpoint, return_all=True)
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        if 'optimizer_state_dict' in ckpt: optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch']
         global_step = epoch_start * _steps
         for _ in range(epoch_start): scheduler.step()
