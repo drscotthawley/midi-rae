@@ -1132,9 +1132,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                     real_scatter_logged = _wandb_log_viz(
                         log_dict, eval_fine, real_fine_eval, fine_level_dims, epoch+1,
                         real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names,
-                        level_n_components=fn_list)
+                        level_n_components=dataset.fine_n_comp)
                 _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
-                               epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names)
+                               epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
+                               level_n_components=dataset.coarse_n_comp)
                 if do_fine and decoder is not None and pca_models is not None:
                     rolls = decode_flow_to_piano_rolls(
                         gen_coarse_cpu, gen_fine_cpu, pca_models,
