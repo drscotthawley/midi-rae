@@ -171,27 +171,28 @@ class FiLM(nn.Module):
 class ConditionalFineFlowModel(nn.Module):
     """Per-patch flow model for fine levels (L3, L4, L5).
 
-    The original single-token-per-level design projected the entire L4 level
-    (256 patches × 5 comp = 1280d) through one Linear into h_dim, losing all
-    per-patch identity.  Every patch received the same velocity.
-
     This model treats each patch as its own token and processes them with
     *shared* MLP weights — like a per-patch MLP applied in parallel.
     Conditioning comes from spatially-aligned parent tokens at each coarse level,
-    looked up via precomputed parent indices (registered as buffers).  No
-    within-level attention is needed: each patch is independent given its parents.
+    looked up via precomputed parent indices (registered as buffers).
+
+    Local inter-level attention (n_fine_attn_layers > 0) groups each fine parent
+    with its children and applies a small transformer, giving bidirectional
+    L3↔L4 and L4↔L5 attention within the fine hierarchy.
 
     Args:
-        cond_dims:     flattened PCA dims for coarse levels, e.g. [18, 96, 512]
-        target_dims:   flattened PCA dims for fine levels,   e.g. [1280, 1280, 3072]
-        target_n_comp: PCA components per fine patch,        e.g. [20, 5, 3]
-        h_dim:         shared hidden dim
-        n_layers:      number of pre-norm residual MLP blocks
-        t_dim:         sinusoidal time embedding dim
-        cond_n_comp:   PCA components per coarse patch — int (uniform) or list (per-level)
+        cond_dims:          flattened PCA dims for coarse levels, e.g. [18, 96, 512]
+        target_dims:        flattened PCA dims for fine levels,   e.g. [1280, 1280, 3072]
+        target_n_comp:      PCA components per fine patch,        e.g. [20, 5, 3]
+        h_dim:              shared hidden dim
+        n_layers:           number of pre-norm residual MLP blocks
+        t_dim:              sinusoidal time embedding dim
+        cond_n_comp:        PCA components per coarse patch — int (uniform) or list (per-level)
+        n_fine_attn_layers: TransformerEncoder layers for local inter-level attention (0 = disabled)
     """
     def __init__(self, cond_dims, target_dims, target_n_comp,
-                 h_dim=256, n_layers=4, t_dim=64, cond_n_comp=[18, 24, 32]):
+                 h_dim=256, n_layers=4, t_dim=64, cond_n_comp=[18, 24, 32],
+                 n_fine_attn_layers=2):
         super().__init__()
         self.cond_dims     = list(cond_dims)
         self.target_dims   = list(target_dims)
@@ -209,7 +210,7 @@ class ConditionalFineFlowModel(nn.Module):
         self.target_n_patches = target_n_patches
         self._cond_n_patches  = cond_n_patches
 
-        # Precompute parent indices: pidx_{fi}_{ki} shape [n_fine_patches]
+        # Precompute coarse parent indices: pidx_{fi}_{ki} shape [n_fine_patches]
         for fi, (fH, fW) in enumerate(target_grids):
             for ki, (cH, cW) in enumerate(cond_grids):
                 self.register_buffer(f'pidx_{fi}_{ki}', self._parent_idx(fH, fW, cH, cW))
@@ -244,6 +245,23 @@ class ConditionalFineFlowModel(nn.Module):
         # Output head: h_dim → velocity [nc] per patch
         self.patch_out = nn.ModuleList([nn.Linear(h_dim, nc) for nc in target_n_comp])
 
+        # Local inter-level attention: transformer over (parent, children) groups
+        self.n_fine_attn_layers = n_fine_attn_layers
+        if n_fine_attn_layers > 0 and len(target_grids) > 1:
+            for fi in range(len(target_grids) - 1):
+                pH, pW = target_grids[fi]
+                cH, cW = target_grids[fi + 1]
+                self.register_buffer(f'cidx_{fi}', self._child_idx(pH, pW, cH, cW))
+            n_attn_heads = max(1, h_dim // 16)
+            self.fine_pair_attn = nn.ModuleList([
+                nn.TransformerEncoder(
+                    nn.TransformerEncoderLayer(h_dim, n_attn_heads, dim_feedforward=h_dim*4,
+                                               batch_first=True, dropout=0.0, norm_first=True),
+                    num_layers=n_fine_attn_layers)
+                for _ in range(len(target_grids) - 1)])
+        else:
+            self.fine_pair_attn = None
+
     @staticmethod
     def _square_grid(n):
         s = int(round(n ** 0.5))
@@ -256,6 +274,15 @@ class ConditionalFineFlowModel(nn.Module):
         r = torch.arange(fH).repeat_interleave(fW)
         c = torch.arange(fW).repeat(fH)
         return (r * cH // fH) * cW + (c * cW // fW)
+
+    @staticmethod
+    def _child_idx(pH, pW, cH, cW):
+        """For each patch in parent grid (pH×pW), flat indices of its children in child grid (cH×cW)."""
+        bH, bW = cH // pH, cW // pW
+        r = torch.arange(pH).repeat_interleave(pW)
+        c = torch.arange(pW).repeat(pH)
+        children = [((r * bH + dr) * cW + (c * bW + dc)) for dr in range(bH) for dc in range(bW)]
+        return torch.stack(children, dim=1)  # [pH*pW, bH*bW]
 
     def forward(self, x_target, t, x_cond):
         """
@@ -275,29 +302,44 @@ class ConditionalFineFlowModel(nn.Module):
             coarse.append(x_cond[:, offset:offset+d].reshape(B, np, cnc))
             offset += d
 
-        velocities, offset = [], 0
+        # Step 1: compute initial h for all fine levels (coarse conditioning + time + pos)
+        hs, offset = [], 0
         for fi, (d, nc, np) in enumerate(
                 zip(self.target_dims, self.target_n_comp, self.target_n_patches)):
             patches = x_target[:, offset:offset+d].reshape(B, np, nc)
             offset += d
-
-            # Own patch + position + time  →  [B, np, h_dim]
             h = F.gelu(self.patch_in[fi](patches))
-            h = h + self.pos_emb[fi]       # [B, np, h_dim]  (broadcast over B)
-            h = h + t_emb.unsqueeze(1)     # [B, np, h_dim]  (broadcast over np)
-
-            # Parent context from each coarse level (single gather per level)
+            h = h + self.pos_emb[fi]
+            h = h + t_emb.unsqueeze(1)
             for ki, (coarse_emb, proj) in enumerate(zip(coarse, self.parent_proj[fi])):
-                pidx = getattr(self, f'pidx_{fi}_{ki}')       # [np]
-                h = h + F.gelu(proj(coarse_emb[:, pidx, :]))  # [B, np, h_dim]
+                pidx = getattr(self, f'pidx_{fi}_{ki}')
+                h = h + F.gelu(proj(coarse_emb[:, pidx, :]))
+            hs.append(h)
 
-            # Shared residual MLP blocks
+        # Step 2: local inter-level attention (L3↔L4, L4↔L5, ...)
+        if self.fine_pair_attn is not None:
+            for fi, attn in enumerate(self.fine_pair_attn):
+                cidx = getattr(self, f'cidx_{fi}')      # [n_parent, n_ch]
+                n_parent, n_ch = cidx.shape
+                h_p = hs[fi]        # [B, n_parent, h_dim]
+                h_c = hs[fi + 1]    # [B, n_parent*n_ch, h_dim]
+                # Group parent + children: [B*n_parent, 1+n_ch, h_dim]
+                group = torch.cat([h_p.unsqueeze(2), h_c[:, cidx, :]], dim=2)
+                group = attn(group.reshape(B * n_parent, 1 + n_ch, -1))
+                group = group.reshape(B, n_parent, 1 + n_ch, -1)
+                hs[fi] = group[:, :, 0, :]
+                h_c_new = hs[fi + 1].clone()
+                h_c_new[:, cidx.reshape(-1), :] = group[:, :, 1:, :].reshape(B, n_parent * n_ch, -1)
+                hs[fi + 1] = h_c_new
+
+        # Step 3: MLP blocks + output
+        velocities = []
+        for fi, h in enumerate(hs):
             for block in self.mlp_blocks[fi]:
                 h = h + block(h)
-
             velocities.append(self.patch_out[fi](h).reshape(B, -1))
-
         return torch.cat(velocities, dim=1)
+
 
 # %% ../nbs/12_train_flow.ipynb #aa120005
 def warp_time(t, s=0.5):
@@ -893,6 +935,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     """Train flow model(s).  Mode is read from cfg.flow.mode:
       'coarse' – train coarse_model only (unconditional CrossLevelFlowModel)
       'fine'   – train fine_model with frozen coarse as conditioning signal (default)
+                 if cfg.flow.fine_teacher_forcing=True, uses real coarse data as x_cond
       'both'   – train both jointly: separate losses, teacher-forcing for fine conditioning
     All hyperparameters read from cfg.flow.  Manages W&B init/finish internally.
     decoder, pca_models: optional piano-roll viz (fine/both only).
@@ -908,6 +951,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     mode = fc.get('mode', 'fine')
     assert mode in ('coarse', 'fine', 'both'), f"cfg.flow.mode must be coarse/fine/both; got {mode!r}"
     do_fine = mode in ('fine', 'both')
+    fine_teacher_forcing = fc.get('fine_teacher_forcing', False)
 
     # --- Hyperparameters ---
     n_epochs             = fc.n_epochs
@@ -1060,10 +1104,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             elif mode == 'fine':
                 x_t_fine      = (1 - t) * noise_fine + t * real_fine
                 v_fine_target = real_fine - noise_fine
-                with torch.no_grad():
-                    v_coarse       = coarse_model(x_t_coarse, t)
-                    x1_pred_coarse = x_t_coarse + (1 - t) * v_coarse
-                loss = loss_fn(fine_model(x_t_fine, t, x1_pred_coarse), v_fine_target)
+                if fine_teacher_forcing:
+                    x_cond = real_coarse
+                else:
+                    with torch.no_grad():
+                        v_coarse = coarse_model(x_t_coarse, t)
+                        x_cond   = x_t_coarse + (1 - t) * v_coarse
+                loss = loss_fn(fine_model(x_t_fine, t, x_cond), v_fine_target)
 
             else:  # both: separate losses, teacher-forcing conditioning for fine
                 x_t_fine      = (1 - t) * noise_fine + t * real_fine
@@ -1143,6 +1190,27 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         cfg, decoder, device, n_samples=16)
                     grid = make_grid(rolls[:16], nrow=4, normalize=True)
                     log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
+                    if fine_teacher_forcing:
+                        # Teacher-forcing eval: integrate fine conditioned on real coarse
+                        n_tf = 16
+                        idx_tf = torch.randperm(len(dataset.coarse))[:n_tf]
+                        tf_coarse = dataset.coarse[idx_tf].to(device)
+                        tf_fine_noise = sample_source((n_tf, sum(fine_level_dims)), device=device,
+                                                       source_scales=fine_source_scales,
+                                                       level_dims=fine_level_dims)
+                        ts_tf = warp_time(torch.linspace(0, 1, 21), s=warp_s)
+                        y_fine_tf = tf_fine_noise
+                        with torch.no_grad():
+                            for i in range(20):
+                                dt_tf = (ts_tf[i+1] - ts_tf[i]).item()
+                                t_tf  = torch.full((n_tf, 1), ts_tf[i].item(), device=device)
+                                y_fine_tf = y_fine_tf + eval_fine(y_fine_tf, t_tf, tf_coarse) * dt_tf
+                        tf_rolls = decode_flow_to_piano_rolls(
+                            tf_coarse.cpu(), y_fine_tf.cpu(), pca_models,
+                            coarse_level_dims, fine_level_dims, fine_levels_idx,
+                            cfg, decoder, device, n_samples=n_tf)
+                        tf_grid = make_grid(tf_rolls[:16], nrow=4, normalize=True)
+                        log_dict['media/piano_rolls_tf'] = wandb.Image(tf_grid, caption=f'TF Epoch {epoch+1}')
                 _wandb_log_jacobian(log_dict, eval_fine if do_fine else eval_coarse,
                                     (real_fine_eval if do_fine else real_coarse_eval)[:256],
                                     cond=real_coarse_eval[:256].to(device) if do_fine else None,
@@ -1169,6 +1237,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
+
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
@@ -1231,13 +1300,14 @@ def _run_flow(cfg: DictConfig):
     if do_fine:
         fine_n_comp = dataset.fine_n_comp  # inferred from data shape
         fine_model = ConditionalFineFlowModel(
-            cond_dims     = coarse_level_dims,
-            target_dims   = dataset.fine_level_dims,
-            target_n_comp = fine_n_comp,
-            cond_n_comp   = coarse_n_comp,
-            h_dim         = fc.h_dim,
-            n_layers      = fc.n_layers,
-            t_dim         = fc.get('t_dim', 64),
+            cond_dims          = coarse_level_dims,
+            target_dims        = dataset.fine_level_dims,
+            target_n_comp      = fine_n_comp,
+            cond_n_comp        = coarse_n_comp,
+            h_dim              = fc.h_dim,
+            n_layers           = fc.n_layers,
+            t_dim              = fc.get('t_dim', 64),
+            n_fine_attn_layers = fc.get('fine_attn_layers', 2),
         )
         n_params = sum(p.numel() for p in fine_model.parameters())
         print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
@@ -1272,3 +1342,4 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == '__main__':
     train_flow_main()
+
