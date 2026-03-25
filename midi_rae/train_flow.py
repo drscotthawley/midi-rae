@@ -939,6 +939,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
       'both'   – train both jointly: separate losses, teacher-forcing for fine conditioning
     All hyperparameters read from cfg.flow.  Manages W&B init/finish internally.
     decoder, pca_models: optional piano-roll viz (fine/both only).
+    Eval/logging is scoped to the model(s) being trained:
+      mode='coarse' → coarse metrics only; mode='fine' → fine metrics only; mode='both' → all.
     """
     from midi_rae.utils import save_checkpoint, load_checkpoint, EMAModel
     from midi_rae.data import ConditionalFlowChunkSampler, ConditionalFlowDataset
@@ -1176,6 +1178,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             use_ema     = (epoch + 1) >= ema_start_epoch
             eval_coarse = coarse_ema.ema if (mode != 'fine' and use_ema) else coarse_model
             eval_fine   = fine_ema.ema   if (do_fine and use_ema)        else (fine_model if do_fine else None)
+            # real_coarse_eval kept even in fine mode: used as cond input for Jacobian eval
             real_coarse_eval = dataset.coarse[:eval_n_samples].float()
 
             if do_fine:
@@ -1190,11 +1193,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             else:
                 gen_coarse_cpu = _gen_chunked_coarse(eval_coarse, eval_n_samples)
 
-            coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=eval_n_samples,
-                                        level_dims=coarse_level_dims, gen=gen_coarse_cpu,
-                                        level_names=coarse_level_names,
-                                        level_n_patches=dataset.coarse_n_patches)
-            log_dict.update({f'eval/{k}': v for k, v in coarse_metrics.items()})
+            # Coarse metrics: only when coarse model is actually being trained
+            if mode != 'fine':
+                coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=eval_n_samples,
+                                            level_dims=coarse_level_dims, gen=gen_coarse_cpu,
+                                            level_names=coarse_level_names,
+                                            level_n_patches=dataset.coarse_n_patches)
+                log_dict.update({f'eval/{k}': v for k, v in coarse_metrics.items()})
 
             if (wandb.run is not None) and viz_every and (epoch + 1) % viz_every == 0:
                 if do_fine:
@@ -1202,9 +1207,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         log_dict, eval_fine, real_fine_eval, fine_level_dims, epoch+1,
                         real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names,
                         level_n_components=dataset.fine_n_comp)
-                _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
-                               epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
-                               level_n_components=dataset.coarse_n_comp)
+                if mode != 'fine':
+                    _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
+                                   epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
+                                   level_n_components=dataset.coarse_n_comp)
                 if do_fine and decoder is not None and pca_models is not None:
                     rolls = decode_flow_to_piano_rolls(
                         gen_coarse_cpu, gen_fine_cpu, pca_models,
