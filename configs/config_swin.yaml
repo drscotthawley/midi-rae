@@ -100,6 +100,7 @@ flow:
   ema_start_epoch: 0                                # epoch at which eval switches to EMA model
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 4
+  compile: true                                     # torch.compile the flow model(s) for potential speedup
   repair_chunk_size: null
   source_scales: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # per-level [L0..L5]; all 1.0 since PCA uses whiten=True
 

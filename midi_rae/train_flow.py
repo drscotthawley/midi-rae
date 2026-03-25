@@ -1363,6 +1363,15 @@ def _run_flow(cfg: DictConfig):
             pca_models = load_pca_models(str(pca_dir), len(coarse_level_dims) + len(fine_levels))
             print(f"  Loaded decoder + {len(pca_models)} PCA models for piano roll viz")
 
+    if fc.get('compile', False):
+        import midi_rae.train_flow as _tf
+        print("  torch.compile: compiling flow model(s) and ann_repair...")
+        coarse_model  = torch.compile(coarse_model)
+        if fine_model is not None:
+            fine_model = torch.compile(fine_model)
+        _tf.ann_repair = torch.compile(_tf.ann_repair)
+        print("  torch.compile: done")
+
     train_flow_conditional(coarse_model, fine_model, dataset, cfg,
                            device=device, decoder=decoder, pca_models=pca_models)
 
@@ -1373,4 +1382,3 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == '__main__':
     train_flow_main()
-
