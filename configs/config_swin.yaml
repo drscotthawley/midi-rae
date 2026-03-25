@@ -84,7 +84,9 @@ flow:
   t_dim: 64                                         # sinusoidal time embedding dim
   n_epochs: 100000
   lr: 1e-3
-  batch_size: 512
+  batch_size: 256                                   # fallback if coarse/fine specific not set
+  coarse_batch_size: 4096                           # coarse flow uses ~10% GPU; large batches improve minibatch-OT
+  fine_batch_size: 256                              # fine flow is VRAM-limited
   steps_per_epoch: 1000
   warp_s: 0.5
   time_schedule: warp                                   # 'sine' | 'warp' | 'linear'; sine concentrates t near 1 (high-Jacobian region)

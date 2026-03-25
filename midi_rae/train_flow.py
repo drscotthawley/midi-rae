@@ -958,7 +958,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     # --- Hyperparameters ---
     n_epochs             = fc.n_epochs
     lr                   = fc.lr
-    batch_size           = fc.batch_size
+    if mode == 'coarse': batch_size = fc.get('coarse_batch_size', fc.batch_size)
+    elif mode == 'fine': batch_size = fc.get('fine_batch_size',   fc.batch_size)
+    else:                batch_size = fc.get('fine_batch_size',   fc.batch_size)  # both: fine is limiting
     warp_s               = fc.warp_s
     time_schedule        = fc.get('time_schedule', 'warp')
     save_every           = fc.get('save_every', 10)
