@@ -85,7 +85,7 @@ flow:
   n_epochs: 100000
   lr: 1e-3
   batch_size: 256                                   # fallback if coarse/fine specific not set
-  coarse_batch_size: 4096                           # coarse flow uses ~10% GPU; large batches improve minibatch-OT
+  coarse_batch_size: 2048                           # coarse flow uses ~10% GPU; large batches improve minibatch-OT
   fine_batch_size: 256                              # fine flow is VRAM-limited
   steps_per_epoch: 1000
   warp_s: 0.5
@@ -99,7 +99,7 @@ flow:
   ema_eta: 0.97
   ema_start_epoch: 0                                # epoch at which eval switches to EMA model
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
-  n_repair_projections: 1
+  n_repair_projections: 4
   repair_chunk_size: null
   source_scales: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # per-level [L0..L5]; all 1.0 since PCA uses whiten=True
 
