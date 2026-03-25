@@ -6,6 +6,7 @@ This is an autonomous experiment loop for the midi-rae project. The agent modifi
 
 - [x] **Finish setting up Tailscale on razer** — resolved 2026-03-19, razer-ts-docker accessible
 - [ ] **Standardize CUDA versions across lecun and razer** — lecun upgraded to driver 595 (CUDA 13.2 max); razer believed to be on CUDA 13.1. Install CUDA 13.0 toolkit + PyTorch cu130 on lecun to match razer as closely as possible.
+- [ ] **Add MIDI playback eval** — after fine flow training is validated, add eval code that converts generated piano rolls to MIDI and logs them to W&B using the [midi-player](https://github.com/drscotthawley/midi-player) wandb-compatible player. Allows listening to generated samples directly in the W&B dashboard instead of just looking at piano roll images.
 
 ## Standing Config Defaults
 
