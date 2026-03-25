@@ -69,7 +69,7 @@ def _fit_one_level(encoded_dir, output_dir, level, n_comp, key, max_fit_rows):
     n = n_comp if is_var else min(int(n_comp), D)
     print(f"Fitting PCA(n={'%.0f%%'%(n*100) if is_var else n}) on L{level} (D={D})...")
     emb = load_level_embeddings(encoded_dir, "train", level=level, key=key, max_rows=max_fit_rows)
-    pca = PCA(n_components=n, whiten=False)
+    pca = PCA(n_components=n, whiten=True)
     pca.fit(emb.astype(np.float32))
     actual_n, var = pca.n_components_, pca.explained_variance_ratio_.cumsum()[-1]
     print(f"  L{level}: {actual_n} components → {var:.1%} variance")
