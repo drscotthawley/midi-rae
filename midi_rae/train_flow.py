@@ -1211,9 +1211,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                             cfg, decoder, device, n_samples=n_tf)
                         tf_grid = make_grid(tf_rolls[:16], nrow=4, normalize=True)
                         log_dict['media/piano_rolls_tf'] = wandb.Image(tf_grid, caption=f'TF Epoch {epoch+1}')
+                # Fine model has large output space; use fewer samples for Jacobian to avoid OOM
+                jac_n = 32 if do_fine else 256
                 _wandb_log_jacobian(log_dict, eval_fine if do_fine else eval_coarse,
-                                    (real_fine_eval if do_fine else real_coarse_eval)[:256],
-                                    cond=real_coarse_eval[:256].to(device) if do_fine else None,
+                                    (real_fine_eval if do_fine else real_coarse_eval)[:jac_n],
+                                    cond=real_coarse_eval[:jac_n].to(device) if do_fine else None,
                                     device=device)
                 gc.collect()
 
