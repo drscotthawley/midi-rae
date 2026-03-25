@@ -962,6 +962,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     save_every           = fc.get('save_every', 10)
     viz_every            = fc.get('viz_every', 10)
     eval_every           = min(viz_every, fc.get('eval_every', 10))
+    eval_n_samples       = fc.get('eval_n_samples', 4000)
     steps_per_epoch      = fc.get('steps_per_epoch', None)
     lr_restart_epochs    = fc.get('lr_restart_epochs', 500)
     lr_warmup_frac       = fc.get('lr_warmup_frac', 0.15)
@@ -1056,6 +1057,39 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         dataset._load_fine_chunk(0)
         return dataset._fine_chunk_data[:n].float()
 
+    def _gen_chunked_conditional(eval_c, eval_f, n_total):
+        """Generate n_total samples in batch_size chunks, accumulate on CPU."""
+        c_chunks, f_chunks = [], []
+        remaining = n_total
+        while remaining > 0:
+            chunk_n = min(batch_size, remaining)
+            _gc, _gf = generate_samples_conditional(
+                eval_c, eval_f,
+                n_samples=chunk_n, coarse_dim=coarse_dim,
+                target_dims=fine_level_dims, device=device,
+                n_steps=20, warp_s=warp_s,
+                coarse_level_dims=coarse_level_dims,
+                coarse_source_scales=coarse_source_scales,
+                fine_source_scales=fine_source_scales)
+            c_chunks.append(_gc.cpu())
+            f_chunks.append(_gf.cpu())
+            remaining -= chunk_n
+        return torch.cat(c_chunks, dim=0), torch.cat(f_chunks, dim=0)
+
+    def _gen_chunked_coarse(eval_c, n_total):
+        """Generate n_total coarse samples in batch_size chunks, accumulate on CPU."""
+        chunks = []
+        remaining = n_total
+        while remaining > 0:
+            chunk_n = min(batch_size, remaining)
+            chunks.append(generate_samples(eval_c, n_samples=chunk_n,
+                                           dim=coarse_dim, device=device,
+                                           n_steps=20, warp_s=warp_s,
+                                           source_scales=coarse_source_scales,
+                                           level_dims=coarse_level_dims).cpu())
+            remaining -= chunk_n
+        return torch.cat(chunks, dim=0)
+
     # --- Training loop ---
     for epoch in range(epoch_start, n_epochs):
         if mode == 'fine': coarse_model.eval()
@@ -1142,33 +1176,21 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             use_ema     = (epoch + 1) >= ema_start_epoch
             eval_coarse = coarse_ema.ema if (mode != 'fine' and use_ema) else coarse_model
             eval_fine   = fine_ema.ema   if (do_fine and use_ema)        else (fine_model if do_fine else None)
-            real_coarse_eval = dataset.coarse[:2000].float()
+            real_coarse_eval = dataset.coarse[:eval_n_samples].float()
 
             if do_fine:
-                real_fine_eval = _get_eval_fine(2000)
-                gen_coarse, gen_fine = generate_samples_conditional(
-                    eval_coarse, eval_fine,
-                    n_samples=2000, coarse_dim=coarse_dim,
-                    target_dims=fine_level_dims, device=device,
-                    n_steps=20, warp_s=warp_s,
-                    coarse_level_dims=coarse_level_dims,
-                    coarse_source_scales=coarse_source_scales,
-                    fine_source_scales=fine_source_scales)
-                gen_fine_cpu   = gen_fine.cpu()
-                gen_coarse_cpu = gen_coarse.cpu()
-                fine_metrics = eval_flow(eval_fine, real_fine_eval, n_samples=2000,
+                real_fine_eval = _get_eval_fine(eval_n_samples)
+                gen_coarse_cpu, gen_fine_cpu = _gen_chunked_conditional(
+                    eval_coarse, eval_fine, eval_n_samples)
+                fine_metrics = eval_flow(eval_fine, real_fine_eval, n_samples=eval_n_samples,
                                           level_dims=fine_level_dims, gen=gen_fine_cpu,
                                           level_names=fine_level_names,
                                           level_n_patches=dataset.fine_n_patches)
                 log_dict.update({f'eval/{k}': v for k, v in fine_metrics.items()})
             else:
-                gen_coarse_cpu = generate_samples(eval_coarse, n_samples=2000,
-                                                   dim=coarse_dim, device=device,
-                                                   n_steps=20, warp_s=warp_s,
-                                                   source_scales=coarse_source_scales,
-                                                   level_dims=coarse_level_dims).cpu()
+                gen_coarse_cpu = _gen_chunked_coarse(eval_coarse, eval_n_samples)
 
-            coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=2000,
+            coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=eval_n_samples,
                                         level_dims=coarse_level_dims, gen=gen_coarse_cpu,
                                         level_names=coarse_level_names,
                                         level_n_patches=dataset.coarse_n_patches)
@@ -1239,7 +1261,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
-
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
