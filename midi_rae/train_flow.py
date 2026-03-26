@@ -776,7 +776,8 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
         patch is a point — matching the encoder training viz style (make_emb_viz / _gather_level).
         After reshape, subsampled back to n_samples points to keep plots manageable.
     """
-    from midi_rae.viz import pca_project, plot_embeddings_3d
+    from midi_rae.viz import plot_embeddings_3d
+    from sklearn.decomposition import PCA as SklearnPCA
     idx = torch.randperm(real_embeddings.size(0))[:n_samples]
     real = real_embeddings[idx].float()
     if gen is None:
@@ -803,10 +804,15 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
                 sub = torch.randperm(r.shape[0])[:n_samples]
                 r = r[sub]
                 g = g[sub]
-        r3 = pca_project(r)
-        g3 = pca_project(g)
-        if r3 is not None: figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) real{title_sfx}')
-        if g3 is not None: figs[f'{lname}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) gen{title_sfx}')
+        # Fit PCA on real, apply same projection to gen — ensures comparable coordinate frames
+        r_np = r.float().numpy() if isinstance(r, torch.Tensor) else r
+        g_np = g.float().numpy() if isinstance(g, torch.Tensor) else g
+        if len(r_np) >= 4:
+            pca3 = SklearnPCA(n_components=3).fit(r_np)
+            r3 = pca3.transform(r_np)
+            g3 = pca3.transform(g_np)
+            figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) real{title_sfx}')
+            figs[f'{lname}/gen']  = plot_embeddings_3d(g3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) gen{title_sfx}')
         offset += d
     return figs
 
