@@ -1045,12 +1045,21 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     # --- Checkpoint resume ---
     if checkpoint:
         resume_model = coarse_model if mode == 'coarse' else fine_model
+        resume_ema   = coarse_ema   if mode == 'coarse' else fine_ema
         resume_model, ckpt = load_checkpoint(resume_model, checkpoint, return_all=True)
         if 'optimizer_state_dict' in ckpt: optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         epoch_start = ckpt['epoch']
         global_step = epoch_start * _steps
         for _ in range(epoch_start): scheduler.step()
-        (coarse_ema if mode == 'coarse' else fine_ema).ema.load_state_dict(resume_model.state_dict())
+        # Try to load the matching EMA checkpoint (EMAModel_<tag>ckpt_epochN.pt)
+        import re as _re
+        ema_ckpt_path = _re.sub(r'^(.*/)?\w+_(.*)', r'\1EMAModel_\2', checkpoint)
+        if os.path.exists(ema_ckpt_path):
+            resume_ema.ema, _ = load_checkpoint(resume_ema.ema, ema_ckpt_path, return_all=True)
+            print(f"Resumed EMA from {ema_ckpt_path}")
+        else:
+            resume_ema.ema.load_state_dict(resume_model.state_dict())
+            print(f"EMA checkpoint not found at {ema_ckpt_path}; initialized from model weights")
         print(f"Resumed from {checkpoint} (epoch {epoch_start})")
 
     # --- Dataset dims ---
