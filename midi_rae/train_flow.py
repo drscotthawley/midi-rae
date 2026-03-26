@@ -421,7 +421,8 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
                                  target_dims, device='cpu', n_steps=20,
                                  step_fn=rk4_step, warp_s=0.5,
                                  coarse_source_df=None, coarse_source_scales=None,
-                                 coarse_level_dims=None, fine_source_scales=None):
+                                 coarse_level_dims=None, fine_source_scales=None,
+                                 use_diffeq_fine=False):
     """Two-stage conditional sampler: coarse flow → fine conditional flow.
 
     Conditioning signal: x1_pred_coarse = x_t_coarse + (1-t) * v_coarse
@@ -436,6 +437,11 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
     coarse state.  The fine model uses a simple Euler step conditioned on
     x1_pred_coarse computed at the start of each step.
 
+    use_diffeq_fine=True: run coarse RK4 to completion first, then solve the
+    fine ODE with torchdiffeq/dopri5 conditioned on the final coarse output.
+    Matches training distribution better when fine_teacher_forcing=True (where
+    x_cond = real_coarse, the actual final output, not an intermediate estimate).
+
     Training counterpart: at each batch, freeze coarse model, compute
     x1_pred_coarse = x_t_coarse + (1-t)*coarse_model(x_t_coarse, t),
     then train fine_model(x_t_fine, t, x1_pred_coarse) with flow-matching loss.
@@ -447,6 +453,7 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
         target_dims:         list of flattened dims for fine levels (e.g. [D_L4, D_L5])
         coarse_source_*:     source distribution kwargs forwarded to the coarse stage
         fine_source_scales:  optional per-level scale factors for fine-level noise
+        use_diffeq_fine:     use torchdiffeq/dopri5 for fine ODE (coarse is always RK4)
     Returns:
         coarse_out : [n_samples, coarse_dim]
         fine_out   : [n_samples, sum(target_dims)]
@@ -473,11 +480,23 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
         # Advance coarse state (step_fn may call coarse_model again internally for RK4)
         y_coarse = step_fn(coarse_model, y_coarse, t_s, dt)
 
-        # Fine model conditioned on x1_pred_coarse; Euler step
-        v_fine = fine_model(y_fine, t, x1_pred_coarse)
-        y_fine = y_fine + v_fine * dt
+        if not use_diffeq_fine:
+            # Fine model conditioned on x1_pred_coarse; Euler step
+            v_fine = fine_model(y_fine, t, x1_pred_coarse)
+            y_fine = y_fine + v_fine * dt
+
+    if use_diffeq_fine:
+        # Solve fine ODE with adaptive dopri5, conditioned on final coarse output
+        from torchdiffeq import odeint
+        coarse_out = y_coarse
+        def fine_func(t_scalar, y):
+            t_ = t_scalar.expand(y.size(0), 1)
+            return fine_model(y, t_, coarse_out)
+        t_span = torch.tensor([0.0, 1.0], device=device)
+        y_fine = odeint(fine_func, y_fine, t_span, method='dopri5', rtol=1e-4, atol=1e-4)[1]
 
     return y_coarse, y_fine
+
 
 # %% ../nbs/12_train_flow.ipynb #h9k6c1mqyt7
 def ann_repair(source, target, n_projections=1, chunk_size=None):
@@ -962,6 +981,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     assert mode in ('coarse', 'fine', 'both'), f"cfg.flow.mode must be coarse/fine/both; got {mode!r}"
     do_fine = mode in ('fine', 'both')
     fine_teacher_forcing = fc.get('fine_teacher_forcing', False)
+    use_amp_fine         = fc.get('use_amp_fine', True) and device != 'cpu'
 
     # --- Hyperparameters ---
     n_epochs             = fc.n_epochs
@@ -1091,7 +1111,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                 n_steps=20, warp_s=warp_s,
                 coarse_level_dims=coarse_level_dims,
                 coarse_source_scales=coarse_source_scales,
-                fine_source_scales=fine_source_scales)
+                fine_source_scales=fine_source_scales,
+                use_diffeq_fine=True)
             c_chunks.append(_gc.cpu())
             f_chunks.append(_gf.cpu())
             remaining -= chunk_n
@@ -1165,13 +1186,15 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                     with torch.no_grad():
                         v_coarse = coarse_model(x_t_coarse, t)
                         x_cond   = x_t_coarse + (1 - t) * v_coarse
-                loss = loss_fn(fine_model(x_t_fine, t, x_cond), v_fine_target)
+                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp_fine):
+                    loss = loss_fn(fine_model(x_t_fine, t, x_cond), v_fine_target)
 
             else:  # both: separate losses, teacher-forcing conditioning for fine
                 x_t_fine      = (1 - t) * noise_fine + t * real_fine
                 v_fine_target = real_fine - noise_fine
                 coarse_loss   = loss_fn(coarse_model(x_t_coarse, t), v_coarse_target)
-                fine_loss     = loss_fn(fine_model(x_t_fine, t, real_coarse), v_fine_target)
+                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp_fine):
+                    fine_loss = loss_fn(fine_model(x_t_fine, t, real_coarse), v_fine_target)
                 loss          = coarse_loss + fine_loss
 
             loss.backward()
@@ -1288,6 +1311,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
 
+
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
 import hydra
@@ -1386,7 +1410,10 @@ def _run_flow(cfg: DictConfig):
         print("  torch.compile: compiling flow model(s) and ann_repair...")
         coarse_model  = torch.compile(coarse_model)
         if fine_model is not None:
-            fine_model = torch.compile(fine_model)
+            # Fine model uses inter-level attention; inductor's sdp_efficient_attention_backward
+            # has a stride bug with non-contiguous inputs. Use aot_eager backend which skips
+            # inductor kernel codegen but still gets AOT autograd graph fusion benefits.
+            fine_model = torch.compile(fine_model, backend='aot_eager')
         _tf.ann_repair = torch.compile(_tf.ann_repair)
         print("  torch.compile: done")
 
