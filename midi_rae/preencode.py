@@ -6,6 +6,7 @@
 __all__ = ['preencode']
 
 # %% ../nbs/08_preencode.ipynb #2b6f3731
+import gc
 import os
 import torch
 from torch.utils.data import DataLoader
@@ -47,7 +48,8 @@ def preencode(cfg: DictConfig):
     num_passes   = cfg.preencode.get('num_passes', 10)
     batch_size   = cfg.preencode.get('batch_size', 1024)   # large batch; inference only
     batches_per_chunk = cfg.preencode.get('batches_per_chunk', 10)
-    print(f"output_dir={output_dir}, num_passes={num_passes}, batch_size={batch_size}, batches_per_chunk={batches_per_chunk}")
+    num_workers  = cfg.preencode.get('num_workers', 4)
+    print(f"output_dir={output_dir}, num_passes={num_passes}, batch_size={batch_size}, batches_per_chunk={batches_per_chunk}, num_workers={num_workers}")
 
     amp_dtype = torch.bfloat16 if device == 'cuda' else torch.float32
     for split in ['train', 'val']:
@@ -57,7 +59,7 @@ def preencode(cfg: DictConfig):
                                    max_shift_y=cfg.training.max_shift_y)
         chunk_idx = 0
         for pass_num in range(1, num_passes + 1):
-            dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=False)
+            dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=False)
             buf = []   # accumulate batches_per_chunk batches before saving
             for batch_num, batch in enumerate(tqdm(dl, desc=f"{split} pass {pass_num}/{num_passes}")):
                 with torch.no_grad():
@@ -86,6 +88,8 @@ def preencode(cfg: DictConfig):
                 print(f"  saved {save_path} ({len(buf)} batches, partial)")
                 buf = []
                 chunk_idx += 1
+            del dl  # release DataLoader workers between passes to avoid RAM accumulation
+            gc.collect()
     print("\nPre-encoding complete.")
 
 # %% ../nbs/08_preencode.ipynb #c159f875
