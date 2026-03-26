@@ -1080,7 +1080,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         for _ in range(epoch_start): scheduler.step()
         # Try to load the matching EMA checkpoint (EMAModel_<tag>ckpt_epochN.pt)
         import re as _re
-        ema_ckpt_path = _re.sub(r'^(.*/)?\w+_(.*)', r'\1EMAModel_\2', checkpoint)
+        ema_ckpt_path = _re.sub(r'^(.*/)?[^_/]+_(.*)', r'\1EMAModel_\2', checkpoint)
         if os.path.exists(ema_ckpt_path):
             resume_ema.ema, _ = load_checkpoint(resume_ema.ema, ema_ckpt_path, return_all=True)
             print(f"Resumed EMA from {ema_ckpt_path}")
