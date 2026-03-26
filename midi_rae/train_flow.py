@@ -324,10 +324,13 @@ class ConditionalFineFlowModel(nn.Module):
                 h_p = hs[fi]        # [B, n_parent, h_dim]
                 h_c = hs[fi + 1]    # [B, n_parent*n_ch, h_dim]
                 # Group parent + children: [B*n_parent, 1+n_ch, h_dim]
-                group = torch.cat([h_p.unsqueeze(2), h_c[:, cidx, :]], dim=2)
+                # .contiguous() required — fancy indexing + cat can leave non-contiguous strides
+                # that cause stride assertion failures in sdp_efficient_attention_backward
+                # under torch.compile / torch.inductor
+                group = torch.cat([h_p.unsqueeze(2), h_c[:, cidx, :]], dim=2).contiguous()
                 group = attn(group.reshape(B * n_parent, 1 + n_ch, -1))
                 group = group.reshape(B, n_parent, 1 + n_ch, -1)
-                hs[fi] = group[:, :, 0, :]
+                hs[fi]     = group[:, :, 0, :].contiguous()
                 h_c_new = hs[fi + 1].clone()
                 h_c_new[:, cidx.reshape(-1), :] = group[:, :, 1:, :].reshape(B, n_parent * n_ch, -1)
                 hs[fi + 1] = h_c_new
@@ -339,7 +342,6 @@ class ConditionalFineFlowModel(nn.Module):
                 h = h + block(h)
             velocities.append(self.patch_out[fi](h).reshape(B, -1))
         return torch.cat(velocities, dim=1)
-
 
 # %% ../nbs/12_train_flow.ipynb #aa120005
 def warp_time(t, s=0.5):
