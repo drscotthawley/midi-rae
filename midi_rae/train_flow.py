@@ -1385,9 +1385,7 @@ def _run_flow(cfg: DictConfig):
         import midi_rae.train_flow as _tf
         print("  torch.compile: compiling flow model(s) and ann_repair...")
         coarse_model  = torch.compile(coarse_model)
-        # compile_fine defaults to False — fine model's inter-level attention hits a stride
-        # assertion in sdp_efficient_attention_backward under torch.inductor
-        if fine_model is not None and fc.get('compile_fine', False):
+        if fine_model is not None:
             fine_model = torch.compile(fine_model)
         _tf.ann_repair = torch.compile(_tf.ann_repair)
         print("  torch.compile: done")
