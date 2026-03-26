@@ -982,6 +982,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     do_fine = mode in ('fine', 'both')
     fine_teacher_forcing = fc.get('fine_teacher_forcing', False)
     use_amp_fine         = fc.get('use_amp_fine', True) and device != 'cpu'
+    if do_fine:
+        # Fine model inter-level attention has seq_len=5 (1 parent + 4 children).
+        # With bfloat16 AMP, SDPA selects Flash attention which fails at seq_len<32.
+        # Disable Flash globally; MATH backend handles arbitrary seq/head dims.
+        torch.backends.cuda.enable_flash_sdp(False)
 
     # --- Hyperparameters ---
     n_epochs             = fc.n_epochs
