@@ -214,7 +214,7 @@ Generate L0 first, condition L1 on L0, etc. Risk: error accumulation compounds a
 ## What you can modify
 
 - **Notebook files** in `nbs/` — this is the primary target. Edit the relevant notebook cells, then `nbdev-export` is run automatically by `launch.sh` before copying files.
-- **Config files** in `configs/` — hyperparameters, architecture settings, etc.
+- **Config files** in `configs/` — hyperparameters, architecture settings, etc. **Always edit the YAML directly. Never use Hydra CLI overrides (`++key=val`) when launching.** The user reads `config_swin.yaml` in the run directory to understand how a run was trained — CLI overrides make that file misleading. The YAML must be the authoritative record.
 
 **Do NOT edit `.py` files in `midi_rae/` directly** — they are auto-generated from notebooks and will be overwritten.
 

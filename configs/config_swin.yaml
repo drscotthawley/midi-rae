@@ -72,12 +72,14 @@ flow:
   mode: fine                                        # coarse | fine | both
   pca_dir: $HOME/datasets/POP909_pca_exp26          # unified dir with *_pca.pt (all levels)
   encoded_dir: $HOME/datasets/POP909_encoded_exp26  # dir with train_chunk*.pt (raw)
-  coarse_ckpt: null                                 # pre-trained coarse checkpoint (required for mode=fine)
+  coarse_ckpt: /home/shawley/runs/midi-rae/coarse11_V0ZOV4/checkpoints/CrossLevelFlowModel_coarse11_V0ZOV4_best.pt
   checkpoint_dir: checkpoints/flow
   pca_levels: ['L0', 'L1', 'L2']                   # coarse levels
   fine_levels: [3, 4, 5]                            # fine per-patch levels
   coarse_h_dim: 512                                 # CrossLevelFlowModel hidden dim
-  h_dim: 128                                        # ConditionalFineFlowModel hidden dim
+  h_dim: 256                                        # ConditionalFineFlowModel hidden dim
+  fine_attn_layers: 2                               # local inter-level attention layers (1 parent + 4 children group)
+  fine_teacher_forcing: true                        # use real coarse data as cond during fine training
   n_layers: 6
   n_attn_layers: 4                                  # coarse transformer encoder layers
   n_heads: 8                                        # coarse attention heads (coarse_h_dim must be divisible)

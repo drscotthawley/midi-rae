@@ -788,7 +788,8 @@ def plot_level_histograms(model, real_embeddings, level_dims, n_samples=10000,
 def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
                        n_steps=20, warp_s=0.5, device='cpu',
                        source_df=None, source_scales=None, epoch=None,
-                       gen=None, level_names=None, level_n_components=None):
+                       gen=None, level_names=None, level_n_components=None,
+                       pca_cache=None):
     """Return dict of per-level 3D PCA scatter plots {'L0/real': fig, 'L0/gen': fig, ...}.
     gen: optional pre-computed generated samples — skips generate_samples().
     level_names: optional list of strings e.g. ['L4', 'L5'] to override default 'L0', 'L1' labels.
@@ -796,6 +797,9 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
         reshaped from (B, n_patches × n_comp) → (B × n_patches, n_comp) before PCA so that each
         patch is a point — matching the encoder training viz style (make_emb_viz / _gather_level).
         After reshape, subsampled back to n_samples points to keep plots manageable.
+    pca_cache: optional dict {lname: fitted SklearnPCA}. If provided, cached PCAs are reused
+        instead of refitting, and newly fitted PCAs are stored into it. Pass the same dict
+        across epochs to keep all gen scatters in the same coordinate frame as the first real scatter.
     """
     from midi_rae.viz import plot_embeddings_3d
     from sklearn.decomposition import PCA as SklearnPCA
@@ -825,11 +829,16 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
                 sub = torch.randperm(r.shape[0])[:n_samples]
                 r = r[sub]
                 g = g[sub]
-        # Fit PCA on real, apply same projection to gen — ensures comparable coordinate frames
         r_np = r.float().numpy() if isinstance(r, torch.Tensor) else r
         g_np = g.float().numpy() if isinstance(g, torch.Tensor) else g
         if len(r_np) >= 4:
-            pca3 = SklearnPCA(n_components=3).fit(r_np)
+            # Reuse cached PCA if available; otherwise fit on real and cache it
+            if pca_cache is not None and lname in pca_cache:
+                pca3 = pca_cache[lname]
+            else:
+                pca3 = SklearnPCA(n_components=3).fit(r_np)
+                if pca_cache is not None:
+                    pca_cache[lname] = pca3
             r3 = pca3.transform(r_np)
             g3 = pca3.transform(g_np)
             figs[f'{lname}/real'] = plot_embeddings_3d(r3, color_by='random', title=f'{lname} ({n_comp if level_n_components else d}d/patch) real{title_sfx}')
@@ -841,10 +850,12 @@ def plot_level_scatter(model, real_embeddings, level_dims, n_samples=5000,
 def _wandb_log_viz(log_dict, eval_model, embeddings, level_dims, epoch,
                    real_scatter_logged, gen=None, level_names=None,
                    device='cpu', warp_s=0.5, source_df=None, source_scales=None,
-                   level_n_components=None):
+                   level_n_components=None, pca_cache=None):
     """Log per-level histograms and 3-D scatter plots to W&B via log_dict.
     gen: optional pre-computed generated samples — avoids redundant forward passes.
     level_n_components: passed to plot_level_scatter to show per-patch points (encoder viz style).
+    pca_cache: dict {lname: SklearnPCA} shared across epochs — ensures all gen scatters use the
+        same projection as the first real scatter. Pass {} on first call; it is mutated in-place.
     Modifies log_dict in-place. Returns updated real_scatter_logged flag."""
     import wandb, matplotlib.pyplot as plt
     figs = plot_level_histograms(eval_model, embeddings, level_dims, epoch=epoch,
@@ -857,7 +868,7 @@ def _wandb_log_viz(log_dict, eval_model, embeddings, level_dims, epoch,
     scatters = plot_level_scatter(eval_model, embeddings, level_dims, epoch=epoch,
                                   gen=gen, level_names=level_names, device=device,
                                   warp_s=warp_s, source_df=source_df, source_scales=source_scales,
-                                  level_n_components=level_n_components)
+                                  level_n_components=level_n_components, pca_cache=pca_cache)
     for lname, fig in scatters.items():
         if lname.endswith('/real') and real_scatter_logged:
             fig.data = []
@@ -1029,7 +1040,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         if hasattr(cfg, 'tag'): wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
 
     # --- Model setup ---
-    coarse_model = coarse_model.to(device)
+    # In fine mode, keep coarse on CPU: frozen and only needed for piano_rolls_gen viz
+    coarse_device = 'cpu' if mode == 'fine' else device
+    coarse_model = coarse_model.to(coarse_device)
     coarse_ema   = EMAModel(coarse_model, eta=ema_eta, update_every=1, dtype=torch.float32)
     if mode == 'coarse':
         coarse_model.train()
@@ -1068,6 +1081,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     global_step = 0
     epoch_start = 0
     real_scatter_logged = False
+    scatter_pca_cache   = {}   # keyed by level name; populated on first viz, reused thereafter
 
     # --- Checkpoint resume ---
     if checkpoint:
@@ -1137,6 +1151,28 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             remaining -= chunk_n
         return torch.cat(chunks, dim=0)
 
+    def _gen_chunked_tf(eval_f, n_total):
+        """Generate fine samples conditioned on real coarse data (teacher-forcing eval).
+        Uses real coarse embeddings from the dataset — no coarse model inference needed.
+        Gives the best-case quality estimate of the fine model in isolation."""
+        f_chunks = []
+        remaining, offset = n_total, 0
+        while remaining > 0:
+            chunk_n = min(batch_size, remaining)
+            cond = dataset.coarse[offset:offset+chunk_n].float().to(device)
+            y    = sample_source((chunk_n, sum(fine_level_dims)), device=device,
+                                  source_scales=fine_source_scales, level_dims=fine_level_dims)
+            ts   = warp_time(torch.linspace(0, 1, 21), s=warp_s).to(device)
+            with torch.no_grad():
+                for i in range(20):
+                    dt = (ts[i+1] - ts[i]).item()
+                    t_ = torch.full((chunk_n, 1), ts[i].item(), device=device)
+                    y  = y + eval_f(y, t_, cond) * dt
+            f_chunks.append(y.cpu())
+            offset    += chunk_n
+            remaining -= chunk_n
+        return torch.cat(f_chunks, dim=0)
+
     # --- Training loop ---
     for epoch in range(epoch_start, n_epochs):
         if mode == 'fine': coarse_model.eval()
@@ -1191,15 +1227,15 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                     with torch.no_grad():
                         v_coarse = coarse_model(x_t_coarse, t)
                         x_cond   = x_t_coarse + (1 - t) * v_coarse
-                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp_fine):
-                    loss = loss_fn(fine_model(x_t_fine, t, x_cond), v_fine_target)
+                #with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp_fine):
+                loss = loss_fn(fine_model(x_t_fine, t, x_cond), v_fine_target)
 
             else:  # both: separate losses, teacher-forcing conditioning for fine
                 x_t_fine      = (1 - t) * noise_fine + t * real_fine
                 v_fine_target = real_fine - noise_fine
                 coarse_loss   = loss_fn(coarse_model(x_t_coarse, t), v_coarse_target)
-                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp_fine):
-                    fine_loss = loss_fn(fine_model(x_t_fine, t, real_coarse), v_fine_target)
+                #with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp_fine):
+                fine_loss = loss_fn(fine_model(x_t_fine, t, real_coarse), v_fine_target)
                 loss          = coarse_loss + fine_loss
 
             loss.backward()
@@ -1225,15 +1261,14 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             use_ema     = (epoch + 1) >= ema_start_epoch
             eval_coarse = coarse_ema.ema if (mode != 'fine' and use_ema) else coarse_model
             eval_fine   = fine_ema.ema   if (do_fine and use_ema)        else (fine_model if do_fine else None)
-            # real_coarse_eval kept even in fine mode: used as cond input for Jacobian eval
             real_coarse_eval = dataset.coarse[:eval_n_samples].float()
 
             if do_fine:
                 real_fine_eval = _get_eval_fine(eval_n_samples)
-                gen_coarse_cpu, gen_fine_cpu = _gen_chunked_conditional(
-                    eval_coarse, eval_fine, eval_n_samples)
+                # Metrics use teacher-forced fine samples: best-case eval (real coarse conditioning)
+                tf_fine_cpu = _gen_chunked_tf(eval_fine, eval_n_samples)
                 fine_metrics = eval_flow(eval_fine, real_fine_eval, n_samples=eval_n_samples,
-                                          level_dims=fine_level_dims, gen=gen_fine_cpu,
+                                          level_dims=fine_level_dims, gen=tf_fine_cpu,
                                           level_names=fine_level_names,
                                           level_n_patches=dataset.fine_n_patches)
                 log_dict.update({f'eval/{k}': v for k, v in fine_metrics.items()})
@@ -1252,21 +1287,34 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                 if do_fine:
                     real_scatter_logged = _wandb_log_viz(
                         log_dict, eval_fine, real_fine_eval, fine_level_dims, epoch+1,
-                        real_scatter_logged, gen=gen_fine_cpu, level_names=fine_level_names,
-                        level_n_components=dataset.fine_n_comp)
+                        real_scatter_logged, gen=tf_fine_cpu, level_names=fine_level_names,
+                        level_n_components=dataset.fine_n_comp, pca_cache=scatter_pca_cache)
                 if mode != 'fine':
                     _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
                                    epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
-                                   level_n_components=dataset.coarse_n_comp)
+                                   level_n_components=dataset.coarse_n_comp, pca_cache=scatter_pca_cache)
                 if do_fine and decoder is not None and pca_models is not None:
+                    # piano_rolls_gen: full coarse→fine pipeline; move coarse to GPU briefly
+                    eval_coarse.to(device)
+                    gen_coarse_16, gen_fine_16 = generate_samples_conditional(
+                        eval_coarse, eval_fine,
+                        n_samples=16, coarse_dim=coarse_dim,
+                        target_dims=fine_level_dims, device=device,
+                        n_steps=20, warp_s=warp_s,
+                        coarse_level_dims=coarse_level_dims,
+                        coarse_source_scales=coarse_source_scales,
+                        fine_source_scales=fine_source_scales,
+                        use_diffeq_fine=True)
+                    eval_coarse.to('cpu')
+                    gen_coarse_16, gen_fine_16 = gen_coarse_16.cpu(), gen_fine_16.cpu()
                     rolls = decode_flow_to_piano_rolls(
-                        gen_coarse_cpu, gen_fine_cpu, pca_models,
+                        gen_coarse_16, gen_fine_16, pca_models,
                         coarse_level_dims, fine_level_dims, fine_levels_idx,
                         cfg, decoder, device, n_samples=16)
                     grid = make_grid(rolls[:16], nrow=4, normalize=True)
                     log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
                     if fine_teacher_forcing:
-                        # Teacher-forcing eval: integrate fine conditioned on real coarse
+                        # Teacher-forcing viz: integrate fine conditioned on real coarse
                         n_tf = 16
                         idx_tf = torch.randperm(len(dataset.coarse))[:n_tf]
                         tf_coarse = dataset.coarse[idx_tf].to(device)
@@ -1315,7 +1363,6 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
-
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false

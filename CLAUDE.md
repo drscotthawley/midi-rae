@@ -83,6 +83,12 @@ Preserve the structure of the original code. If replacing a one-liner, keep it a
 
 When outputting standalone Python code in chat, do not add leading indentation to top-level statements. Python indentation is significant and the user should not have to manually fix it.
 
+## Config Changes: Edit the YAML, Never Use CLI Overrides
+
+**Always edit the config YAML file directly** (e.g. `configs/config_swin.yaml`) when changing hyperparameters. Do NOT use Hydra CLI overrides (`++flow.h_dim=256`, `flow.warp_s=0.8`, etc.) when launching runs.
+
+**Why:** CLI overrides are invisible in the saved config file. The user inspects `config_swin.yaml` in the run directory to understand how a run was trained — if overrides were used, that file is misleading. The log does record the full resolved config, but it is hard to copy-paste for relaunching. Edit the YAML so the config file is the authoritative, readable record.
+
 ## Experiment Tracking
 
 Runs are logged to Weights & Biases. Three machines used for parallel runs: **oryx**, **lecun**, **razer**. Always compare variations against a baseline run on the *same machine* — cross-machine quantitative comparisons are unreliable due to hardware FP differences.
