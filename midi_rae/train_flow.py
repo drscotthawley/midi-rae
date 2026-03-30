@@ -1295,6 +1295,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                    epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
                                    level_n_components=dataset.coarse_n_comp, pca_cache=scatter_pca_cache)
                 if do_fine and decoder is not None and pca_models is not None:
+                    # piano_rolls_real: decode real PCA embeddings directly (upper-bound quality check)
+                    real_rolls = decode_flow_to_piano_rolls(
+                        real_coarse_eval[:16].cpu(), real_fine_eval[:16].cpu(), pca_models,
+                        coarse_level_dims, fine_level_dims, fine_levels_idx,
+                        cfg, decoder, device, n_samples=16)
+                    real_grid = make_grid(real_rolls[:16], nrow=4, normalize=True)
+                    log_dict['media/piano_rolls_real'] = wandb.Image(real_grid, caption=f'Real Epoch {epoch+1}')
                     # piano_rolls_gen: full coarse→fine pipeline; move coarse to GPU briefly
                     eval_coarse.to(device)
                     gen_coarse_16, gen_fine_16 = generate_samples_conditional(
@@ -1364,6 +1371,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
+
 
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
