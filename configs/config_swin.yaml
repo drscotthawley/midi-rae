@@ -79,7 +79,8 @@ flow:
   fine_levels: [3, 4, 5]                            # fine per-patch levels
   coarse_h_dim: 512                                 # CrossLevelFlowModel hidden dim
   h_dim: 128                                        # ConditionalFineFlowModel hidden dim
-  fine_attn_layers: 2                               # local inter-level attention layers (1 parent + 4 children group)
+  fine_attn_layers: 2
+  fine_lateral_attn_layers: 1                              # windowed lateral self-attn per fine level                               # local inter-level attention layers (1 parent + 4 children group)
   fine_teacher_forcing: true                        # use real coarse data as cond during fine training
   n_layers: 6
   n_attn_layers: 4                                  # coarse transformer encoder layers

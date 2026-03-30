@@ -180,31 +180,39 @@ class ConditionalFineFlowModel(nn.Module):
     with its children and applies a small transformer, giving bidirectional
     L3↔L4 and L4↔L5 attention within the fine hierarchy.
 
+    Windowed lateral attention (n_lateral_attn_layers > 0) applies self-attention
+    within spatial windows at each fine level, letting neighbouring patches
+    synchronise — essential for coherent long notes spanning patch boundaries.
+    Windows are non-overlapping window_size×window_size tiles (default 4×4 = 16
+    patches per window); partition/unpartition uses pure reshape+permute (no
+    fancy indexing) for torch.compile compatibility.
+
     Args:
-        cond_dims:          flattened PCA dims for coarse levels, e.g. [18, 96, 512]
-        target_dims:        flattened PCA dims for fine levels,   e.g. [1280, 1280, 3072]
-        target_n_comp:      PCA components per fine patch,        e.g. [20, 5, 3]
-        h_dim:              shared hidden dim
-        n_layers:           number of pre-norm residual MLP blocks
-        t_dim:              sinusoidal time embedding dim
-        cond_n_comp:        PCA components per coarse patch — int (uniform) or list (per-level)
-        n_fine_attn_layers: TransformerEncoder layers for local inter-level attention (0 = disabled)
+        cond_dims:              flattened PCA dims for coarse levels
+        target_dims:            flattened PCA dims for fine levels
+        target_n_comp:          PCA components per fine patch
+        h_dim:                  shared hidden dim
+        n_layers:               number of pre-norm residual MLP blocks
+        t_dim:                  sinusoidal time embedding dim
+        cond_n_comp:            PCA components per coarse patch — int or list
+        n_fine_attn_layers:     TransformerEncoder layers for inter-level attention
+        n_lateral_attn_layers:  TransformerEncoder layers for windowed lateral attention
+        lateral_window_size:    spatial window size (patches per side, default 4)
     """
     def __init__(self, cond_dims, target_dims, target_n_comp,
                  h_dim=256, n_layers=4, t_dim=64, cond_n_comp=[18, 24, 32],
-                 n_fine_attn_layers=2):
+                 n_fine_attn_layers=2, n_lateral_attn_layers=0, lateral_window_size=4):
         super().__init__()
         self.cond_dims     = list(cond_dims)
         self.target_dims   = list(target_dims)
         self.target_n_comp = list(target_n_comp)
-        # cond_n_comp may be int (uniform) or list (per coarse level)
         if isinstance(cond_n_comp, (int, float)):
             cond_n_comp = [int(cond_n_comp)] * len(cond_dims)
         self.cond_n_comp   = list(cond_n_comp)
         self.t_dim         = t_dim
 
-        cond_n_patches   = [max(1,d // nc) for d, nc in zip(cond_dims, self.cond_n_comp)]
-        target_n_patches = [max(1,d // nc) for d, nc in zip(target_dims, target_n_comp)]
+        cond_n_patches   = [max(1, d // nc) for d, nc in zip(cond_dims, self.cond_n_comp)]
+        target_n_patches = [max(1, d // nc) for d, nc in zip(target_dims, target_n_comp)]
         cond_grids       = [self._square_grid(n) for n in cond_n_patches]
         target_grids     = [self._square_grid(n) for n in target_n_patches]
         self.target_n_patches = target_n_patches
@@ -222,7 +230,7 @@ class ConditionalFineFlowModel(nn.Module):
         # Per-fine-level: project own patch [nc] → h_dim (shared across patches)
         self.patch_in = nn.ModuleList([nn.Linear(nc, h_dim) for nc in target_n_comp])
 
-        # Per-fine-level × per-coarse-level: project parent [cnc] → h_dim (per-level cnc)
+        # Per-fine-level × per-coarse-level: project parent [cnc] → h_dim
         self.parent_proj = nn.ModuleList([
             nn.ModuleList([nn.Linear(cnc, h_dim) for cnc in self.cond_n_comp])
             for _ in target_dims])
@@ -261,6 +269,28 @@ class ConditionalFineFlowModel(nn.Module):
                 for _ in range(len(target_grids) - 1)])
         else:
             self.fine_pair_attn = None
+
+        # Windowed lateral self-attention: within spatial windows at each fine level
+        self.n_lateral_attn_layers = n_lateral_attn_layers
+        if n_lateral_attn_layers > 0:
+            n_attn_heads = max(1, h_dim // 16)
+            self.lateral_attn = nn.ModuleList([
+                nn.TransformerEncoder(
+                    nn.TransformerEncoderLayer(h_dim, n_attn_heads, dim_feedforward=h_dim*4,
+                                               batch_first=True, dropout=0.0, norm_first=True),
+                    num_layers=n_lateral_attn_layers)
+                for _ in target_dims])
+            # Precompute window layout per fine level: (gH, gW, nH, nW, wH, wW)
+            self._lateral_grids = []
+            for gH, gW in target_grids:
+                wH = min(lateral_window_size, gH)
+                wW = min(lateral_window_size, gW)
+                assert gH % wH == 0 and gW % wW == 0, \
+                    f"Grid {gH}×{gW} not divisible by window {wH}×{wW}"
+                self._lateral_grids.append((gH, gW, gH // wH, gW // wW, wH, wW))
+        else:
+            self.lateral_attn    = None
+            self._lateral_grids  = None
 
     @staticmethod
     def _square_grid(n):
@@ -323,10 +353,6 @@ class ConditionalFineFlowModel(nn.Module):
                 n_parent, n_ch = cidx.shape
                 h_p = hs[fi]        # [B, n_parent, h_dim]
                 h_c = hs[fi + 1]    # [B, n_parent*n_ch, h_dim]
-                # Group parent + children: [B*n_parent, 1+n_ch, h_dim]
-                # .contiguous() required — fancy indexing + cat can leave non-contiguous strides
-                # that cause stride assertion failures in sdp_efficient_attention_backward
-                # under torch.compile / torch.inductor
                 group = torch.cat([h_p.unsqueeze(2), h_c[:, cidx, :]], dim=2).contiguous()
                 group = attn(group.reshape(B * n_parent, 1 + n_ch, -1))
                 group = group.reshape(B, n_parent, 1 + n_ch, -1)
@@ -335,6 +361,21 @@ class ConditionalFineFlowModel(nn.Module):
                 h_c_new[:, cidx.reshape(-1), :] = group[:, :, 1:, :].reshape(B, n_parent * n_ch, -1)
                 hs[fi + 1] = h_c_new
 
+        # Step 2.5: windowed lateral self-attention (neighbours within each fine level)
+        if self.lateral_attn is not None:
+            for fi, (lat_attn, (gH, gW, nH, nW, wH, wW)) in enumerate(
+                    zip(self.lateral_attn, self._lateral_grids)):
+                h = hs[fi]  # [B, gH*gW, h_dim]
+                # Partition into windows via reshape+permute (compile-friendly, no fancy indexing)
+                h = h.reshape(B, nH, wH, nW, wW, -1)
+                h = h.permute(0, 1, 3, 2, 4, 5).contiguous()   # [B, nH, nW, wH, wW, h_dim]
+                h = h.reshape(B * nH * nW, wH * wW, -1)         # [B*n_win, win_seq, h_dim]
+                h = lat_attn(h)
+                # Unpartition
+                h = h.reshape(B, nH, nW, wH, wW, -1)
+                h = h.permute(0, 1, 3, 2, 4, 5).contiguous()   # [B, nH, wH, nW, wW, h_dim]
+                hs[fi] = h.reshape(B, gH * gW, -1)
+
         # Step 3: MLP blocks + output
         velocities = []
         for fi, h in enumerate(hs):
@@ -342,6 +383,7 @@ class ConditionalFineFlowModel(nn.Module):
                 h = h + block(h)
             velocities.append(self.patch_out[fi](h).reshape(B, -1))
         return torch.cat(velocities, dim=1)
+
 
 # %% ../nbs/12_train_flow.ipynb #aa120005
 def warp_time(t, s=0.5):
@@ -1435,14 +1477,15 @@ def _run_flow(cfg: DictConfig):
     if do_fine:
         fine_n_comp = dataset.fine_n_comp  # inferred from data shape
         fine_model = ConditionalFineFlowModel(
-            cond_dims          = coarse_level_dims,
-            target_dims        = dataset.fine_level_dims,
-            target_n_comp      = fine_n_comp,
-            cond_n_comp        = coarse_n_comp,
-            h_dim              = fc.h_dim,
-            n_layers           = fc.n_layers,
-            t_dim              = fc.get('t_dim', 64),
-            n_fine_attn_layers = fc.get('fine_attn_layers', 2),
+            cond_dims             = coarse_level_dims,
+            target_dims           = dataset.fine_level_dims,
+            target_n_comp         = fine_n_comp,
+            cond_n_comp           = coarse_n_comp,
+            h_dim                 = fc.h_dim,
+            n_layers              = fc.n_layers,
+            t_dim                 = fc.get('t_dim', 64),
+            n_fine_attn_layers    = fc.get('fine_attn_layers', 2),
+            n_lateral_attn_layers = fc.get('fine_lateral_attn_layers', 0),
         )
         n_params = sum(p.numel() for p in fine_model.parameters())
         print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
@@ -1472,9 +1515,6 @@ def _run_flow(cfg: DictConfig):
         print("  torch.compile: compiling flow model(s) and ann_repair...")
         coarse_model  = torch.compile(coarse_model)
         if fine_model is not None:
-            # Fine model uses inter-level attention; inductor's sdp_efficient_attention_backward
-            # has a stride bug with non-contiguous inputs. Use aot_eager backend which skips
-            # inductor kernel codegen but still gets AOT autograd graph fusion benefits.
             fine_model = torch.compile(fine_model, backend='aot_eager')
         _tf.ann_repair = torch.compile(_tf.ann_repair)
         print("  torch.compile: done")
@@ -1489,3 +1529,4 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == '__main__':
     train_flow_main()
+
