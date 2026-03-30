@@ -1078,8 +1078,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     scheduler = make_warmup_cosine_restart_scheduler(
         optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
 
+    epoch_start = 1
     global_step = 0
-    epoch_start = 0
     real_scatter_logged = False
     scatter_pca_cache   = {}   # keyed by level name; populated on first viz, reused thereafter
 
@@ -1089,9 +1089,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         resume_ema   = coarse_ema   if mode == 'coarse' else fine_ema
         resume_model, ckpt = load_checkpoint(resume_model, checkpoint, return_all=True)
         if 'optimizer_state_dict' in ckpt: optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        epoch_start = ckpt['epoch']
-        global_step = epoch_start * _steps
-        for _ in range(epoch_start): scheduler.step()
+        epoch_start = ckpt['epoch'] + 1  # next epoch after the completed one
+        global_step = (epoch_start - 1) * _steps
+        for _ in range(epoch_start - 1): scheduler.step()
         # Try to load the matching EMA checkpoint (EMAModel_<tag>ckpt_epochN.pt)
         import re as _re
         ema_ckpt_path = _re.sub(r'^(.*/)?[^_/]+_(.*)', r'\1EMAModel_\2', checkpoint)
@@ -1101,7 +1101,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         else:
             resume_ema.ema.load_state_dict(resume_model.state_dict())
             print(f"EMA checkpoint not found at {ema_ckpt_path}; initialized from model weights")
-        print(f"Resumed from {checkpoint} (epoch {epoch_start})")
+        print(f"Resumed from {checkpoint} (completed epoch {epoch_start - 1}, starting epoch {epoch_start})")
+    print(f"epoch_start = {epoch_start}")
 
     # --- Dataset dims ---
     coarse_level_dims    = dataset.coarse_level_dims
@@ -1175,7 +1176,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         return torch.cat(f_chunks, dim=0)
 
     # --- Training loop ---
-    for epoch in range(epoch_start, n_epochs):
+    for epoch in range(epoch_start, n_epochs + 1):
         if mode == 'fine': coarse_model.eval()
         else:              coarse_model.train()
         if do_fine: fine_model.train()
@@ -1187,7 +1188,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             batches = (next(dl_iter) for _ in range(_steps))
         else:
             batches = dl
-        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch+1}/{n_epochs} [{mode}]', leave=False)
+        pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch}/{n_epochs} [{mode}]', leave=False)
 
         for real_coarse, real_fine in pbar:
             real_coarse = real_coarse.to(device)
@@ -1252,14 +1253,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             pbar.set_postfix(loss=f'{loss.item():.4f}')
             global_step += 1
 
-        scheduler.step()
         avg_loss = epoch_loss / _steps
-        cur_lr   = scheduler.get_last_lr()[0]
-        print(f'Epoch {epoch+1}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  [{mode}]')
-        log_dict = {'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch+1}
+        cur_lr   = optimizer.param_groups[0]['lr']
+        print(f'Epoch {epoch}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  [{mode}]')
+        log_dict = {'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch}
 
-        if eval_every and (epoch + 1) % eval_every == 0:
-            use_ema     = (epoch + 1) >= ema_start_epoch
+        if eval_every and epoch % eval_every == 0:
+            use_ema     = epoch >= ema_start_epoch
             eval_coarse = coarse_ema.ema if (mode != 'fine' and use_ema) else coarse_model
             eval_fine   = fine_ema.ema   if (do_fine and use_ema)        else (fine_model if do_fine else None)
             real_coarse_eval = dataset.coarse[:eval_n_samples].float()
@@ -1284,15 +1284,15 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                             level_n_patches=dataset.coarse_n_patches)
                 log_dict.update({f'eval/{k}': v for k, v in coarse_metrics.items()})
 
-            if (wandb.run is not None) and viz_every and (epoch + 1) % viz_every == 0:
+            if (wandb.run is not None) and viz_every and epoch % viz_every == 0:
                 if do_fine:
                     real_scatter_logged = _wandb_log_viz(
-                        log_dict, eval_fine, real_fine_eval, fine_level_dims, epoch+1,
+                        log_dict, eval_fine, real_fine_eval, fine_level_dims, epoch,
                         real_scatter_logged, gen=tf_fine_cpu, level_names=fine_level_names,
                         level_n_components=dataset.fine_n_comp, pca_cache=scatter_pca_cache)
                 if mode != 'fine':
                     _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
-                                   epoch+1, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
+                                   epoch, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
                                    level_n_components=dataset.coarse_n_comp, pca_cache=scatter_pca_cache)
                 if do_fine and decoder is not None and pca_models is not None:
                     # piano_rolls_real: decode real PCA embeddings directly (upper-bound quality check)
@@ -1301,7 +1301,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         coarse_level_dims, fine_level_dims, fine_levels_idx,
                         cfg, decoder, device, n_samples=16)
                     real_grid = make_grid(real_rolls[:16], nrow=4, normalize=True)
-                    log_dict['media/piano_rolls_real'] = wandb.Image(real_grid, caption=f'Real Epoch {epoch+1}')
+                    log_dict['media/piano_rolls_real'] = wandb.Image(real_grid, caption=f'Real Epoch {epoch}')
                     # piano_rolls_gen: full coarse→fine pipeline; move coarse to GPU briefly
                     eval_coarse.to(device)
                     gen_coarse_16, gen_fine_16 = generate_samples_conditional(
@@ -1320,7 +1320,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         coarse_level_dims, fine_level_dims, fine_levels_idx,
                         cfg, decoder, device, n_samples=16)
                     grid = make_grid(rolls[:16], nrow=4, normalize=True)
-                    log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch+1}')
+                    log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch}')
                     if fine_teacher_forcing:
                         # Teacher-forcing viz: integrate fine conditioned on real coarse
                         n_tf = 16
@@ -1341,7 +1341,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                             coarse_level_dims, fine_level_dims, fine_levels_idx,
                             cfg, decoder, device, n_samples=n_tf)
                         tf_grid = make_grid(tf_rolls[:16], nrow=4, normalize=True)
-                        log_dict['media/piano_rolls_tf'] = wandb.Image(tf_grid, caption=f'TF Epoch {epoch+1}')
+                        log_dict['media/piano_rolls_tf'] = wandb.Image(tf_grid, caption=f'TF Epoch {epoch}')
                 # Fine model has large output space; use fewer samples for Jacobian to avoid OOM
                 # NOTE: commented out — torch.compile donates buffers, incompatible with VJP used in Jacobian eval
                 # jac_n = 32 if do_fine else 256
@@ -1358,16 +1358,17 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         if (wandb.run is not None): wandb.log(log_dict, step=global_step)
 
         if mode == 'coarse':
-            save_checkpoint((coarse_ema, coarse_model), epoch+1, avg_loss, cfg or {},
+            save_checkpoint((coarse_ema, coarse_model), epoch, avg_loss, cfg or {},
                              optimizer=optimizer, save_every=save_every, tag=cfg.tag)
         elif mode == 'fine':
-            save_checkpoint((fine_ema, fine_model), epoch+1, avg_loss, cfg or {},
+            save_checkpoint((fine_ema, fine_model), epoch, avg_loss, cfg or {},
                              optimizer=optimizer, save_every=save_every, tag=cfg.tag)
         else:
-            save_checkpoint((coarse_ema, coarse_model), epoch+1, avg_loss, cfg or {},
+            save_checkpoint((coarse_ema, coarse_model), epoch, avg_loss, cfg or {},
                              optimizer=optimizer, save_every=save_every, tag=cfg.tag + '_coarse')
-            save_checkpoint((fine_ema, fine_model), epoch+1, avg_loss, cfg or {},
+            save_checkpoint((fine_ema, fine_model), epoch, avg_loss, cfg or {},
                              optimizer=optimizer, save_every=save_every, tag=cfg.tag + '_fine')
+        scheduler.step()
 
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
