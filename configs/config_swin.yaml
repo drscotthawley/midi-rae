@@ -74,7 +74,7 @@ flow:
   encoded_dir: $HOME/datasets/POP909_encoded_exp26  # dir with train_chunk*.pt (raw)
   coarse_ckpt: /home/shawley/runs/midi-rae/coarse11_V0ZOV4/checkpoints/CrossLevelFlowModel_coarse11_V0ZOV4_best.pt
   checkpoint_dir: checkpoints/flow
-  checkpoint: /home/shawley/runs/midi-rae/fine6_E4a7P2/checkpoints/ConditionalFineFlowModel_fine6_E4a7P2_best.pt
+  checkpoint: ~                                             # null = start from scratch
   pca_levels: ['L0', 'L1', 'L2']                   # coarse levels
   fine_levels: [3, 4, 5]                            # fine per-patch levels
   coarse_h_dim: 512                                 # CrossLevelFlowModel hidden dim
