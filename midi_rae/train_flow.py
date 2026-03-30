@@ -1155,6 +1155,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         """Generate fine samples conditioned on real coarse data (teacher-forcing eval).
         Uses real coarse embeddings from the dataset — no coarse model inference needed.
         Gives the best-case quality estimate of the fine model in isolation."""
+        eval_f.eval()
         f_chunks = []
         remaining, offset = n_total, 0
         while remaining > 0:
