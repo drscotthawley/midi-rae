@@ -93,7 +93,8 @@ flow:
   fine_batch_size: 256                              # fine flow is VRAM-limited
   steps_per_epoch: 1000
   warp_s: 0.5
-  time_schedule: warp                                   # 'sine' | 'warp' | 'linear'; sine concentrates t near 1 (high-Jacobian region)
+  time_schedule: kappa_sine                             # 'kappa_sine' | 'sine' | 'warp' | 'linear'
+  sine_kappa: 0.75                                      # kappa_sine blend: 0=uniform, 1=pure sine (arcsin); 0.75→4x density at t=1
   save_every: 10
   eval_every: 5
   viz_every: 5                                      # must be a multiple of eval_every

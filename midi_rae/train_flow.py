@@ -392,14 +392,17 @@ def warp_time(t, s=0.5):
     Works on scalar, 1-D or 2-D tensors."""
     return 4*(1-s)*t**3 + 6*(s-1)*t**2 + (3-2*s)*t
 
-def sample_time(shape, schedule='warp', warp_s=0.5, device='cpu'):
+def sample_time(shape, schedule='warp', warp_s=0.5, sine_kappa=0.0, device='cpu'):
     """Sample flow timesteps t∈[0,1] with schedule warping.
-    schedule='sine'   → t = sin(π/2·τ); density ∝ 1/√(1-t²), concentrates near t=1 (high-Jacobian region)
-    schedule='warp'   → polynomial warp_time (default)
-    schedule='linear' → uniform, no warping
+    schedule='kappa_sine' → t = (1-κ)·τ + κ·sin(π/2·τ); κ=sine_kappa; upweights t near 1
+    schedule='sine'       → t = sin(π/2·τ); density ∝ 1/√(1-t²), concentrates near t=1
+    schedule='warp'       → polynomial warp_time (default)
+    schedule='linear'     → uniform, no warping
     """
     tau = torch.rand(*shape, device=device)
-    if schedule == 'sine':
+    if schedule == 'kappa_sine':
+        return (1 - sine_kappa) * tau + sine_kappa * torch.sin(math.pi / 2 * tau)
+    elif schedule == 'sine':
         return torch.sin(math.pi / 2 * tau)
     elif schedule == 'warp':
         return warp_time(tau, s=warp_s)
@@ -1049,6 +1052,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     else:                batch_size = fc.get('fine_batch_size',   fc.batch_size)  # both: fine is limiting
     warp_s               = fc.warp_s
     time_schedule        = fc.get('time_schedule', 'warp')
+    sine_kappa           = fc.get('sine_kappa', 0.0)
     save_every           = fc.get('save_every', 10)
     viz_every            = fc.get('viz_every', 10)
     eval_every           = min(viz_every, fc.get('eval_every', 10))
@@ -1235,7 +1239,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         for real_coarse, real_fine in pbar:
             real_coarse = real_coarse.to(device)
             B = real_coarse.size(0)
-            t = sample_time((B, 1), schedule=time_schedule, warp_s=warp_s, device=device)
+            t = sample_time((B, 1), schedule=time_schedule, warp_s=warp_s, sine_kappa=sine_kappa, device=device)
 
             noise_coarse = sample_source((B, real_coarse.size(1)), device=device,
                                          source_scales=coarse_source_scales,
