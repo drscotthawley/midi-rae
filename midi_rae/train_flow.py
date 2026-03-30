@@ -1337,18 +1337,19 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                    epoch, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
                                    level_n_components=dataset.coarse_n_comp, pca_cache=scatter_pca_cache)
                 if do_fine and decoder is not None and pca_models is not None:
+                    n_rolls = 64
                     # piano_rolls_real: decode real PCA embeddings directly (upper-bound quality check)
                     real_rolls = decode_flow_to_piano_rolls(
-                        real_coarse_eval[:16].cpu(), real_fine_eval[:16].cpu(), pca_models,
+                        real_coarse_eval[:n_rolls].cpu(), real_fine_eval[:n_rolls].cpu(), pca_models,
                         coarse_level_dims, fine_level_dims, fine_levels_idx,
-                        cfg, decoder, device, n_samples=16)
-                    real_grid = make_grid(real_rolls[:16], nrow=4, normalize=True)
+                        cfg, decoder, device, n_samples=n_rolls)
+                    real_grid = make_grid(real_rolls[:n_rolls], nrow=8, normalize=True)
                     log_dict['media/piano_rolls_real'] = wandb.Image(real_grid, caption=f'Real Epoch {epoch}')
                     # piano_rolls_gen: full coarse→fine pipeline; move coarse to GPU briefly
                     eval_coarse.to(device)
-                    gen_coarse_16, gen_fine_16 = generate_samples_conditional(
+                    gen_coarse_64, gen_fine_64 = generate_samples_conditional(
                         eval_coarse, eval_fine,
-                        n_samples=16, coarse_dim=coarse_dim,
+                        n_samples=n_rolls, coarse_dim=coarse_dim,
                         target_dims=fine_level_dims, device=device,
                         n_steps=20, warp_s=warp_s,
                         coarse_level_dims=coarse_level_dims,
@@ -1356,19 +1357,18 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         fine_source_scales=fine_source_scales,
                         use_diffeq_fine=True)
                     eval_coarse.to('cpu')
-                    gen_coarse_16, gen_fine_16 = gen_coarse_16.cpu(), gen_fine_16.cpu()
+                    gen_coarse_64, gen_fine_64 = gen_coarse_64.cpu(), gen_fine_64.cpu()
                     rolls = decode_flow_to_piano_rolls(
-                        gen_coarse_16, gen_fine_16, pca_models,
+                        gen_coarse_64, gen_fine_64, pca_models,
                         coarse_level_dims, fine_level_dims, fine_levels_idx,
-                        cfg, decoder, device, n_samples=16)
-                    grid = make_grid(rolls[:16], nrow=4, normalize=True)
+                        cfg, decoder, device, n_samples=n_rolls)
+                    grid = make_grid(rolls[:n_rolls], nrow=8, normalize=True)
                     log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch}')
                     if fine_teacher_forcing:
                         # Teacher-forcing viz: integrate fine conditioned on real coarse
-                        n_tf = 16
-                        idx_tf = torch.randperm(len(dataset.coarse))[:n_tf]
+                        idx_tf = torch.randperm(len(dataset.coarse))[:n_rolls]
                         tf_coarse = dataset.coarse[idx_tf].to(device)
-                        tf_fine_noise = sample_source((n_tf, sum(fine_level_dims)), device=device,
+                        tf_fine_noise = sample_source((n_rolls, sum(fine_level_dims)), device=device,
                                                        source_scales=fine_source_scales,
                                                        level_dims=fine_level_dims)
                         ts_tf = warp_time(torch.linspace(0, 1, 21), s=warp_s)
@@ -1376,21 +1376,14 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         with torch.no_grad():
                             for i in range(20):
                                 dt_tf = (ts_tf[i+1] - ts_tf[i]).item()
-                                t_tf  = torch.full((n_tf, 1), ts_tf[i].item(), device=device)
+                                t_tf  = torch.full((n_rolls, 1), ts_tf[i].item(), device=device)
                                 y_fine_tf = y_fine_tf + eval_fine(y_fine_tf, t_tf, tf_coarse) * dt_tf
                         tf_rolls = decode_flow_to_piano_rolls(
                             tf_coarse.cpu(), y_fine_tf.cpu(), pca_models,
                             coarse_level_dims, fine_level_dims, fine_levels_idx,
-                            cfg, decoder, device, n_samples=n_tf)
-                        tf_grid = make_grid(tf_rolls[:16], nrow=4, normalize=True)
+                            cfg, decoder, device, n_samples=n_rolls)
+                        tf_grid = make_grid(tf_rolls[:n_rolls], nrow=8, normalize=True)
                         log_dict['media/piano_rolls_tf'] = wandb.Image(tf_grid, caption=f'TF Epoch {epoch}')
-                # Fine model has large output space; use fewer samples for Jacobian to avoid OOM
-                # NOTE: commented out — torch.compile donates buffers, incompatible with VJP used in Jacobian eval
-                # jac_n = 32 if do_fine else 256
-                # _wandb_log_jacobian(log_dict, eval_fine if do_fine else eval_coarse,
-                #                     (real_fine_eval if do_fine else real_coarse_eval)[:jac_n],
-                #                     cond=real_coarse_eval[:jac_n].to(device) if do_fine else None,
-                #                     device=device)
                 gc.collect()
 
             if mode == 'fine': coarse_model.eval()
