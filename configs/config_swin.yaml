@@ -90,7 +90,7 @@ flow:
   lr: 1e-3
   batch_size: 256                                   # fallback if coarse/fine specific not set
   coarse_batch_size: 2048                           # coarse flow uses ~10% GPU; large batches improve minibatch-OT
-  fine_batch_size: 256                              # fine flow is VRAM-limited
+  fine_batch_size: 128                              # fine flow is VRAM-limited (256 OOMs with shifted-window attn)
   steps_per_epoch: 1000
   warp_s: 0.5
   time_schedule: kappa_sine                             # 'kappa_sine' | 'sine' | 'warp' | 'linear'
