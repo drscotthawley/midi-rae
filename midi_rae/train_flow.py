@@ -180,12 +180,12 @@ class ConditionalFineFlowModel(nn.Module):
     with its children and applies a small transformer, giving bidirectional
     L3↔L4 and L4↔L5 attention within the fine hierarchy.
 
-    Windowed lateral attention (n_lateral_attn_layers > 0) applies self-attention
-    within spatial windows at each fine level, letting neighbouring patches
-    synchronise — essential for coherent long notes spanning patch boundaries.
-    Windows are non-overlapping window_size×window_size tiles (default 4×4 = 16
-    patches per window); partition/unpartition uses pure reshape+permute (no
-    fancy indexing) for torch.compile compatibility.
+    Windowed lateral attention (n_lateral_attn_layers > 0) applies two passes of
+    self-attention within spatial windows at each fine level (Swin-style): one on
+    normal non-overlapping tiles, one on tiles shifted by (wH//2, wW//2) via cyclic
+    roll. The two-pass scheme eliminates hard window-boundary seams, enabling
+    coherent long notes spanning patch boundaries. Partition/unpartition uses pure
+    reshape+permute (no fancy indexing) for torch.compile compatibility.
 
     Args:
         cond_dims:              flattened PCA dims for coarse levels
@@ -270,11 +270,17 @@ class ConditionalFineFlowModel(nn.Module):
         else:
             self.fine_pair_attn = None
 
-        # Windowed lateral self-attention: within spatial windows at each fine level
+        # Windowed lateral self-attention: two passes (normal + shifted) Swin-style
         self.n_lateral_attn_layers = n_lateral_attn_layers
         if n_lateral_attn_layers > 0:
             n_attn_heads = max(1, h_dim // 16)
             self.lateral_attn = nn.ModuleList([
+                nn.TransformerEncoder(
+                    nn.TransformerEncoderLayer(h_dim, n_attn_heads, dim_feedforward=h_dim*4,
+                                               batch_first=True, dropout=0.0, norm_first=True),
+                    num_layers=n_lateral_attn_layers)
+                for _ in target_dims])
+            self.lateral_attn_shift = nn.ModuleList([
                 nn.TransformerEncoder(
                     nn.TransformerEncoderLayer(h_dim, n_attn_heads, dim_feedforward=h_dim*4,
                                                batch_first=True, dropout=0.0, norm_first=True),
@@ -289,8 +295,9 @@ class ConditionalFineFlowModel(nn.Module):
                     f"Grid {gH}×{gW} not divisible by window {wH}×{wW}"
                 self._lateral_grids.append((gH, gW, gH // wH, gW // wW, wH, wW))
         else:
-            self.lateral_attn    = None
-            self._lateral_grids  = None
+            self.lateral_attn       = None
+            self.lateral_attn_shift = None
+            self._lateral_grids     = None
 
     @staticmethod
     def _square_grid(n):
@@ -361,19 +368,33 @@ class ConditionalFineFlowModel(nn.Module):
                 h_c_new[:, cidx.reshape(-1), :] = group[:, :, 1:, :].reshape(B, n_parent * n_ch, -1)
                 hs[fi + 1] = h_c_new
 
-        # Step 2.5: windowed lateral self-attention (neighbours within each fine level)
+        # Step 2.5: windowed lateral self-attention (normal windows)
         if self.lateral_attn is not None:
             for fi, (lat_attn, (gH, gW, nH, nW, wH, wW)) in enumerate(
                     zip(self.lateral_attn, self._lateral_grids)):
                 h = hs[fi]  # [B, gH*gW, h_dim]
-                # Partition into windows via reshape+permute (compile-friendly, no fancy indexing)
                 h = h.reshape(B, nH, wH, nW, wW, -1)
                 h = h.permute(0, 1, 3, 2, 4, 5).contiguous()   # [B, nH, nW, wH, wW, h_dim]
                 h = h.reshape(B * nH * nW, wH * wW, -1)         # [B*n_win, win_seq, h_dim]
                 h = lat_attn(h)
-                # Unpartition
                 h = h.reshape(B, nH, nW, wH, wW, -1)
                 h = h.permute(0, 1, 3, 2, 4, 5).contiguous()   # [B, nH, wH, nW, wW, h_dim]
+                hs[fi] = h.reshape(B, gH * gW, -1)
+
+        # Step 2.6: shifted-window lateral attention (Swin-style, removes hard seams)
+        if self.lateral_attn_shift is not None:
+            for fi, (lat_attn, (gH, gW, nH, nW, wH, wW)) in enumerate(
+                    zip(self.lateral_attn_shift, self._lateral_grids)):
+                h = hs[fi].reshape(B, gH, gW, -1)
+                h = torch.roll(h, shifts=(wH // 2, wW // 2), dims=(1, 2))
+                h = h.reshape(B, nH, wH, nW, wW, -1)
+                h = h.permute(0, 1, 3, 2, 4, 5).contiguous()
+                h = h.reshape(B * nH * nW, wH * wW, -1)
+                h = lat_attn(h)
+                h = h.reshape(B, nH, nW, wH, wW, -1)
+                h = h.permute(0, 1, 3, 2, 4, 5).contiguous()
+                h = h.reshape(B, gH, gW, -1)
+                h = torch.roll(h, shifts=(-wH // 2, -wW // 2), dims=(1, 2))
                 hs[fi] = h.reshape(B, gH * gW, -1)
 
         # Step 3: MLP blocks + output
