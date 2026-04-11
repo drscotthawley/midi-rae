@@ -364,24 +364,24 @@ def viz_mae_recon(recon, img_real, enc_out=None, epoch=-1, patch_size=16, debug=
     if recon.shape != img_real.shape: # turn into image
         img_recon = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=mae_mask, thresh=thresh)
         img_recon_noreplace = patches_to_img(recon, img_real, patch_size=patch_size, mae_mask=None, thresh=thresh)
-    
+
     img_recon = binarize(recon, thresh=thresh)
-        
+
     evals = do_recon_eval(img_recon, img_real, mae_mask=mae_mask, patch_size=patch_size, return_maps=return_maps)
-    grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True)
-    grid_real  = make_grid(img_real[:64], nrow=8, normalize=True)
-    if return_maps:  # RGB image: White=TP, Black=TN, Red=FP, Yellow=FN 
+    grid_recon = make_grid(img_recon[:64], nrow=8, normalize=True).float()
+    grid_real  = make_grid(img_real[:64], nrow=8, normalize=True).float()
+    if return_maps:  # RGB image: White=TP, Black=TN, Red=FP, Yellow=FN
         r  = (evals['TPmap'] | evals['FPmap'] | evals['FNmap']).float()
         g  = (evals['TPmap'] | evals['FNmap']).float()
         b  = (evals['TPmap']).float()
         img_map = torch.cat((r, g, b), dim=1)
-        grid_map = make_grid(img_map[:64], nrow=8, normalize=True)
+        grid_map = make_grid(img_map[:64], nrow=8, normalize=True).float()
     if wandb.run is not None:
         wandb_dict = {'real': wandb.Image(grid_real, caption=f"Epoch {epoch}"),
                       'recon': wandb.Image(grid_recon, caption=f"Epoch {epoch}"), 'epoch': epoch}
         if return_maps: wandb_dict = wandb_dict | {'map': wandb.Image(grid_map, caption=f"Epoch {epoch}, Red=FP, Yellow=FN") }
         if img_recon_noreplace is not None:
-            grid_raw = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True)
+            grid_raw = make_grid(img_recon_noreplace[:64], nrow=8, normalize=True).float()
             wandb_dict = wandb_dict | {'raw': wandb.Image(grid_raw, caption=f"Epoch {epoch}")}
         wandb.log(wandb_dict)
     if return_maps: return grid_recon, grid_real, grid_map, evals
