@@ -44,6 +44,8 @@ def sample_shift(max_shift, sigma=7, size=None):
 # %% ../nbs/01_data.ipynb #7250ec68-df48-486b-8b30-00b9df5cf2cf
 def note_length_weights(img, min_weight=1.0, power=0.5):
   "note weight is inversely proportional to note length"
+  from scipy.ndimage import label
+
   weights = np.ones_like(img, dtype=np.float32)
   lengths = []
   for row in range(img.shape[0]):  # horizontal slices
@@ -63,7 +65,7 @@ def note_length_weights(img, min_weight=1.0, power=0.5):
 class AnchorDataset(Dataset):
     "piano roll pair dataset"
     def __init__(self, 
-            image_dataset_dir='~/datasets/POP909_images_basic/', 
+            image_dataset_dir='$HOME/datasets/POP909_images_basic/', 
             crop_size=(128,128),  # int for square of tuple for rectangle 
             split='train',
             val_fraction=0.1,
@@ -84,7 +86,7 @@ class AnchorDataset(Dataset):
         self.filenames = shuffled[:split_idx] if split == 'train' else shuffled[split_idx:]            
         self.actual_len = len(self.filenames)
         self.images, self.note_weights = [], []
-        if verbose: print(f"Loading {self.actual_len} {split} files from {image_dataset_dir}... ",end="")
+        if verbose: print(f"Loading {self.actual_len} {split} files from {image_dataset_dir}... ",end="\n")
         for f in self.filenames: 
             img = Image.open(f).convert('L')  # grayscale
             img =  (np.array(img, dtype=np.uint8) > 0).astype(np.uint8) # binary uint8

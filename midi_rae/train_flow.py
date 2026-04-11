@@ -201,15 +201,17 @@ class ConditionalFineFlowModel(nn.Module):
     """
     def __init__(self, cond_dims, target_dims, target_n_comp,
                  h_dim=256, n_layers=4, t_dim=64, cond_n_comp=[18, 24, 32],
-                 n_fine_attn_layers=2, n_lateral_attn_layers=0, lateral_window_size=4):
+                 n_fine_attn_layers=2, n_lateral_attn_layers=0, lateral_window_size=4,
+                 grad_checkpoint=False):
         super().__init__()
         self.cond_dims     = list(cond_dims)
         self.target_dims   = list(target_dims)
         self.target_n_comp = list(target_n_comp)
         if isinstance(cond_n_comp, (int, float)):
             cond_n_comp = [int(cond_n_comp)] * len(cond_dims)
-        self.cond_n_comp   = list(cond_n_comp)
-        self.t_dim         = t_dim
+        self.cond_n_comp    = list(cond_n_comp)
+        self.t_dim          = t_dim
+        self.grad_checkpoint = grad_checkpoint
 
         cond_n_patches   = [max(1, d // nc) for d, nc in zip(cond_dims, self.cond_n_comp)]
         target_n_patches = [max(1, d // nc) for d, nc in zip(target_dims, target_n_comp)]
@@ -321,6 +323,12 @@ class ConditionalFineFlowModel(nn.Module):
         children = [((r * bH + dr) * cW + (c * bW + dc)) for dr in range(bH) for dc in range(bW)]
         return torch.stack(children, dim=1)  # [pH*pW, bH*bW]
 
+    def _attn(self, module, x):
+        """Run module(x), using gradient checkpointing during training if enabled."""
+        if self.grad_checkpoint and self.training:
+            return torch.utils.checkpoint.checkpoint(module, x, use_reentrant=False)
+        return module(x)
+
     def forward(self, x_target, t, x_cond):
         """
         x_target: [B, sum(target_dims)]  noisy fine-level PCA embeddings
@@ -361,7 +369,7 @@ class ConditionalFineFlowModel(nn.Module):
                 h_p = hs[fi]        # [B, n_parent, h_dim]
                 h_c = hs[fi + 1]    # [B, n_parent*n_ch, h_dim]
                 group = torch.cat([h_p.unsqueeze(2), h_c[:, cidx, :]], dim=2).contiguous()
-                group = attn(group.reshape(B * n_parent, 1 + n_ch, -1))
+                group = self._attn(attn, group.reshape(B * n_parent, 1 + n_ch, -1))
                 group = group.reshape(B, n_parent, 1 + n_ch, -1)
                 hs[fi]     = group[:, :, 0, :].contiguous()
                 h_c_new = hs[fi + 1].clone()
@@ -376,7 +384,7 @@ class ConditionalFineFlowModel(nn.Module):
                 h = h.reshape(B, nH, wH, nW, wW, -1)
                 h = h.permute(0, 1, 3, 2, 4, 5).contiguous()   # [B, nH, nW, wH, wW, h_dim]
                 h = h.reshape(B * nH * nW, wH * wW, -1)         # [B*n_win, win_seq, h_dim]
-                h = lat_attn(h)
+                h = self._attn(lat_attn, h)
                 h = h.reshape(B, nH, nW, wH, wW, -1)
                 h = h.permute(0, 1, 3, 2, 4, 5).contiguous()   # [B, nH, wH, nW, wW, h_dim]
                 hs[fi] = h.reshape(B, gH * gW, -1)
@@ -390,7 +398,7 @@ class ConditionalFineFlowModel(nn.Module):
                 h = h.reshape(B, nH, wH, nW, wW, -1)
                 h = h.permute(0, 1, 3, 2, 4, 5).contiguous()
                 h = h.reshape(B * nH * nW, wH * wW, -1)
-                h = lat_attn(h)
+                h = self._attn(lat_attn, h)
                 h = h.reshape(B, nH, nW, wH, wW, -1)
                 h = h.permute(0, 1, 3, 2, 4, 5).contiguous()
                 h = h.reshape(B, gH, gW, -1)
@@ -1370,45 +1378,47 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         cfg, decoder, device, n_samples=n_rolls)
                     real_grid = make_grid(real_rolls[:n_rolls], nrow=8, normalize=True)
                     log_dict['media/piano_rolls_real'] = wandb.Image(real_grid, caption=f'Real Epoch {epoch}')
-                    # piano_rolls_gen: full coarse→fine pipeline; move coarse to GPU briefly
-                    eval_coarse.to(device)
-                    gen_coarse_64, gen_fine_64 = generate_samples_conditional(
-                        eval_coarse, eval_fine,
-                        n_samples=n_rolls, coarse_dim=coarse_dim,
-                        target_dims=fine_level_dims, device=device,
-                        n_steps=20, warp_s=warp_s,
-                        coarse_level_dims=coarse_level_dims,
-                        coarse_source_scales=coarse_source_scales,
-                        fine_source_scales=fine_source_scales,
-                        use_diffeq_fine=True)
-                    eval_coarse.to('cpu')
-                    gen_coarse_64, gen_fine_64 = gen_coarse_64.cpu(), gen_fine_64.cpu()
-                    rolls = decode_flow_to_piano_rolls(
-                        gen_coarse_64, gen_fine_64, pca_models,
-                        coarse_level_dims, fine_level_dims, fine_levels_idx,
-                        cfg, decoder, device, n_samples=n_rolls)
-                    grid = make_grid(rolls[:n_rolls], nrow=8, normalize=True)
-                    log_dict['media/piano_rolls_gen'] = wandb.Image(grid, caption=f'Epoch {epoch}')
-                    if fine_teacher_forcing:
-                        # Teacher-forcing viz: integrate fine conditioned on real coarse
-                        idx_tf = torch.randperm(len(dataset.coarse))[:n_rolls]
-                        tf_coarse = dataset.coarse[idx_tf].to(device)
-                        tf_fine_noise = sample_source((n_rolls, sum(fine_level_dims)), device=device,
-                                                       source_scales=fine_source_scales,
-                                                       level_dims=fine_level_dims)
-                        ts_tf = warp_time(torch.linspace(0, 1, 21), s=warp_s)
-                        y_fine_tf = tf_fine_noise
-                        with torch.no_grad():
-                            for i in range(20):
-                                dt_tf = (ts_tf[i+1] - ts_tf[i]).item()
-                                t_tf  = torch.full((n_rolls, 1), ts_tf[i].item(), device=device)
-                                y_fine_tf = y_fine_tf + eval_fine(y_fine_tf, t_tf, tf_coarse) * dt_tf
-                        tf_rolls = decode_flow_to_piano_rolls(
-                            tf_coarse.cpu(), y_fine_tf.cpu(), pca_models,
+                    # piano_rolls_gen: loop over EMA and normal models for comparison
+                    for net_tag, c_model, f_model in [('ema', eval_coarse, eval_fine),
+                                                       ('normal', coarse_model, fine_model if do_fine else None)]:
+                        c_model.to(device)
+                        gen_coarse_64, gen_fine_64 = generate_samples_conditional(
+                            c_model, f_model,
+                            n_samples=n_rolls, coarse_dim=coarse_dim,
+                            target_dims=fine_level_dims, device=device,
+                            n_steps=20, warp_s=warp_s,
+                            coarse_level_dims=coarse_level_dims,
+                            coarse_source_scales=coarse_source_scales,
+                            fine_source_scales=fine_source_scales,
+                            use_diffeq_fine=True)
+                        c_model.to('cpu')
+                        gen_coarse_64, gen_fine_64 = gen_coarse_64.cpu(), gen_fine_64.cpu()
+                        rolls = decode_flow_to_piano_rolls(
+                            gen_coarse_64, gen_fine_64, pca_models,
                             coarse_level_dims, fine_level_dims, fine_levels_idx,
                             cfg, decoder, device, n_samples=n_rolls)
-                        tf_grid = make_grid(tf_rolls[:n_rolls], nrow=8, normalize=True)
-                        log_dict['media/piano_rolls_tf'] = wandb.Image(tf_grid, caption=f'TF Epoch {epoch}')
+                        grid = make_grid(rolls[:n_rolls], nrow=8, normalize=True)
+                        log_dict[f'media/piano_rolls_gen_{net_tag}'] = wandb.Image(grid, caption=f'{net_tag} Epoch {epoch}')
+                        if fine_teacher_forcing:
+                            # Teacher-forcing viz: integrate fine conditioned on real coarse
+                            idx_tf = torch.randperm(len(dataset.coarse))[:n_rolls]
+                            tf_coarse = dataset.coarse[idx_tf].to(device)
+                            tf_fine_noise = sample_source((n_rolls, sum(fine_level_dims)), device=device,
+                                                           source_scales=fine_source_scales,
+                                                           level_dims=fine_level_dims)
+                            ts_tf = warp_time(torch.linspace(0, 1, 21), s=warp_s)
+                            y_fine_tf = tf_fine_noise
+                            with torch.no_grad():
+                                for i in range(20):
+                                    dt_tf = (ts_tf[i+1] - ts_tf[i]).item()
+                                    t_tf  = torch.full((n_rolls, 1), ts_tf[i].item(), device=device)
+                                    y_fine_tf = y_fine_tf + f_model(y_fine_tf, t_tf, tf_coarse) * dt_tf
+                            tf_rolls = decode_flow_to_piano_rolls(
+                                tf_coarse.cpu(), y_fine_tf.cpu(), pca_models,
+                                coarse_level_dims, fine_level_dims, fine_levels_idx,
+                                cfg, decoder, device, n_samples=n_rolls)
+                            tf_grid = make_grid(tf_rolls[:n_rolls], nrow=8, normalize=True)
+                            log_dict[f'media/piano_rolls_tf_{net_tag}'] = wandb.Image(tf_grid, caption=f'TF {net_tag} Epoch {epoch}')
                 gc.collect()
 
             if mode == 'fine': coarse_model.eval()
@@ -1504,6 +1514,7 @@ def _run_flow(cfg: DictConfig):
             t_dim                 = fc.get('t_dim', 64),
             n_fine_attn_layers    = fc.get('fine_attn_layers', 2),
             n_lateral_attn_layers = fc.get('fine_lateral_attn_layers', 0),
+            grad_checkpoint       = fc.get('grad_checkpoint', False),
         )
         n_params = sum(p.numel() for p in fine_model.parameters())
         print(f"  ConditionalFineFlowModel: {n_params:,} parameters")

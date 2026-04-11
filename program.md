@@ -178,6 +178,32 @@ Generate L0 first, condition L1 on L0, etc. Risk: error accumulation compounds a
 
 **Mini-batch OT via `ann_repair` — theoretically and practically free**: Random source-target pairing produces a highly tangled velocity field (paths cross everywhere), creating high curvature that is hard to learn and unstable to integrate. `ann_repair` re-pairs each batch by sorting source and target along random projections (1-D OT), straightening the flow paths at O(B log B) cost. In practice this costs nothing: the embedding DataLoader is the bottleneck, and the GPU would otherwise sit idle waiting for the next batch. The sort ops run entirely on-device during that idle window. Observed effect: GPU utilization jumps from ~8% (random pairing) to >90% (with `ann_repair`) — the extra compute is genuinely free.
 
+## Encoder probing / musical structure analysis (for paper — 2026-04-11)
+
+**Goal**: demonstrate that the encoder captures musically meaningful structure, not just reconstruction-useful features. This is a key missing piece for the ISMIR submission.
+
+### Self-similarity matrix (SSM) comparison — highest priority, ~1 day effort
+
+Slide a 128×128 window across a full song at regular intervals (e.g. every 16 or 32 columns = every beat or 2 beats). Embed each crop with the encoder. Compute pairwise cosine similarity between all crop embeddings → embedding-space SSM. Compare to pixel-space SSM (raw binary roll similarity).
+
+**What to look for**: chorus/verse repetition appears as off-diagonal bright blocks. If embedding SSM shows similar block structure to pixel SSM, the encoder captures phrase-level repetition without being trained to. If embedding SSM is *cleaner* (less noisy blocks), the encoder is doing something useful beyond pixel matching.
+
+**Quantitative summary (no labels needed)**: Pearson correlation between flattened embedding SSM and pixel SSM across a set of songs. One number, interpretable, label-free.
+
+**Key point**: no chord/key/verse labels needed — the SSM is fully unsupervised. The visual correspondence IS the result.
+
+### Melody vs. accompaniment separation
+
+POP909 provides labeled melody and accompaniment tracks. Natural experiment: does the embedding change more when the melody changes (accompaniment fixed) vs. when the accompaniment changes (melody fixed)? If L0 is sensitive to melody changes but robust to accompaniment changes (or vice versa), that suggests level-specific musical encoding.
+
+### Motif / periodicity in embedding trajectory
+
+For a single song, compute embeddings at regular time steps → sequence of vectors. Compute autocorrelation of the embedding trajectory. If the model encodes phrase structure, expect peaks at 4-bar (~32 columns at 16th-note resolution) and 8-bar intervals.
+
+### Longer timescales (future architecture work)
+
+Current model sees at most 2 measures (128 columns at 120bpm, 16th-note resolution). To capture song-level structure (verse/chorus/bridge), would need an additional hierarchy level below L0 treating each 128×128 crop as a token — essentially a "song-level transformer" on top of the current patch-level encoder. Noted as future work.
+
 ## Scope and goals
 
 **Focus: encoder training only** (`train_enc`, `nbs/06_train_enc.ipynb`).
