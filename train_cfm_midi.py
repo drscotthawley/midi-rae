@@ -108,7 +108,8 @@ def train(argv):
         num_head_channels=64,
         attention_resolutions="16",
         dropout=0.1,
-    ).to(device)
+        use_checkpoint=True,
+    ).to(device).to(torch.bfloat16)
 
     ema_model = copy.deepcopy(net_model)
     optim = torch.optim.Adam(net_model.parameters(), lr=FLAGS.lr)
