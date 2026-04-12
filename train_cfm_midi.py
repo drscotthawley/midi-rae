@@ -139,8 +139,9 @@ def train(argv):
             x1 = x1 * 2 - 1          # [0, 1] → [-1, 1]
             x0 = torch.randn_like(x1)
             t, xt, ut = FM.sample_location_and_conditional_flow(x0, x1)
-            vt = net_model(t, xt)
-            loss = torch.mean((vt - ut) ** 2)
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                vt = net_model(t, xt)
+                loss = torch.mean((vt - ut) ** 2)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net_model.parameters(), FLAGS.grad_clip)
             optim.step()

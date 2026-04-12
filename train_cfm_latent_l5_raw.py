@@ -56,34 +56,50 @@ L5_GRID      = 32
 
 
 class L5RawDataset(Dataset):
-    """Loads raw L5 encoder embeddings from preencoded chunk files, reshaped as [8, 32, 32]."""
+    """Lazily loads raw L5 encoder embeddings from preencoded chunk files, reshaped as [8, 32, 32].
+    Chunks are loaded on demand to avoid exhausting system RAM."""
     def __init__(self, encoded_dir, split='train'):
         encoded_dir = os.path.expandvars(os.path.expanduser(encoded_dir))
-        files = sorted(glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
-        assert files, f"No {split}_chunk*.pt found in {encoded_dir}"
-        print(f"Loading L5 raw from {len(files)} {split} chunks...", flush=True)
-        chunks = []
-        for f in files:
-            data = torch.load(f, weights_only=False)
-            # data is a list of dicts; emb1 is a list of 6 level tensors; index 5 = L5
-            l5 = torch.stack([item['emb1'][5] for item in data]).float()  # [N, 1024, 8]
-            chunks.append(l5)
-        self.data = torch.cat(chunks, dim=0)  # [N_total, 1024, 8]
-        print(f"Loaded {len(self.data)} samples, L5 shape per sample: {self.data.shape[1:]}", flush=True)
+        self.files = sorted(glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
+        assert self.files, f"No {split}_chunk*.pt found in {encoded_dir}"
+        print(f"Found {len(self.files)} {split} chunks (lazy loading).", flush=True)
 
-        # Normalize: zero mean, unit std per dimension across dataset
-        flat = self.data.reshape(-1, L5_N_DIM)
+        # Scan all chunks to build accurate index
+        print(f"Scanning chunks...", flush=True)
+        self.index = []
+        for fi, f in enumerate(self.files):
+            data = torch.load(f, weights_only=False)
+            for item_i, item in enumerate(data):
+                n = item['emb1'][5].shape[0]
+                self.index.extend([(fi, item_i, s) for s in range(n)])
+        print(f"Total samples: {len(self.index)}", flush=True)
+
+        # Compute normalization stats from first chunk only (fast approximation)
+        data0 = torch.load(self.files[0], weights_only=False)
+        sample = torch.cat([item['emb1'][5].float() for item in data0], dim=0)
+        flat = sample.reshape(-1, L5_N_DIM)
         self.mean = flat.mean(0)
         self.std  = flat.std(0).clamp(min=1e-6)
-        self.data = (self.data - self.mean) / self.std
-        print(f"Normalized L5 embeddings: mean~0, std~1", flush=True)
+        print(f"Normalization stats from chunk 0 (approx).", flush=True)
+
+        # Cache current loaded chunk
+        self._cache_fi = None
+        self._cache_data = None
+
+    def _load_chunk(self, fi):
+        if self._cache_fi != fi:
+            self._cache_data = torch.load(self.files[fi], weights_only=False)
+            self._cache_fi = fi
 
     def __len__(self):
-        return len(self.data)
+        return len(self.index)
 
     def __getitem__(self, idx):
-        # [1024, 8] → [8, 32, 32]
-        return self.data[idx].T.reshape(L5_N_DIM, L5_GRID, L5_GRID)
+        fi, item_i, s = self.index[idx]
+        self._load_chunk(fi)
+        emb = self._cache_data[item_i]['emb1'][5][s].float()  # [1024, 8]
+        emb = (emb - self.mean) / self.std
+        return emb.T.reshape(L5_N_DIM, L5_GRID, L5_GRID)
 
 
 def warmup_lr(step):
