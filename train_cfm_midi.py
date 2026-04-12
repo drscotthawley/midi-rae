@@ -40,6 +40,7 @@ flags.DEFINE_integer("num_workers", 4, help="workers of Dataloader")
 flags.DEFINE_float("ema_decay", 0.9999, help="ema decay rate")
 # Evaluation
 flags.DEFINE_integer("save_step", 20000, help="frequency of saving checkpoints, 0 to disable")
+flags.DEFINE_boolean("use_checkpoint", False, help="gradient checkpointing to save VRAM (slower)")
 flags.DEFINE_integer("crop_size", 128, help="spatial crop size (square)")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -108,8 +109,8 @@ def train(argv):
         num_head_channels=64,
         attention_resolutions="16",
         dropout=0.1,
-        use_checkpoint=True,
-    ).to(device).to(torch.bfloat16)
+        use_checkpoint=FLAGS.use_checkpoint,
+    ).to(device)
 
     ema_model = copy.deepcopy(net_model)
     optim = torch.optim.Adam(net_model.parameters(), lr=FLAGS.lr)
@@ -140,15 +141,16 @@ def train(argv):
             x1 = x1 * 2 - 1          # [0, 1] → [-1, 1]
             x0 = torch.randn_like(x1)
             t, xt, ut = FM.sample_location_and_conditional_flow(x0, x1)
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                vt = net_model(t, xt)
-                loss = torch.mean((vt - ut) ** 2)
+            vt = net_model(t, xt)
+            loss = torch.mean((vt - ut) ** 2)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net_model.parameters(), FLAGS.grad_clip)
             optim.step()
             sched.step()
             ema(net_model, ema_model, FLAGS.ema_decay)
             pbar.set_postfix(loss=f"{loss.item():.4f}")
+            if step % 100 == 0:
+                print(f"step {step} loss {loss.item():.4f}", flush=True)
 
             if FLAGS.save_step > 0 and step % FLAGS.save_step == 0:
                 generate_samples(net_model, savedir, step, net_="normal", crop_size=crop_size)
