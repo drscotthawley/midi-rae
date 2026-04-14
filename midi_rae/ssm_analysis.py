@@ -78,11 +78,12 @@ def plot_ssm_alllevels(song_data, song_idx, out_dir=None, show=True):
         return None, None
     pixel_ssm = compute_pixel_ssm(imgs)
 
-    fig, axes = plt.subplots(2, 4, figsize=(18, 9))
+    fig, axes = plt.subplots(2, 4, figsize=(20, 9))
     fig.suptitle(f"SSM -- Song {song_idx:03d} ({len(imgs)} crops)", fontsize=14)
 
+    # Pixel SSM — same vmin/vmax as embeddings for fair comparison
     ax = axes[1, 3]
-    ax.imshow(pixel_ssm, cmap='viridis', vmin=-1, vmax=1, aspect='auto')
+    im = ax.imshow(pixel_ssm, cmap='viridis', vmin=-1, vmax=1, aspect='auto')
     ax.set_title("Pixel space")
     ax.set_xlabel('Crop'); ax.set_ylabel('Crop')
 
@@ -103,6 +104,13 @@ def plot_ssm_alllevels(song_data, song_idx, out_dir=None, show=True):
         ax.imshow(ssm, cmap='viridis', vmin=-1, vmax=1, aspect='auto')
         ax.set_title(f"L{lvl} ({embs.shape[1]}d)  r={r:.3f}")
         ax.set_xlabel('Crop'); ax.set_ylabel('Crop')
+
+    # Hide the unused 7th panel (axes[1,2])
+    axes[1, 2].set_visible(False)
+
+    # One shared colorbar for all panels
+    fig.colorbar(im, ax=axes, orientation='vertical', fraction=0.015, pad=0.02,
+                 label='Cosine similarity')
 
     plt.tight_layout()
     if out_dir:
