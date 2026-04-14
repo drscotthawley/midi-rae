@@ -105,12 +105,8 @@ def plot_ssm_alllevels(song_data, song_idx, out_dir=None, show=True):
         ax.set_title(f"L{lvl} ({embs.shape[1]}d)  r={r:.3f}")
         ax.set_xlabel('Crop'); ax.set_ylabel('Crop')
 
-    # Hide the unused 7th panel (axes[1,2])
-    axes[1, 2].set_visible(False)
-
-    # One shared colorbar for all panels
-    fig.colorbar(im, ax=axes, orientation='vertical', fraction=0.015, pad=0.02,
-                 label='Cosine similarity')
+    # Put colorbar in the empty 7th panel slot (axes[1,2])
+    fig.colorbar(im, cax=axes[1, 2], label='Cosine similarity')
 
     plt.tight_layout()
     if out_dir:
