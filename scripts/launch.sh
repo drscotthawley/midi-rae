@@ -5,17 +5,18 @@
 #
 # Usage:
 #   ./scripts/launch.sh <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]
+#   ./scripts/launch.sh <host> ssm - <tag> [argparse_args...]
 #
 #   host              — SSH host (as defined in ~/.ssh/config)
-#   type              — "enc", "dec", "hmep", "preencode", "fitpca", or "flow"
-#   config            — config name without .yaml (e.g. config_swin_razer)
+#   type              — "enc", "dec", "hmep", "preencode", "fitpca", "flow", or "ssm"
+#   config            — config name without .yaml (e.g. config_swin_razer); use "-" for ssm
 #   tag               — short descriptive label (e.g. "dec1"); a 6-char random suffix is appended
-#   hydra_overrides   — (optional) any number of Hydra overrides, e.g. ++training.dec_epochs=200
+#   hydra_overrides   — (optional) Hydra overrides, or argparse args for ssm type
 #
 # Example:
 #   ./scripts/launch.sh lecun enc config_swin exp18
 #   ./scripts/launch.sh razer dec config_swin_razer dec1 ++training.dec_epochs=200
-#   ./scripts/launch.sh razer dec config_swin_razer dec1 ++encoder_ckpt=~/runs/midi-rae/exp22/.../best.pt
+#   ./scripts/launch.sh razer ssm - ssm_survey --n_songs 20
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -36,8 +37,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" ]]; then
-    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', or 'generate', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" && "$TYPE" != "ssm" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', 'generate', or 'ssm', got '${TYPE}'"
     exit 1
 fi
 
@@ -48,9 +49,11 @@ RUN_DIR="~/runs/midi-rae/${RUN_TAG}"
 
 echo "Run tag: ${RUN_TAG}"
 
-# Check GPU availability on the remote host
+# Check GPU availability on the remote host (skip for CPU-only analysis types)
 echo "Checking GPU on ${HOST}..."
-if [[ $FORCE -eq 1 ]]; then
+if [[ "$TYPE" == "ssm" ]]; then
+    echo "(ssm: CPU-only analysis, skipping GPU check)"
+elif [[ $FORCE -eq 1 ]]; then
     echo "(--force: skipping GPU check)"
 elif ! $SSH "${HOST}" 'bash -s' < "${SCRIPT_DIR}/is_gpu_free.sh"; then
     echo "Aborting: GPU is busy."
@@ -66,10 +69,13 @@ cd - > /dev/null
 echo "Creating run directory ${RUN_DIR} on ${HOST}..."
 $SSH "${HOST}" "mkdir -p ${RUN_DIR}/midi_rae ${RUN_DIR}/configs ${RUN_DIR}/checkpoints"
 
-# Copy source snapshot and all config files (parent configs needed for Hydra defaults inheritance)
-echo "Copying midi_rae/*.py and configs/ to ${HOST}:${RUN_DIR}/ ..."
+# Copy source snapshot (and configs for Hydra-based types)
+echo "Copying midi_rae/*.py to ${HOST}:${RUN_DIR}/ ..."
 scp "${REPO_DIR}"/midi_rae/*.py "${HOST}:${RUN_DIR}/midi_rae/"
-scp "${REPO_DIR}"/configs/*.yaml "${HOST}:${RUN_DIR}/configs/"
+if [[ "$TYPE" != "ssm" ]]; then
+    echo "Copying configs/ to ${HOST}:${RUN_DIR}/ ..."
+    scp "${REPO_DIR}"/configs/*.yaml "${HOST}:${RUN_DIR}/configs/"
+fi
 
 # Write a self-contained run script to the run directory and execute it.
 # Using a script file prevents mp.Manager() child processes from inheriting
@@ -80,6 +86,8 @@ elif [[ "$TYPE" = "fitpca" ]]; then
     MODULE="midi_rae.fit_pca"
 elif [[ "$TYPE" = "generate" ]]; then
     MODULE="midi_rae.generate"
+elif [[ "$TYPE" = "ssm" ]]; then
+    MODULE="midi_rae.ssm_analysis"
 elif [[ "$TYPE" = "flow2" ]]; then
     MODULE="midi_rae.train_flow"   # _run_flow2 dispatched via ++flow_stage=2 Hydra override
     EXTRA_OVERRIDES="++flow_stage=2 ${EXTRA_OVERRIDES}"
@@ -87,6 +95,15 @@ else
     MODULE="midi_rae.train_${TYPE}"
 fi
 
+if [[ "$TYPE" = "ssm" ]]; then
+cat > /tmp/midi_rae_run.sh << EOF
+#!/bin/bash
+source ~/envs/midi-rae/bin/activate
+cd ${RUN_DIR}
+PYTHONPATH=${RUN_DIR} nohup python -m ${MODULE} --out_dir ${RUN_DIR}/results/ssm ${EXTRA_OVERRIDES} > ${RUN_DIR}/run.log 2>&1 &
+echo \$!
+EOF
+else
 cat > /tmp/midi_rae_run.sh << EOF
 #!/bin/bash
 source ~/envs/midi-rae/bin/activate
@@ -94,6 +111,7 @@ cd ${RUN_DIR}
 PYTHONPATH=${RUN_DIR} nohup python -m ${MODULE} --config-name ${CONFIG} ++tag=${RUN_TAG} ${EXTRA_OVERRIDES} > ${RUN_DIR}/run.log 2>&1 &
 echo \$!
 EOF
+fi
 
 scp /tmp/midi_rae_run.sh "${HOST}:${RUN_DIR}/run.sh"
 
