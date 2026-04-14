@@ -19,8 +19,9 @@ from scipy.stats import pearsonr
 def load_songs_all_levels(encoded_dir, song_indices, split='train'):
     """Single-pass load of all 6 encoder levels + images for a set of songs.
 
+    Patch embeddings are flattened (not mean-pooled) to preserve spatial structure.
     Returns dict keyed by song_idx, each value:
-        {'embs': {level: Tensor[N_crops, D] or None}, 'imgs': Tensor[N_crops, 1, H, W] or None}
+        {'embs': {level: Tensor[N_crops, N_patches*D]}, 'imgs': Tensor[N_crops, 1, H, W]}
     """
     encoded_dir = os.path.expanduser(encoded_dir)
     files = sorted(glob.glob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
@@ -39,8 +40,8 @@ def load_songs_all_levels(encoded_dir, song_indices, split='train'):
                 if not mask.any():
                     continue
                 for lvl in range(6):
-                    emb = item['emb1'][lvl].float()          # [B, N_patches, D]
-                    acc[s]['embs'][lvl].append(emb[mask].mean(dim=1))  # mean-pool patches
+                    emb = item['emb1'][lvl].float()            # [B, N_patches, D]
+                    acc[s]['embs'][lvl].append(emb[mask].flatten(1))  # flatten → [n, N_patches*D]
                 acc[s]['imgs'].append(item['img1'].float()[mask])
     print()
 
