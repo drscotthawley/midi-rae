@@ -180,5 +180,7 @@ def ssm_main():
         sample_songs = random.sample(range(909), args.n_songs)
         ssm_survey(args.encoded_dir, sample_songs, split=args.split, out_dir=args.out_dir)
 
+    print("FINISHED")
+
 if __name__ == '__main__' and 'ipykernel' not in __import__('sys').modules:
     ssm_main()
