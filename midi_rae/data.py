@@ -465,10 +465,10 @@ class ConditionalFlowDataset(Dataset):
         unified_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca.pt')))
         use_unified   = len(unified_files) > 0
 
-        if use_unified and fine_raw:
-            use_unified = False   # force lazy raw-embedding path for fine levels
         if use_unified:
             pca_files = unified_files
+            if fine_raw:
+                use_unified = False   # coarse loads from pca_files; fine will use raw embeddings
         else:
             pca_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca20.pt')))
         assert pca_files, f"No {split}_chunk*_pca.pt or *_pca20.pt in {pca_dir}"
