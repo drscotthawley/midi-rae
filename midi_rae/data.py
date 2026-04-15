@@ -552,11 +552,12 @@ class ConditionalFlowDataset(Dataset):
                 f"Chunk count mismatch: {len(pca_files)} pca vs {len(raw_files)} raw"
             self._raw_files = raw_files
             raw0 = torch.load(raw_files[0], weights_only=False)
-            self._fine_level_dims = [raw0[0][emb_key][li].float().flatten(1).shape[1]
-                                      for li in fine_levels]
-            self._fine_n_comp    = self._fine_level_dims  # no PCA; full dims
-            self._fine_n_patches = [1] * len(fine_levels)
-            del raw0
+            _raw_embs = [raw0[0][emb_key][li].float() for li in fine_levels]
+            self._fine_n_patches  = [e.shape[1] for e in _raw_embs]   # n_patches per level
+            self._fine_n_comp     = [e.shape[2] for e in _raw_embs]   # embed_dim per patch
+            self._fine_level_dims = [np * nc for np, nc in
+                                     zip(self._fine_n_patches, self._fine_n_comp)]
+            del raw0, _raw_embs
             self._use_fine_pca    = False
             self._fine_chunk_idx  = -1
             self._fine_chunk_data = None

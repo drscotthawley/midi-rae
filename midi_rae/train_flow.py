@@ -3,10 +3,10 @@
 # %% auto #0
 __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLevelFlowModel', 'UNetFineFlowModel', 'FiLM',
            'ConditionalFineFlowModel', 'warp_time', 'sample_time', 'rk4_step', 'euler_step', 'sample_source',
-           'generate_samples_conditional', 'ann_repair', 'generate_samples', 'generate_samples_diffeq', 'mmd_rbf',
-           'wasserstein_score', 'eval_flow', 'eval_jacobian_norm_vs_t', 'plot_level_histograms', 'plot_level_scatter',
-           'decode_flow_to_piano_rolls', 'make_warmup_cosine_scheduler', 'make_warmup_cosine_restart_scheduler',
-           'train_flow_conditional', 'train_flow_main']
+           'generate_samples_conditional', 'ann_repair', 'do_pairing', 'generate_samples', 'generate_samples_diffeq',
+           'mmd_rbf', 'wasserstein_score', 'eval_flow', 'eval_jacobian_norm_vs_t', 'plot_level_histograms',
+           'plot_level_scatter', 'decode_flow_to_piano_rolls', 'make_warmup_cosine_scheduler',
+           'make_warmup_cosine_restart_scheduler', 'train_flow_conditional', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -732,6 +732,34 @@ def ann_repair(source, target, n_projections=1, chunk_size=None):
     return s_out, t_out
 
 
+def do_pairing(source, target, method='ann', n_projections=1, chunk_size=None):
+    """Unified source-target pairing wrapper.
+
+    method='ann':   approximate 1-D OT via random projections (fast, GPU-friendly)
+    method='exact': exact OT via POT's Earth Mover's Distance solver (O(n^3), CPU)
+    method='none':  no repairing (random pairing)
+    """
+    if method == 'none':
+        return source, target
+    if method == 'exact':
+        try:
+            import ot as pot
+            import numpy as np
+            x0 = source.reshape(source.shape[0], -1).float()
+            x1 = target.reshape(target.shape[0], -1).float()
+            a  = pot.unif(x0.shape[0])
+            b  = pot.unif(x1.shape[0])
+            M  = torch.cdist(x0.cpu(), x1.cpu()).pow(2).numpy()
+            pi = pot.emd(a, b, M)
+            i_s, i_t = np.divmod(np.random.choice(pi.size, p=(pi/pi.sum()).flatten(),
+                                                   size=source.shape[0], replace=False),
+                                  pi.shape[1])
+            return source[i_s], target[i_t]
+        except ImportError:
+            print("WARNING: POT not installed, falling back to ann pairing")
+    return ann_repair(source, target, n_projections=n_projections, chunk_size=chunk_size)
+
+
 # %% ../nbs/12_train_flow.ipynb #aa120007
 @torch.no_grad()
 def generate_samples(model, n_samples, dim, device='cpu',
@@ -1223,6 +1251,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     repair_every         = fc.get('repair_every', 1)
     n_repair_projections = fc.get('n_repair_projections', 1)
     repair_chunk_size    = fc.get('repair_chunk_size', None)
+    pairing_method       = fc.get('pairing_method', 'ann')  # 'ann' | 'exact' | 'none'
     all_source_scales    = list(fc.get('source_scales', [])) or None
     fine_levels          = list(fc.get('fine_levels', [4, 5]))
     fine_level_names     = [f'L{l}' for l in fine_levels]
@@ -1410,11 +1439,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                             level_dims=fine_level_dims)
 
             if repair_every and global_step % repair_every == 0:
-                noise_coarse, real_coarse = ann_repair(noise_coarse, real_coarse,
+                noise_coarse, real_coarse = do_pairing(noise_coarse, real_coarse,
+                                                        method=pairing_method,
                                                         n_projections=n_repair_projections,
                                                         chunk_size=repair_chunk_size)
                 if do_fine:
-                    noise_fine, real_fine = ann_repair(noise_fine, real_fine,
+                    noise_fine, real_fine = do_pairing(noise_fine, real_fine,
+                                                        method=pairing_method,
                                                         n_projections=n_repair_projections,
                                                         chunk_size=repair_chunk_size)
 

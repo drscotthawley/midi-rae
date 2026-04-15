@@ -105,6 +105,7 @@ flow:
   ema_warmup: true                                  # ramp EMA decay from near-0 to ema_eta (EDM-style)
   ema_start_epoch: 0                                # epoch at which eval switches to EMA model
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
+  pairing_method: exact                             # 'ann' | 'exact' (POT emd) | 'none'
   n_repair_projections: 4
   compile: true                                     # torch.compile the flow model(s) for potential speedup
   grad_checkpoint: true                             # gradient checkpointing on attention modules (trades compute for VRAM)
