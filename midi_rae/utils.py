@@ -197,20 +197,32 @@ def load_optimizer_state_partial(optimizer, ckpt_opt, device):
 
 # %% ../nbs/04_utils.ipynb #44938a52-0c59-4de8-90fe-97f4ab607632
 class EMAModel(nn.Module):
-    """Exponential moving average wrapper for stable teacher-student training."""
-    def __init__(self, model, eta=0.99, update_every=1, dtype=torch.bfloat16):
+    """Exponential moving average wrapper for stable teacher-student training.
+
+    If eta_warmup_steps > 0, uses the EDM-style ramping schedule:
+        eta_t = min(eta, (1 + step) / (10 + step))
+    which starts near 0 and asymptotes to eta, avoiding stale EMA early in training.
+    """
+    def __init__(self, model, eta=0.99, update_every=1, dtype=torch.bfloat16, eta_warmup_steps=0):
         super().__init__()
         self.eta, self.update_every, self.dtype = eta, update_every, dtype
+        self.eta_warmup_steps = eta_warmup_steps
         self.register_buffer('_steps', torch.tensor(0))
         self.ema = deepcopy(model).to(dtype)
         for p in self.ema.parameters(): p.requires_grad_(False)
 
+    def _current_eta(self):
+        if self.eta_warmup_steps <= 0: return self.eta
+        s = self._steps.item()
+        return min(self.eta, (1 + s) / (10 + s))
+
     def update(self, model):
         self._steps += 1
         if self._steps % self.update_every != 0: return
+        eta = self._current_eta()
         with torch.no_grad():
             for p_ema, p in zip(self.ema.parameters(), model.parameters()):
-                p_ema.data.mul_(self.eta).add_(p.data.to(p_ema.data), alpha=1 - self.eta)
+                p_ema.data.mul_(eta).add_(p.data.to(p_ema.data), alpha=1 - eta)
             for b_ema, b in zip(self.ema.buffers(), model.buffers()):
                 b_ema.data.copy_(b.data.to(b_ema.data))  # buffers copy directly, no EMA
 

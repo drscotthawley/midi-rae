@@ -99,10 +99,10 @@ flow:
   save_every: 10
   eval_every: 5
   viz_every: 5                                      # must be a multiple of eval_every
-  lr_restart_epochs: 500                            # T_0 for warm-restart schedule; periods double (T_mult=2)
-  lr_warmup_frac: 0.15                              # fraction of each cycle spent on linear warmup
+  lr_warmup_epochs: 200                             # linear warmup epochs before cosine decay begins
   grad_clip: 1.0
-  ema_eta: 0.97
+  ema_eta: 0.9999                                   # EMA target decay (ramped up from ~0 via EDM schedule)
+  ema_warmup: true                                  # ramp EMA decay from near-0 to ema_eta (EDM-style)
   ema_start_epoch: 0                                # epoch at which eval switches to EMA model
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
   n_repair_projections: 4

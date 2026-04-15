@@ -5,8 +5,8 @@ __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLeve
            'ConditionalFineFlowModel', 'warp_time', 'sample_time', 'rk4_step', 'euler_step', 'sample_source',
            'generate_samples_conditional', 'ann_repair', 'generate_samples', 'generate_samples_diffeq', 'mmd_rbf',
            'wasserstein_score', 'eval_flow', 'eval_jacobian_norm_vs_t', 'plot_level_histograms', 'plot_level_scatter',
-           'decode_flow_to_piano_rolls', 'make_warmup_cosine_restart_scheduler', 'train_flow_conditional',
-           'train_flow_main']
+           'decode_flow_to_piano_rolls', 'make_warmup_cosine_scheduler', 'make_warmup_cosine_restart_scheduler',
+           'train_flow_conditional', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -1125,6 +1125,22 @@ def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
 
 
 # %% ../nbs/12_train_flow.ipynb #kreanhkpdc
+def make_warmup_cosine_scheduler(optimizer, n_epochs, warmup_epochs=200, eta_min=1e-6):
+    """Linear warmup then cosine decay to eta_min (no restarts).
+
+    Inspired by torchcfm image experiments. warmup_epochs: epochs of linear ramp-up.
+    After warmup, LR decays as a cosine from base_lr → eta_min over the remaining epochs.
+    """
+    base_lr = optimizer.param_groups[0]['lr']
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return max(epoch, 1) / max(warmup_epochs, 1)
+        progress = (epoch - warmup_epochs) / max(1, n_epochs - warmup_epochs)
+        cos_val = 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+        return eta_min / base_lr + (1 - eta_min / base_lr) * cos_val
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0.15, eta_min=1e-6):
     """LambdaLR implementing true warm restarts: linear ramp-up → cosine decay per cycle.
     Periods double each restart (T_mult=2): T_0, T_0*2, T_0*4, ...
@@ -1199,10 +1215,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     eval_every           = min(viz_every, fc.get('eval_every', 10))
     eval_n_samples       = fc.get('eval_n_samples', 4000)
     steps_per_epoch      = fc.get('steps_per_epoch', None)
-    lr_restart_epochs    = fc.get('lr_restart_epochs', 500)
-    lr_warmup_frac       = fc.get('lr_warmup_frac', 0.15)
+    lr_warmup_epochs     = fc.get('lr_warmup_epochs', 200)
     grad_clip            = fc.get('grad_clip', 1.0)
-    ema_eta              = fc.get('ema_eta', 0.97)
+    ema_eta              = fc.get('ema_eta', 0.9999)
+    ema_warmup           = fc.get('ema_warmup', True)
     ema_start_epoch      = fc.get('ema_start_epoch', 0)
     repair_every         = fc.get('repair_every', 1)
     n_repair_projections = fc.get('n_repair_projections', 1)
@@ -1230,7 +1246,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     # In fine mode, keep coarse on CPU: frozen and only needed for piano_rolls_gen viz
     coarse_device = 'cpu' if mode == 'fine' else device
     coarse_model = coarse_model.to(coarse_device)
-    coarse_ema   = EMAModel(coarse_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+    ema_kw = dict(eta=ema_eta, update_every=1, dtype=torch.float32,
+                  eta_warmup_steps=(1 if ema_warmup else 0))
+    coarse_ema   = EMAModel(coarse_model, **ema_kw)
     if mode == 'coarse':
         coarse_model.train()
         fine_ema  = None
@@ -1239,13 +1257,13 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         coarse_model.eval()
         for p in coarse_model.parameters(): p.requires_grad_(False)
         fine_model = fine_model.to(device)
-        fine_ema   = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+        fine_ema   = EMAModel(fine_model, **ema_kw)
         optimizer  = optim.Adam(fine_model.parameters(), lr=lr)
     else:  # both: both models train; fine conditioned on real_coarse (teacher forcing)
         coarse_model.train()
         fine_model = fine_model.to(device)
         fine_model.train()
-        fine_ema  = EMAModel(fine_model, eta=ema_eta, update_every=1, dtype=torch.float32)
+        fine_ema  = EMAModel(fine_model, **ema_kw)
         optimizer = optim.Adam(
             list(coarse_model.parameters()) + list(fine_model.parameters()), lr=lr)
 
@@ -1262,8 +1280,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     _steps  = steps_per_epoch or len(dl)
 
     loss_fn   = nn.MSELoss()
-    scheduler = make_warmup_cosine_restart_scheduler(
-        optimizer, T_0=lr_restart_epochs, T_mult=2, warmup_frac=lr_warmup_frac, eta_min=1e-6)
+    scheduler = make_warmup_cosine_scheduler(
+        optimizer, n_epochs=n_epochs, warmup_epochs=lr_warmup_epochs, eta_min=1e-6)
 
     epoch_start = 1
     global_step = 0
