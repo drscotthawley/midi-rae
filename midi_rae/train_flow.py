@@ -1251,7 +1251,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     repair_every         = fc.get('repair_every', 1)
     n_repair_projections = fc.get('n_repair_projections', 1)
     repair_chunk_size    = fc.get('repair_chunk_size', None)
-    pairing_method       = fc.get('pairing_method', 'ann')  # 'ann' | 'exact' | 'none'
+    pairing_method          = fc.get('pairing_method', 'ann')  # 'ann' | 'exact' (POT emd) | 'none'
+    fine_structured_source  = fc.get('fine_structured_source', False)
+    fine_noise_sigma        = fc.get('fine_noise_sigma', 0.1)
     all_source_scales    = list(fc.get('source_scales', [])) or None
     fine_levels          = list(fc.get('fine_levels', [4, 5]))
     fine_level_names     = [f'L{l}' for l in fine_levels]
@@ -1434,9 +1436,40 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                          level_dims=coarse_level_dims)
             if do_fine:
                 real_fine  = real_fine.to(device)
-                noise_fine = sample_source((B, real_fine.size(1)), device=device,
-                                            source_scales=fine_source_scales,
-                                            level_dims=fine_level_dims)
+                if fine_structured_source:
+                    # Build structured source: for each fine level, tile the next-coarser
+                    # level's PCA embeddings spatially (×4 children per patch) and pad
+                    # remaining dims with small Gaussian noise.
+                    noise_parts = []
+                    offset = 0
+                    prev_pca = None   # running "coarser" patch embeddings [B, n_prev, d_prev]
+                    for j, (np_j, nc_j) in enumerate(
+                            zip(dataset.fine_n_patches, dataset.fine_n_comp)):
+                        d_j = np_j * nc_j
+                        if prev_pca is None:
+                            # L3 (coarsest fine): pure noise
+                            noise_parts.append(torch.randn(B, d_j, device=device))
+                        else:
+                            # tile prev_pca from n_prev → n_prev*4 patches
+                            n_prev, d_prev = prev_pca.shape[1], prev_pca.shape[2]
+                            tiled = prev_pca.unsqueeze(2).expand(
+                                B, n_prev, 4, d_prev).reshape(B, np_j, d_prev)
+                            if d_prev < nc_j:
+                                pad = torch.randn(B, np_j, nc_j - d_prev,
+                                                  device=device) * fine_noise_sigma
+                                src = torch.cat([tiled, pad], dim=2)
+                            else:
+                                src = tiled[:, :, :nc_j]
+                            noise_parts.append(src.reshape(B, d_j))
+                        # save current level's real PCA (from the fine batch) for next level
+                        real_slice = real_fine[:, offset:offset+d_j].reshape(B, np_j, nc_j)
+                        prev_pca = real_slice.detach()  # use real data during training
+                        offset += d_j
+                    noise_fine = torch.cat(noise_parts, dim=1)
+                else:
+                    noise_fine = sample_source((B, real_fine.size(1)), device=device,
+                                               source_scales=fine_source_scales,
+                                               level_dims=fine_level_dims)
 
             if repair_every and global_step % repair_every == 0:
                 noise_coarse, real_coarse = do_pairing(noise_coarse, real_coarse,
@@ -1637,6 +1670,7 @@ def _run_flow(cfg: DictConfig):
         emb_key           = fc.get('emb_key', 'emb1'),
         fine_pca_dir      = fine_pca_dir,
         fine_n_components = fine_n_components,
+        fine_raw          = fc.get('fine_raw', False),
     )
     print(f"  {len(dataset)} samples  coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
 

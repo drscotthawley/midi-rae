@@ -105,6 +105,9 @@ flow:
   ema_warmup: true                                  # ramp EMA decay from near-0 to ema_eta (EDM-style)
   ema_start_epoch: 0                                # epoch at which eval switches to EMA model
   repair_every: 1                                   # mini-batch OT re-pairing every N batches (0=disabled)
+  fine_raw: true                                    # use full embeddings for fine levels (not PCA)
+  fine_structured_source: true                      # tile coarser PCA as source x0 for fine flow
+  fine_noise_sigma: 0.1                             # noise std added to structured source
   pairing_method: exact                             # 'ann' | 'exact' (POT emd) | 'none'
   n_repair_projections: 4
   compile: true                                     # torch.compile the flow model(s) for potential speedup

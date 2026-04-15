@@ -451,7 +451,8 @@ class ConditionalFlowDataset(Dataset):
         fine_n_components: legacy: int or list; determines suffix for fine_pca files
     """
     def __init__(self, pca_dir, encoded_dir=None, pca_levels=None, fine_levels=None,
-                 emb_key='emb1', split='train', fine_pca_dir=None, fine_n_components=None):
+                 emb_key='emb1', split='train', fine_pca_dir=None, fine_n_components=None,
+                 fine_raw=False):
         import glob as _glob
         pca_dir    = os.path.expandvars(os.path.expanduser(str(pca_dir)))
         pca_levels = pca_levels or ['L0', 'L1', 'L2', 'L3']
@@ -464,6 +465,8 @@ class ConditionalFlowDataset(Dataset):
         unified_files = sorted(_glob.glob(os.path.join(pca_dir, f'{split}_chunk*_pca.pt')))
         use_unified   = len(unified_files) > 0
 
+        if use_unified and fine_raw:
+            use_unified = False   # force lazy raw-embedding path for fine levels
         if use_unified:
             pca_files = unified_files
         else:
