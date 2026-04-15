@@ -88,7 +88,7 @@ flow:
   n_heads: 8                                        # coarse attention heads (coarse_h_dim must be divisible)
   t_dim: 64                                         # sinusoidal time embedding dim
   n_epochs: 100000
-  lr: 1e-3
+  lr: 3e-4
   batch_size: 256                                   # fallback if coarse/fine specific not set
   coarse_batch_size: 2048                           # coarse flow uses ~10% GPU; large batches improve minibatch-OT
   fine_batch_size: 256                              # fine flow is VRAM-limited
