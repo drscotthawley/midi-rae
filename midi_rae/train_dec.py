@@ -68,10 +68,11 @@ def setup_dataloaders(cfg, preencoded=False):
     else:
         train_ds = AnchorDataset(image_dataset_dir=cfg.data.path, split='train', aug_y_max=cfg.training.max_shift_y)
         val_ds   = AnchorDataset(image_dataset_dir=cfg.data.path, split='val',  aug_y_max=cfg.training.max_shift_y)
-        train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=nw[0], pin_memory=True, drop_last=True)
-        val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=nw[1], pin_memory=True, drop_last=True)
+        train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=nw[0],
+                              pin_memory=True, drop_last=True, persistent_workers=(nw[0]>0))
+        val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=nw[1],
+                              pin_memory=True, drop_last=True, persistent_workers=(nw[1]>0))
     return train_dl, val_dl
-
 
 # %% ../nbs/09_train_dec.ipynb #b221cde1
 def setup_models(cfg, device, preencoded, verbose=True): 
