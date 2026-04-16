@@ -38,6 +38,9 @@ encoder_ckpt: $HOME/runs/midi-rae/e2e_recon_EVVFa3/checkpoints/SwinEncoder_e2e_r
 preencode:
   output_dir: $HOME/datasets/POP909_encoded_e2e_EVVFa3
 
+fitpca:
+  output_dir: $HOME/datasets/POP909_pca_e2e_EVVFa3
+
 wandb:
   project: midi-rae-e2e-recon        # separate from SSL encoder runs
   flow_project: midi-rae-e2e-flow    # if we ever flow in this latent space
