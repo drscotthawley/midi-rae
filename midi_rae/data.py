@@ -616,12 +616,17 @@ class ConditionalFlowChunkSampler(torch.utils.data.Sampler):
 # %% ../nbs/01_data.ipynb #c663dc25
 class DINOv2Dataset(AnchorDataset):
     """AnchorDataset variant for DINOv2 encoding: crops 128->126px (9x14 patches) and repeats to 3 channels."""
+    # ImageNet mean/std that DINOv2 was trained with
+    _mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    _std  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
     def __getitem__(self, idx):
-        img_1ch = super().__getitem__(idx)["img"]  # (1, 128, 128)
-        img_1ch = img_1ch[:, 1:-1, 1:-1]           # (1, 126, 126) -- 9x9 grid of 14px patches
-        img_3ch = img_1ch.repeat(3, 1, 1)           # (3, 126, 126) -- DINOv2 expects RGB
-        return {"img": img_3ch, "img_target": img_1ch}  # img_target is 1ch reconstruction target
+        img_1ch = super().__getitem__(idx)["img"]  # (1, 128, 128), range [0,1]
+        img_1ch = img_1ch[:, 1:-1, 1:-1]           # (1, 126, 126)
+        img_3ch = img_1ch.repeat(3, 1, 1)           # (3, 126, 126)
+        img_3ch = (img_3ch - self._mean) / self._std  # ImageNet normalization for DINOv2
+        return {"img": img_3ch, "img_target": img_1ch}  # img_target stays [0,1] for BCE loss
 
