@@ -6,7 +6,7 @@ __all__ = ['VelocityNet', 'sinusoidal_time_emb', 'PerLevelFlowModel', 'CrossLeve
            'generate_samples_conditional', 'ann_repair', 'do_pairing', 'generate_samples', 'generate_samples_diffeq',
            'mmd_rbf', 'wasserstein_score', 'eval_flow', 'eval_jacobian_norm_vs_t', 'plot_level_histograms',
            'plot_level_scatter', 'decode_flow_to_piano_rolls', 'make_warmup_cosine_scheduler',
-           'make_warmup_cosine_restart_scheduler', 'train_flow_conditional']
+           'make_warmup_cosine_restart_scheduler', 'train_flow_conditional', 'train_flow_main']
 
 # %% ../nbs/12_train_flow.ipynb #aa120002
 import gc
@@ -1648,4 +1648,136 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     if (wandb.run is not None): wandb.finish()
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
+
+
+# %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
+#| eval: false
+import hydra
+from omegaconf import DictConfig
+
+def _run_flow(cfg: DictConfig):
+    """Build coarse and (if needed) fine model, then call train_flow_conditional."""
+    from midi_rae.data import ConditionalFlowDataset
+    from midi_rae.utils import load_checkpoint
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"device = {device}")
+
+    fc      = cfg.flow
+    mode    = fc.get('mode', 'fine')
+    do_fine = mode in ('fine', 'both')
+    fine_levels = list(fc.get('fine_levels', [4, 5]))
+
+    fine_pca_dir      = fc.get('fine_pca_dir', None)
+    fine_n_components = fc.get('fine_n_components', None)
+    if fine_pca_dir:
+        fine_pca_dir = os.path.expandvars(os.path.expanduser(str(fine_pca_dir)))
+        fine_n_components = (list(fine_n_components) if hasattr(fine_n_components, '__iter__')
+                             else int(fine_n_components)) if fine_n_components is not None else None
+
+    dataset = ConditionalFlowDataset(
+        pca_dir           = fc.pca_dir,
+        encoded_dir       = fc.get('encoded_dir', None),
+        pca_levels        = list(fc.get('pca_levels', ['L0', 'L1', 'L2'])),
+        fine_levels       = fine_levels,
+        emb_key           = fc.get('emb_key', 'emb1'),
+        fine_pca_dir      = fine_pca_dir,
+        fine_n_components = fine_n_components,
+        fine_raw          = fc.get('fine_raw', False),
+    )
+    print(f"  {len(dataset)} samples  coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
+
+    coarse_level_dims = dataset.coarse_level_dims
+    coarse_n_comp     = dataset.coarse_n_comp   # inferred from data shape — no config needed
+
+    coarse_model = CrossLevelFlowModel(
+        level_dims    = coarse_level_dims,
+        level_n_comp  = coarse_n_comp,
+        h_dim         = fc.get('coarse_h_dim', fc.h_dim),
+        n_layers      = fc.get('coarse_n_layers', fc.n_layers),
+        n_attn_layers = fc.get('n_attn_layers', 2),
+        n_heads       = fc.get('n_heads', 8),
+        t_dim         = fc.get('t_dim', 64),
+    )
+    n_params = sum(p.numel() for p in coarse_model.parameters())
+    print(f"  CrossLevelFlowModel: {n_params:,} parameters  patch_counts={coarse_model.level_n_patches}")
+    coarse_ckpt = fc.get('coarse_ckpt', None)
+    if coarse_ckpt and str(coarse_ckpt).lower() not in ('none', 'null', ''):
+        coarse_ckpt  = os.path.expandvars(os.path.expanduser(str(coarse_ckpt)))
+        coarse_model = load_checkpoint(coarse_model, coarse_ckpt)
+        print(f"  Loaded coarse model from {coarse_ckpt}")
+    elif mode != 'coarse':
+        print("  WARNING: coarse_ckpt not set — coarse model starts from random weights")
+
+    fine_model = None
+    if do_fine:
+        fine_n_comp = dataset.fine_n_comp  # inferred from data shape
+        fine_model_type = fc.get('fine_model_type', 'mlp')
+        if fine_model_type == 'unet':
+            fine_model = UNetFineFlowModel(
+                cond_dims      = coarse_level_dims,
+                target_dims    = dataset.fine_level_dims,
+                target_n_comp  = fine_n_comp,
+                h_dim          = fc.h_dim,
+                t_dim          = fc.get('t_dim', 64),
+            )
+            n_params = sum(p.numel() for p in fine_model.parameters())
+            print(f"  UNetFineFlowModel: {n_params:,} parameters")
+        else:
+            fine_model = ConditionalFineFlowModel(
+                cond_dims             = coarse_level_dims,
+                target_dims           = dataset.fine_level_dims,
+                target_n_comp         = fine_n_comp,
+                cond_n_comp           = coarse_n_comp,
+                h_dim                 = fc.h_dim,
+                n_layers              = fc.n_layers,
+                t_dim                 = fc.get('t_dim', 64),
+                n_fine_attn_layers    = fc.get('fine_attn_layers', 2),
+                n_lateral_attn_layers = fc.get('fine_lateral_attn_layers', 0),
+                grad_checkpoint       = fc.get('grad_checkpoint', False),
+            )
+            n_params = sum(p.numel() for p in fine_model.parameters())
+            print(f"  ConditionalFineFlowModel: {n_params:,} parameters")
+
+    decoder, pca_models = None, None
+    if do_fine:
+        decoder_ckpt = os.path.expandvars(os.path.expanduser(str(cfg.generate.get('decoder_ckpt', '') or '')))
+        if decoder_ckpt:
+            from pathlib import Path
+            from midi_rae.swin import SwinDecoder
+            from midi_rae.train_dec import load_pca_models
+            m = cfg.model
+            decoder = SwinDecoder(
+                img_height=cfg.data.image_size, img_width=cfg.data.image_size,
+                patch_h=m.patch_h, patch_w=m.patch_w, out_channels=cfg.data.in_channels,
+                embed_dim=m.embed_dim, depths=list(m.dec_depths),
+                num_heads=list(m.dec_num_heads), window_size=m.window_size,
+                mlp_ratio=m.mlp_ratio, drop_path_rate=0.0)
+            decoder = load_checkpoint(decoder, decoder_ckpt).to(device).eval()
+            for p in decoder.parameters(): p.requires_grad_(False)
+            if getattr(dataset, '_use_fine_pca', False):
+                pca_dir    = Path(os.path.expandvars(os.path.expanduser(str(fc.pca_dir))))
+                pca_models = load_pca_models(str(pca_dir), len(coarse_level_dims) + len(fine_levels))
+                print(f"  Loaded decoder + {len(pca_models)} PCA models for piano roll viz")
+            else:
+                print("  Decoder loaded; raw mode — pca_models=None for viz")
+
+    if fc.get('compile', False):
+        import midi_rae.train_flow as _tf
+        print("  torch.compile: compiling flow model(s) and ann_repair...")
+        coarse_model  = torch.compile(coarse_model)
+        if fine_model is not None:
+            fine_model = torch.compile(fine_model, backend='aot_eager')
+        _tf.ann_repair = torch.compile(_tf.ann_repair)
+        print("  torch.compile: done")
+
+    train_flow_conditional(coarse_model, fine_model, dataset, cfg,
+                           device=device, decoder=decoder, pca_models=pca_models)
+
+
+@hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
+def train_flow_main(cfg: DictConfig):
+    _run_flow(cfg)
+
+if __name__ == '__main__':
+    train_flow_main()
 
