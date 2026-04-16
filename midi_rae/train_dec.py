@@ -87,7 +87,9 @@ def setup_models(cfg, device, preencoded, verbose=True):
             encoder = ViTEncoder(cfg.data.in_channels, cfg.data.image_size, cfg.model.patch_size,
                                  cfg.model.dim, cfg.model.depth, cfg.model.heads).to(device)
             
-        encoder = load_checkpoint(encoder, cfg.get('encoder_ckpt', f'checkpoints/{encoder.__class__.__name__}__best.pt'))
+        _enc_ckpt = cfg.get('encoder_ckpt', f'checkpoints/{encoder.__class__.__name__}__best.pt')
+        if _enc_ckpt is not None:
+            encoder = load_checkpoint(encoder, _enc_ckpt)
         if cfg.training.get('enc_ft_lr', 0) <=0: 
             cjprint("Freezing Encoder ❄️ ❄️ ❄️",color='blue')
             encoder.eval()  # frozen
@@ -107,14 +109,11 @@ def setup_models(cfg, device, preencoded, verbose=True):
                          cfg.model.patch_size, cfg.model.dim, 
                          cfg.model.get('dec_depth', 4), cfg.model.get('dec_heads', 8)).to(device)
 
-
-    #encoder = torch.compile(encoder)  # takes too long, doesn't speed up much
-    #decoder = torch.compile(decoder)
     if verbose:
-        cjprint("\n** Models:",encoder.__class__.__name__, decoder.__class__.__name__, color="cyan")
+        cjprint("\n** Models:",encoder.__class__.__name__ if encoder else "None", decoder.__class__.__name__, color="cyan")
         cjprint(f"Decoder Total, Trainable: {', '.join(f'{x:,}' for x in param_count(decoder))}", color="cyan")
     
-    return encoder, decoder 
+    return encoder, decoder
 
 # %% ../nbs/09_train_dec.ipynb #61dd1ef1
 def setup_tstate(cfg, device, decoder, encoder=None, extra_params=None):
