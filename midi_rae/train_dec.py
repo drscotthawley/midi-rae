@@ -204,7 +204,8 @@ def train_step(epoch, enc_out, img_real, decoder,
                            mask_levels=cfg.training.get('mask_levels', None),
                            mask_tokens=mask_tokens)
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights)
+        loss_dict = calc_dec_loss(decoder, enc_out, img_real, pos_weight=cfg.training.get('pos_weight',1.0), note_weights=note_weights,
+                                  label_smooth=cfg.training.get('label_smooth', 0.0))
     tstate.scaler_dec.scale(loss_dict['dec']).backward()
     tstate.scaler_dec.unscale_(tstate.opt_dec)
     torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)

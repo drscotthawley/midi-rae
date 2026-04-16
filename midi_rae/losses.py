@@ -182,16 +182,18 @@ def calc_mae_loss(recon_patches, img, enc_out, lambda_visible=0.1,
 
 # %% ../nbs/03_losses.ipynb #f9ad6db1-0f0e-4e79-82e5-1f171c903561
 def calc_dec_loss(decoder, enc_out, img_real, 
-                  pos_weight=1.0, # weighting positive (white pixels) to negative (black); value tuned experimentally
+                  pos_weight=1.0,   # weighting positive (white pixels) to negative (black); value tuned experimentally
                   note_weights=None,
                   lambda_mse=0.2,   # tiny bit of MSE to blur and let nearby pixels 'talk to each other' and resolve off-by-one errors
+                  label_smooth=0.0, # label smoothing to prevent logit explosion / BCE spikes
                   ): 
-    "decoder loss function)"
+    "decoder loss function"
     img_recon = decoder(enc_out)
-    pos_weight = torch.tensor([pos_weight], device=img_real.device) # white pixels more important than black
+    if label_smooth > 0:
+        img_real = img_real * (1 - label_smooth) + label_smooth * 0.5
+    pos_weight = torch.tensor([pos_weight], device=img_real.device)
     loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real, pos_weight=pos_weight, weight=note_weights)
-    img_recon = torch.sigmoid(img_recon)                      # needs sigmoid to -> (0,1)
-    loss_mse = F.mse_loss(img_recon, img_real) if lambda_mse > 0 else 0.0             
-    loss_dec = loss_bce  + lambda_mse * loss_mse
-    return {'dec':loss_dec, 'bce':loss_bce.item(), 'recon':img_recon.detach(), 'mse':to_scalar(loss_mse)}
-
+    img_recon = torch.sigmoid(img_recon)
+    loss_mse = F.mse_loss(img_recon, img_real) if lambda_mse > 0 else 0.0
+    loss_dec = loss_bce + lambda_mse * loss_mse
+    return {'dec': loss_dec, 'bce': loss_bce.item(), 'recon': img_recon.detach(), 'mse': to_scalar(loss_mse)}
