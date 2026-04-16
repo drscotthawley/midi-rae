@@ -23,8 +23,9 @@ training:
   pca_aug: false
 
   pos_weight: 2.0
-  batch_size: 256
-  dec_batch_size: 256
+  batch_size: 1024
+  dec_batch_size: 1024
+  num_workers: [8, 4]
 
   # No init checkpoint — train from scratch end-to-end
   dec_init_ckpt: ~
