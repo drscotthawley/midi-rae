@@ -41,6 +41,16 @@ preencode:
 fitpca:
   output_dir: $HOME/datasets/POP909_pca_e2e_EVVFa3
 
+flow:
+  pca_dir:      $HOME/datasets/POP909_pca_e2e_EVVFa3
+  encoded_dir:  $HOME/datasets/POP909_encoded_e2e_EVVFa3
+  coarse_ckpt:  ~   # no pretrained coarse model; train fine with teacher forcing
+  fine_teacher_forcing: true
+
+generate:
+  decoder_ckpt: $HOME/runs/midi-rae/e2e_recon_EVVFa3/checkpoints/SwinDecoder_e2e_recon_EVVFa3_best.pt
+  pca_dir:      $HOME/datasets/POP909_pca_e2e_EVVFa3
+
 wandb:
   project: midi-rae-e2e-recon        # separate from SSL encoder runs
   flow_project: midi-rae-e2e-flow    # if we ever flow in this latent space
