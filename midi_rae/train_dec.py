@@ -254,12 +254,16 @@ def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, mask_levels=None, m
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
 
 # %% ../nbs/09_train_dec.ipynb #05b40d52
-def add_noise_to_enc_out(enc_out, noise_std):
-    "Add Gaussian noise to all level embeddings (simulates flow model imperfection at inference)."
-    if noise_std <= 0: return enc_out
-    new_levels = [PatchState(emb=lvl.emb + torch.randn_like(lvl.emb) * noise_std,
-                             pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask)
-                  for lvl in enc_out.patches.levels]
+def add_noise_to_enc_out(enc_out, noise_max):
+    """Add Gaussian noise with random per-sample std to all level embeddings.
+    emb_noise_std ~ Uniform(0, noise_max) per sample — trains decoder across a range of corruption levels."""
+    if noise_max <= 0: return enc_out
+    new_levels = []
+    for lvl in enc_out.patches.levels:
+        B, N, D = lvl.emb.shape
+        emb_noise_std = noise_max * torch.rand(B, 1, 1, device=lvl.emb.device)  # random per sample
+        new_levels.append(PatchState(emb=lvl.emb + emb_noise_std * torch.randn_like(lvl.emb),
+                                     pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask))
     return EncoderOutput(patches=HierarchicalPatchState(levels=new_levels),
                          full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
 
@@ -340,9 +344,9 @@ def train(cfg: DictConfig):
         del _enc
 
     pca_models = None
-    pca_aug_levels   = cfg.training.get('pca_aug_levels', 6)
-    pca_aug_prob     = cfg.training.get('pca_aug_prob', 1.0)
-    emb_noise_std    = cfg.training.get('emb_noise_std', 0.0)  # latent noise applied regardless of PCA
+    pca_aug_levels  = cfg.training.get('pca_aug_levels', 6)
+    pca_aug_prob    = cfg.training.get('pca_aug_prob', 1.0)
+    emb_noise_max   = cfg.training.get('emb_noise_max', 0.0)  # max latent noise std; actual emb_noise_std ~ Uniform(0, emb_noise_max) per sample
     if cfg.training.get('pca_aug', False):
         raw_npl = cfg.training.get('pca_n_per_lvl', None)
         n_per_lvl = list(raw_npl) if raw_npl is not None else None
@@ -354,8 +358,8 @@ def train(cfg: DictConfig):
                                      fine_levels=fine_levels, fine_n_components=fine_n_components,
                                      n_per_lvl=n_per_lvl)
         cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, n_per_lvl={n_per_lvl}, prob={pca_aug_prob}, dir={cfg.training.pca_dir}", color='magenta')
-    if emb_noise_std > 0:
-        cjprint(f"Latent noising enabled: emb_noise_std={emb_noise_std}", color='magenta')
+    if emb_noise_max > 0:
+        cjprint(f"Latent noising enabled: emb_noise_max={emb_noise_max} (emb_noise_std ~ Uniform(0, max) per sample)", color='magenta')
 
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
                           extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
@@ -394,8 +398,7 @@ def train(cfg: DictConfig):
                                                                         allow_grad=(tstate.opt_enc is not None))
             if pca_models is not None and torch.rand(1).item() < pca_aug_prob:
                 enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=0.0)
-            if emb_noise_std > 0:
-                enc_out = add_noise_to_enc_out(enc_out, emb_noise_std)
+            enc_out = add_noise_to_enc_out(enc_out, emb_noise_max)
             losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
 
