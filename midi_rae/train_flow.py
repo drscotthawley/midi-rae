@@ -1107,39 +1107,45 @@ def _wandb_log_jacobian(log_dict, eval_model, sample_data, n_t=20, n_epsilon=4,
 
 # %% ../nbs/12_train_flow.ipynb #9jf9xpgrqr
 @torch.no_grad()
-def decode_flow_to_piano_rolls(coarse_pca, fine_emb, pca_models,
+def decode_flow_to_piano_rolls(coarse_emb, fine_emb, pca_models,
                                 coarse_level_dims, fine_level_dims, fine_levels_idx,
-                                cfg, decoder, device, n_samples=16):
-    """Decode flow-generated coarse PCA + fine embeddings directly to piano rolls (no HMEP).
-    coarse_pca:  (B, sum_coarse_dims) PCA-compressed coarse embeddings
-    fine_emb:    (B, sum_fine_dims) fine embeddings in PCA space (n_components per patch)
-    pca_models:  dict {level_idx: sklearn PCA} — must include fine levels if fine PCA was used
-    fine_levels_idx: list of level indices e.g. [4, 5]
+                                cfg, decoder, device, n_samples=16,
+                                coarse_n_patches=None, fine_n_patches=None):
+    """Decode flow-generated coarse + fine embeddings to piano rolls (no HMEP).
+    coarse_emb:      (B, sum_coarse_dims) — PCA-compressed or raw coarse embeddings
+    fine_emb:        (B, sum_fine_dims)   — PCA-compressed or raw fine embeddings
+    pca_models:      dict {level_idx: sklearn PCA} or None. If None or level missing,
+                     embeddings are treated as already in full embedding space.
+    coarse_n_patches: list of n_patches per coarse level (required for raw mode)
+    fine_n_patches:   list of n_patches per fine level (required for raw mode)
     """
     from midi_rae.generate import build_patch_states, batch_patch_states, build_enc_out, make_grid_pos, binarize
     from midi_rae.core import PatchState
 
-    B = min(n_samples, coarse_pca.shape[0])
-    coarse_pca = coarse_pca[:B].float()
+    B = min(n_samples, coarse_emb.shape[0])
+    coarse_emb = coarse_emb[:B].float()
     fine_emb   = fine_emb[:B].float()
 
-    # Inverse PCA → coarse PatchState list
-    states = [build_patch_states(coarse_pca[b], pca_models, coarse_level_dims, device)
+    # Coarse levels → PatchState list (PCA inverse or raw)
+    states = [build_patch_states(coarse_emb[b], coarse_level_dims, device,
+                                 pca_models=pca_models, n_patches_list=coarse_n_patches)
               for b in range(B)]
     all_levels = batch_patch_states(states)
 
-    # Fine levels: inverse-PCA from compressed space → full embedding space, then build PatchStates
+    # Fine levels
     offset = 0
     for j, li in enumerate(fine_levels_idx):
-        d         = fine_level_dims[j]          # n_components * n_patches (PCA-compressed)
-        n_patches = d // (d // (4 ** li))       # infer n_patches
-        n_patches = 4 ** li
-        n_comp    = d // n_patches               # PCA components per patch
-        flat_pca  = fine_emb[:, offset:offset+d].reshape(B * n_patches, n_comp).cpu().numpy()
-        if li in pca_models:
-            flat_full = pca_models[li].inverse_transform(flat_pca)   # (B*n_patches, D_full)
+        d = fine_level_dims[j]
+        if pca_models is not None and li in pca_models:
+            n_patches = d // pca_models[li].n_components_
+            n_comp    = pca_models[li].n_components_
+            flat      = fine_emb[:, offset:offset+d].reshape(B * n_patches, n_comp).cpu().numpy()
+            flat_full = pca_models[li].inverse_transform(flat)
         else:
-            flat_full = flat_pca                                       # no PCA: use as-is
+            assert fine_n_patches is not None, f"fine_n_patches required for raw fine level {li}"
+            n_patches = fine_n_patches[j]
+            n_comp    = d // n_patches
+            flat_full = fine_emb[:, offset:offset+d].reshape(B * n_patches, n_comp).cpu().numpy()
         emb = torch.tensor(flat_full, dtype=torch.float32).reshape(B, n_patches, -1).to(device)
         pos = make_grid_pos(n_patches, device)
         all_levels.append(PatchState(emb=emb, pos=pos,
@@ -1563,13 +1569,17 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                     _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
                                    epoch, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
                                    level_n_components=dataset.coarse_n_comp, pca_cache=scatter_pca_cache)
-                if do_fine and decoder is not None and pca_models is not None:
+                if do_fine and decoder is not None:
                     n_rolls = 64
-                    # piano_rolls_real: decode real PCA embeddings directly (upper-bound quality check)
+                    _dec_kw = dict(pca_models=pca_models,
+                                   coarse_n_patches=dataset.coarse_n_patches,
+                                   fine_n_patches=dataset.fine_n_patches)
+                    # piano_rolls_real: decode real embeddings directly (upper-bound quality check)
                     real_rolls = decode_flow_to_piano_rolls(
-                        real_coarse_eval[:n_rolls].cpu(), real_fine_eval[:n_rolls].cpu(), pca_models,
-                        coarse_level_dims, fine_level_dims, fine_levels_idx,
-                        cfg, decoder, device, n_samples=n_rolls)
+                        real_coarse_eval[:n_rolls].cpu(), real_fine_eval[:n_rolls].cpu(),
+                        coarse_level_dims=coarse_level_dims, fine_level_dims=fine_level_dims,
+                        fine_levels_idx=fine_levels_idx, cfg=cfg, decoder=decoder,
+                        device=device, n_samples=n_rolls, **_dec_kw)
                     real_grid = make_grid(real_rolls[:n_rolls], nrow=8, normalize=True)
                     log_dict['media/piano_rolls_real'] = wandb.Image(real_grid, caption=f'Real Epoch {epoch}')
                     # piano_rolls_gen: loop over EMA and normal models for comparison
@@ -1588,9 +1598,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         c_model.to('cpu')
                         gen_coarse_64, gen_fine_64 = gen_coarse_64.cpu(), gen_fine_64.cpu()
                         rolls = decode_flow_to_piano_rolls(
-                            gen_coarse_64, gen_fine_64, pca_models,
-                            coarse_level_dims, fine_level_dims, fine_levels_idx,
-                            cfg, decoder, device, n_samples=n_rolls)
+                            gen_coarse_64, gen_fine_64,
+                            coarse_level_dims=coarse_level_dims, fine_level_dims=fine_level_dims,
+                            fine_levels_idx=fine_levels_idx, cfg=cfg, decoder=decoder,
+                            device=device, n_samples=n_rolls, **_dec_kw)
                         grid = make_grid(rolls[:n_rolls], nrow=8, normalize=True)
                         log_dict[f'media/piano_rolls_gen_{net_tag}'] = wandb.Image(grid, caption=f'{net_tag} Epoch {epoch}')
                         if fine_teacher_forcing:
@@ -1608,9 +1619,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                     t_tf  = torch.full((n_rolls, 1), ts_tf[i].item(), device=device)
                                     y_fine_tf = y_fine_tf + f_model(y_fine_tf, t_tf, tf_coarse) * dt_tf
                             tf_rolls = decode_flow_to_piano_rolls(
-                                tf_coarse.cpu(), y_fine_tf.cpu(), pca_models,
-                                coarse_level_dims, fine_level_dims, fine_levels_idx,
-                                cfg, decoder, device, n_samples=n_rolls)
+                                tf_coarse.cpu(), y_fine_tf.cpu(),
+                                coarse_level_dims=coarse_level_dims, fine_level_dims=fine_level_dims,
+                                fine_levels_idx=fine_levels_idx, cfg=cfg, decoder=decoder,
+                                device=device, n_samples=n_rolls, **_dec_kw)
                             tf_grid = make_grid(tf_rolls[:n_rolls], nrow=8, normalize=True)
                             log_dict[f'media/piano_rolls_tf_{net_tag}'] = wandb.Image(tf_grid, caption=f'TF {net_tag} Epoch {epoch}')
                 gc.collect()

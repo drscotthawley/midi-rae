@@ -32,12 +32,23 @@ def inverse_pca_level(pca, flat_vec, n_patches, device):
     emb_np = pca.inverse_transform(pca_codes)
     return torch.tensor(emb_np, dtype=torch.float32, device=device).unsqueeze(0)
 
-def build_patch_states(flow_vec, pca_models, level_dims, device):
-    """Convert flat flow output into a list of PatchState, one per level."""
+def build_patch_states(flow_vec, level_dims, device, pca_models=None, n_patches_list=None):
+    """Convert flat flow output into a list of PatchState, one per level.
+    pca_models: optional dict {i: sklearn PCA}. If None or level missing, embeddings
+                are treated as already in full space (raw mode). n_patches_list must
+                be provided in raw mode so we know how to reshape each level."""
     states, offset = [], 0
     for i, level_dim in enumerate(level_dims):
-        n_patches = level_dim // pca_models[i].n_components_
-        emb = inverse_pca_level(pca_models[i], flow_vec[offset:offset+level_dim], n_patches, device)
+        if pca_models is not None and i in pca_models:
+            n_patches = level_dim // pca_models[i].n_components_
+            emb = inverse_pca_level(pca_models[i], flow_vec[offset:offset+level_dim], n_patches, device)
+        else:
+            # Raw: embeddings already in full space; n_patches from n_patches_list
+            assert n_patches_list is not None, f"n_patches_list required for raw (non-PCA) level {i}"
+            n_patches = n_patches_list[i]
+            n_comp = level_dim // n_patches
+            emb = flow_vec[offset:offset+level_dim].reshape(n_patches, n_comp)
+            emb = emb.to(device).unsqueeze(0)
         pos = make_grid_pos(n_patches, device)
         states.append(PatchState(emb=emb, pos=pos,
                                   non_empty=torch.ones(1, n_patches, device=device),
