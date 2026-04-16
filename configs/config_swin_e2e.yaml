@@ -31,9 +31,12 @@ training:
   # No init checkpoint — train from scratch end-to-end
   dec_init_ckpt: ~
 
-# No pre-encoding — encode on the fly
+# Pre-encoding: use trained e2e encoder checkpoint
 preencoded: false
-encoder_ckpt: ~   # start from random encoder weights
+encoder_ckpt: $HOME/runs/midi-rae/e2e_recon_EVVFa3/checkpoints/SwinEncoder_e2e_recon_EVVFa3_best.pt
+
+preencode:
+  output_dir: $HOME/datasets/POP909_encoded_e2e_EVVFa3
 
 wandb:
   project: midi-rae-e2e-recon        # separate from SSL encoder runs
