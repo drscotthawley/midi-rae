@@ -18,6 +18,7 @@ data:
 
 training:
   enc_ft_lr: 0        # DINOv2 is always frozen
+  emb_noise_std: 0.05  # latent noise during decoder training (flow compatibility)
   dec_lr: 1e-3
   dec_epochs: 100
   dec_batch_size: 256

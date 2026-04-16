@@ -22,6 +22,7 @@ training:
   emb_mask_ratio: 0.0
   pca_aug: false
 
+  emb_noise_std: 0.05   # latent noise during decoder training (flow compatibility)
   pos_weight: 2.0
   batch_size: 1024
   dec_batch_size: 1024

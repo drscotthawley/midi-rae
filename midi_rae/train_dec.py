@@ -4,7 +4,8 @@
 
 # %% auto #0
 __all__ = ['setup_dataloaders', 'setup_models', 'DINOv2Encoder', 'setup_tstate', 'get_embeddings_batch', 'train_step',
-           'MaskTokens', 'mask_enc_out', 'load_pca_models', 'pca_roundtrip_enc_out', 'train', 'train_dec_main']
+           'MaskTokens', 'mask_enc_out', 'add_noise_to_enc_out', 'load_pca_models', 'pca_roundtrip_enc_out', 'train',
+           'train_dec_main']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
 import sys
@@ -252,6 +253,16 @@ def mask_enc_out(enc_out, mask_ratio=0.0, mr_level_fac=1.25, mask_levels=None, m
         patches=HierarchicalPatchState(levels=new_levels),
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
 
+# %% ../nbs/09_train_dec.ipynb #05b40d52
+def add_noise_to_enc_out(enc_out, noise_std):
+    "Add Gaussian noise to all level embeddings (simulates flow model imperfection at inference)."
+    if noise_std <= 0: return enc_out
+    new_levels = [PatchState(emb=lvl.emb + torch.randn_like(lvl.emb) * noise_std,
+                             pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask)
+                  for lvl in enc_out.patches.levels]
+    return EncoderOutput(patches=HierarchicalPatchState(levels=new_levels),
+                         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
+
 # %% ../nbs/09_train_dec.ipynb #kieqb1ep0mc
 import pickle, glob as _glob
 
@@ -316,7 +327,6 @@ def train(cfg: DictConfig):
 
     pos_cache = None
     if preencoded:
-        # Build a temporary encoder to extract the fixed positional grid
         from midi_rae.swin import SwinEncoder
         _enc = SwinEncoder(
             img_height=cfg.data.image_size, img_width=cfg.data.image_size,
@@ -332,7 +342,7 @@ def train(cfg: DictConfig):
     pca_models = None
     pca_aug_levels   = cfg.training.get('pca_aug_levels', 6)
     pca_aug_prob     = cfg.training.get('pca_aug_prob', 1.0)
-    pca_aug_noise_std = cfg.training.get('pca_aug_noise_std', 0.0)
+    emb_noise_std    = cfg.training.get('emb_noise_std', 0.0)  # latent noise applied regardless of PCA
     if cfg.training.get('pca_aug', False):
         raw_npl = cfg.training.get('pca_n_per_lvl', None)
         n_per_lvl = list(raw_npl) if raw_npl is not None else None
@@ -343,7 +353,9 @@ def train(cfg: DictConfig):
         pca_models = load_pca_models(cfg.training.pca_dir, pca_aug_levels,
                                      fine_levels=fine_levels, fine_n_components=fine_n_components,
                                      n_per_lvl=n_per_lvl)
-        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, n_per_lvl={n_per_lvl}, prob={pca_aug_prob}, noise_std={pca_aug_noise_std}, dir={cfg.training.pca_dir}", color='magenta')
+        cjprint(f"PCA roundtrip enabled: {pca_aug_levels} levels, n_per_lvl={n_per_lvl}, prob={pca_aug_prob}, dir={cfg.training.pca_dir}", color='magenta')
+    if emb_noise_std > 0:
+        cjprint(f"Latent noising enabled: emb_noise_std={emb_noise_std}", color='magenta')
 
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
                           extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
@@ -352,7 +364,7 @@ def train(cfg: DictConfig):
         decoder = load_checkpoint(decoder, os.path.expandvars(os.path.expanduser(cfg.training.dec_init_ckpt)))
         cjprint(f"Loaded decoder init weights from {cfg.training.dec_init_ckpt}", color='magenta')
 
-    if (cfg.get('checkpoint', False)): # use "+checkpoint=<path>" from CLI
+    if (cfg.get('checkpoint', False)):
         decoder, ckpt = load_checkpoint(decoder, cfg.get('checkpoint',None), return_all=True)
         tstate.opt_dec.load_state_dict(ckpt['optimizer_state_dict'])
 
@@ -360,7 +372,7 @@ def train(cfg: DictConfig):
         wandb.init(project='dec-'+cfg.wandb.project, config=dict(cfg))
         wandb.define_metric("epoch")
         wandb.define_metric("*", step_metric="epoch")
-        wandb.run.name = f"{cfg.tag}_{wandb.run.name}" # add descriptive tag
+        wandb.run.name = f"{cfg.tag}_{wandb.run.name}"
 
     emb_mask_ratio = cfg.training.get('emb_mask_ratio', 0.0)
     mask_levels     = cfg.training.get('mask_levels', None)
@@ -381,7 +393,9 @@ def train(cfg: DictConfig):
                 enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, device,
                                                                         allow_grad=(tstate.opt_enc is not None))
             if pca_models is not None and torch.rand(1).item() < pca_aug_prob:
-                enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=pca_aug_noise_std)
+                enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=0.0)
+            if emb_noise_std > 0:
+                enc_out = add_noise_to_enc_out(enc_out, emb_noise_std)
             losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
 
@@ -398,7 +412,8 @@ def train(cfg: DictConfig):
                         enc_out = emb_levels_to_enc_out(emb_levels, pos_cache, device)
                     else:
                         enc_out, img_real, _ = get_embeddings_batch(batch, encoder, device)
-                    if pca_models is not None:  # always apply during val (matches inference); no noise for clean eval
+                    # no noise during val — clean eval
+                    if pca_models is not None:
                         enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=0.0)
                     enc_out = mask_enc_out(enc_out, mask_ratio=emb_mask_ratio,
                                            mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
@@ -442,7 +457,6 @@ def train(cfg: DictConfig):
 
     wandb.finish()
     return best_val_loss
-
 
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
