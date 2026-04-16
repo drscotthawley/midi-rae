@@ -6,7 +6,7 @@
 __all__ = ['SCHEME_NAMES', 'TARGET_NAMES', 'shift_no_wrap', 'sample_shift', 'note_length_weights', 'AnchorDataset',
            'sample_shifts', 'PRPairDataset', 'ShiftedTripletDataset', 'PreEncodedChunkDataset', 'ChunkShuffleSampler',
            'collate_emb_levels', 'collate_preencode', 'get_pos_cache', 'emb_levels_to_enc_out', 'EmbeddingDataset',
-           'ConditionalFlowDataset', 'ConditionalFlowChunkSampler']
+           'ConditionalFlowDataset', 'ConditionalFlowChunkSampler', 'DINOv2Dataset']
 
 # %% ../nbs/01_data.ipynb #b96051a7
 import os 
@@ -612,3 +612,16 @@ class ConditionalFlowChunkSampler(torch.utils.data.Sampler):
             start, end = self.offsets[ci], self.offsets[ci + 1]
             within = torch.randperm(end - start, generator=self.generator) + start
             yield from within.tolist()
+
+# %% ../nbs/01_data.ipynb #c663dc25
+class DINOv2Dataset(AnchorDataset):
+    """AnchorDataset variant for DINOv2 encoding: crops 128->126px (9x14 patches) and repeats to 3 channels."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def __getitem__(self, idx):
+        img_1ch = super().__getitem__(idx)["img"]  # (1, 128, 128)
+        img_1ch = img_1ch[:, 1:-1, 1:-1]           # (1, 126, 126) -- 9x9 grid of 14px patches
+        img_3ch = img_1ch.repeat(3, 1, 1)           # (3, 126, 126) -- DINOv2 expects RGB
+        return {"img": img_3ch, "img_target": img_1ch}  # img_target is 1ch reconstruction target
+
