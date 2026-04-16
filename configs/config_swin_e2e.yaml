@@ -48,7 +48,7 @@ flow:
   fine_teacher_forcing: true
 
 generate:
-  decoder_ckpt: ~   # disabled for now: piano roll viz requires PCA dim alignment
+  decoder_ckpt: $HOME/runs/midi-rae/e2e_recon_EVVFa3/checkpoints/SwinDecoder_e2e_recon_EVVFa3_best.pt
   pca_dir:      $HOME/datasets/POP909_pca_e2e_EVVFa3
 
 wandb:
