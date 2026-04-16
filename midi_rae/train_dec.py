@@ -389,7 +389,8 @@ def train(cfg: DictConfig):
                 del clean_evals
             gc.collect()
 
-        save_checkpoint(decoder, epoch, val_loss, cfg, optimizer=tstate.opt_dec, tag=cfg.tag)
+        models_to_save = (decoder, encoder) if (encoder is not None and encoder.training) else decoder
+        save_checkpoint(models_to_save, epoch, val_loss, cfg, optimizer=tstate.opt_dec, tag=cfg.tag)
         freemem()
         tstate.scheduler.step()
         if tstate.scheduler_enc is not None: tstate.scheduler_enc.step()
