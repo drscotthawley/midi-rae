@@ -1,0 +1,40 @@
+# End-to-end encoder+decoder reconstruction training.
+# Toggle: enc_ft_lr > 0 enables joint training; set <= 0 to freeze encoder (normal dec training).
+# Inherits model architecture from config_swin but uses separate wandb projects.
+
+defaults:
+  - config_swin   # inherit everything; override below
+
+training:
+  # End-to-end: unfreeze encoder, train jointly with decoder on reconstruction only
+  enc_ft_lr: 2e-4           # encoder lr (same optimizer family as decoder)
+  dec_lr: 2e-3
+  dec_epochs: 200
+
+  # No SSL losses — this is reconstruction only; encoder is trained by BCE backprop
+  lambda_mae: 0.0
+  lambda_sim: 0.0
+  lambda_fact: 0.0
+  lambda_mep: 0.0
+  lambda_anchor: 0.0
+
+  # No masking / no PCA aug — clean full embeddings only
+  emb_mask_ratio: 0.0
+  pca_aug: false
+
+  pos_weight: 2.0
+  batch_size: 256
+  dec_batch_size: 256
+
+  # No init checkpoint — train from scratch end-to-end
+  dec_init_ckpt: ~
+
+# No pre-encoding — encode on the fly
+preencoded: false
+encoder_ckpt: ~   # start from random encoder weights
+
+wandb:
+  project: midi-rae-e2e-recon        # separate from SSL encoder runs
+  flow_project: midi-rae-e2e-flow    # if we ever flow in this latent space
+
+tag: ???

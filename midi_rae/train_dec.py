@@ -119,13 +119,16 @@ def setup_models(cfg, device, preencoded, verbose=True):
 # %% ../nbs/09_train_dec.ipynb #61dd1ef1
 def setup_tstate(cfg, device, decoder, encoder=None, extra_params=None):
     "Training_state: Losses, Optimizers, Schedulers, AMP Scalers"
-    opt_enc = None #if encoder is None else torch.optim.AdamW(encoder.parameters(), lr=cfg.training.enc_ft_lr)
+    enc_ft_lr = cfg.training.get('enc_ft_lr', 0)
+    opt_enc = (torch.optim.AdamW(encoder.parameters(), lr=enc_ft_lr)
+               if (encoder is not None and enc_ft_lr > 0) else None)
     dec_params = list(decoder.parameters()) + (extra_params or [])
     opt_dec = torch.optim.AdamW(dec_params, lr=cfg.training.dec_lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(opt_dec, max_lr=cfg.training.dec_lr, steps_per_epoch=1, epochs=cfg.training.dec_epochs, div_factor=4)
-    scheduler_enc = None if opt_enc is None else torch.optim.lr_scheduler.OneCycleLR(opt_enc, max_lr=cfg.training.enc_ft_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs))   
+    scheduler_enc = (torch.optim.lr_scheduler.OneCycleLR(opt_enc, max_lr=enc_ft_lr, steps_per_epoch=1, epochs=max(1, cfg.training.dec_epochs))
+                     if opt_enc is not None else None)
     scaler_dec = torch.amp.GradScaler()
-    TrainState = namedtuple('TrainState', ['opt_enc', 'opt_dec',  'scaler_dec','scheduler','scheduler_enc'])
+    TrainState = namedtuple('TrainState', ['opt_enc', 'opt_dec', 'scaler_dec', 'scheduler', 'scheduler_enc'])
     return TrainState(opt_enc, opt_dec, scaler_dec, scheduler, scheduler_enc)
 
 # %% ../nbs/09_train_dec.ipynb #102f0438
@@ -145,8 +148,9 @@ def train_step(epoch, enc_out, img_real, decoder,
             note_weights=None,
             mask_tokens=None,
             ):
-    "training step for decoder"
+    "training step for decoder (and optionally encoder when enc_ft_lr > 0)"
     decoder.train()
+    if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
     tstate.opt_dec.zero_grad()
     enc_out = mask_enc_out(enc_out,
                            mask_ratio=cfg.training.get('emb_mask_ratio', 0.0),
@@ -158,6 +162,10 @@ def train_step(epoch, enc_out, img_real, decoder,
     tstate.scaler_dec.scale(loss_dict['dec']).backward()
     tstate.scaler_dec.unscale_(tstate.opt_dec)
     torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
+    if tstate.opt_enc is not None:
+        tstate.scaler_dec.unscale_(tstate.opt_enc)
+        torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
+        tstate.scaler_dec.step(tstate.opt_enc)
     tstate.scaler_dec.step(tstate.opt_dec)
     tstate.scaler_dec.update()
     return loss_dict, loss_dict['recon']
@@ -325,10 +333,10 @@ def train(cfg: DictConfig):
                 enc_out = emb_levels_to_enc_out(emb_levels, pos_cache, device)
                 note_weights = None
             else:
-                enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, device)
+                enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, device,
+                                                                        allow_grad=(tstate.opt_enc is not None))
             if pca_models is not None and torch.rand(1).item() < pca_aug_prob:
                 enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=pca_aug_noise_std)
-            if tstate.opt_enc is not None: tstate.opt_enc.zero_grad()
             losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
 
@@ -385,7 +393,6 @@ def train(cfg: DictConfig):
         freemem()
         tstate.scheduler.step()
         if tstate.scheduler_enc is not None: tstate.scheduler_enc.step()
-        if epoch > cfg.training.gan_warmup: tstate.schedulerD.step()
 
     wandb.finish()
     return best_val_loss
