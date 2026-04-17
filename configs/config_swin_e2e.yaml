@@ -46,6 +46,7 @@ flow:
   encoded_dir:  $HOME/datasets/POP909_encoded_e2e_EVVFa3
   coarse_ckpt:  ~   # no pretrained coarse model; train fine with teacher forcing
   fine_teacher_forcing: true
+  checkpoint: /home/shawley/runs/midi-rae/e2e_flow_hC9meL/checkpoints/UNetFineFlowModel_e2e_flow_hC9meLckpt_epoch40.pt
 
 generate:
   decoder_ckpt: $HOME/runs/midi-rae/e2e_recon_EVVFa3/checkpoints/SwinDecoder_e2e_recon_EVVFa3_best.pt
