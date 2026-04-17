@@ -58,13 +58,13 @@ def do_every(interval, id=None, first_true=True):
     return False
 
 # %% ../nbs/04_utils.ipynb #378dc3c0
-def schmitt_binarize(img, low=0.3, high=0.7):
+def schmitt_binarize(img, low=0.3, high=0.7, init_thresh=0.5):
     """Schmitt trigger binarization along time axis (last dim).
     Hysteresis: once a note is ON it stays ON until value drops below `low`;
     once OFF, stays OFF until value exceeds `high`.
     Reduces fragmentation and binarization noise vs. simple thresholding."""
     out = torch.zeros_like(img)
-    state = img[..., 0] > high
+    state = img[..., 0] > init_thresh
     out[..., 0] = state.float()
     for t in range(1, img.shape[-1]):
         col = img[..., t]
@@ -74,12 +74,12 @@ def schmitt_binarize(img, low=0.3, high=0.7):
     return out
 
 # %% ../nbs/04_utils.ipynb #2f505a33-c562-4d5d-8df7-ae62741e4a86
-def binarize(img, thresh=0.5, mode="schmitt", low=0.3, high=0.7):
+def binarize(img, thresh=0.5, mode="schmitt", low=0.3, high=0.7, init_thresh=0.5):
     """Turn float images into binary floats.
     mode='schmitt' (default): Schmitt trigger with hysteresis along time axis.
     Any other mode: simple threshold at `thresh`."""
     if mode == "schmitt":
-        return schmitt_binarize(img, low=low, high=high)
+        return schmitt_binarize(img, low=low, high=high, init_thresh=init_thresh)
     return (img > thresh).float()
 
 # %% ../nbs/04_utils.ipynb #98431695-656e-41c7-be64-7937bccdf2ec
