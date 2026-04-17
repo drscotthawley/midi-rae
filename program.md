@@ -386,6 +386,11 @@ Start with low-risk, high-payoff changes before architectural surgery:
 
 **Key insight**: Pixel space can be viewed as the finest level of the existing hierarchy (L6, conceptually). The flow then completes the hierarchy from representation → pixel rather than representation → PCA code → decoder → pixel. This removes two lossy steps (PCA, decoder) at once.
 
+**Open questions (TBD)**:
+- Condition on L5 only, or the full coarse+fine hierarchy?
+- Train with random hierarchy masking (drop random subsets of levels during training) so the model learns to generate from any sub-part of the hierarchy — enabling flexible conditioning at inference (full stack, coarse-only, single level, etc.). Analogous to classifier-free guidance dropout but over a structured hierarchy.
+- The disjoint semantic clustering in coarse levels means conditioning on L0/L1/L2 alone may be sufficient for steerable generation (class-like behavior); fine levels add spatial detail.
+
 **Status**: Deferred — validate representation-space flow first. High priority if e2e flow continues to underperform pixel CFM.
 
 ### Learned AE frontend replacing PCA (for decoder recall improvement)
