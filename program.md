@@ -374,6 +374,20 @@ Start with low-risk, high-payoff changes before architectural surgery:
 
 ## Future experiment ideas
 
+### Representation-conditioned pixel-space flow (bypass decoder entirely)
+
+**Motivation**: Pixel-space CFM works far better than representation-space flow. The decoder is a persistent source of brittleness (binarization artifacts, recall/precision imbalance, sensitivity to embedding quality). Rather than improving the decoder, eliminate it.
+
+**Idea**: Flow directly in pixel space, using learned representations as a conditioning signal. Two variants:
+
+1. **Flow decoder** — source = L5 (or coarse) embeddings, target = piano roll pixels. Representations define the starting point; flow finds the path to pixel space. Analogous to a learned stochastic decoder without the reconstruction bottleneck.
+
+2. **Conditioned pixel flow** — source = Gaussian noise, target = pixels, conditioning = representations (L3/L4/L5 or full hierarchy). Representations guide generation but don't constrain it — flow has full geometric freedom. More powerful because it doesn't require representation space to be close to pixel space, only informationally sufficient.
+
+**Key insight**: Pixel space can be viewed as the finest level of the existing hierarchy (L6, conceptually). The flow then completes the hierarchy from representation → pixel rather than representation → PCA code → decoder → pixel. This removes two lossy steps (PCA, decoder) at once.
+
+**Status**: Deferred — validate representation-space flow first. High priority if e2e flow continues to underperform pixel CFM.
+
 ### Learned AE frontend replacing PCA (for decoder recall improvement)
 
 **Motivation**: Decoder trained on PCA-roundtripped embeddings shows lower recall than precision, even at 95% variance. The 5% dropped variance likely contains the note/silence decision boundary (low-variance directions encode rare "note on" patches). PCA is blind to reconstruction loss — it cannot learn to preserve what matters for decoding.
@@ -514,6 +528,8 @@ Piano roll pixels form a natural binary lattice (note on/off). Discrete flow mat
 - **Optimize embedding dims per Swin level**: PCA analysis shows L0 (256-dim) needs only ~13 effective dims — a ~20x overparameterization. A tapered hierarchy (e.g. 16→32→64→64→32→16) could dramatically reduce parameter count. Requires customizing Swin's default doubling-per-stage behavior.
 
 - **Weighted dataset sampling by song length**: Currently `file_idx` sampling gives shorter songs proportionally more coverage than longer ones. Fix with `torch.utils.data.WeightedRandomSampler`, weighting each file by its length in bars. One-liner change to `data.py` but not a correctness issue — current approach is fine for now.
+
+- **Differentiable binarization / Schmitt trigger**: Current `binarize()` and `schmitt_binarize()` are non-differentiable (hard thresholds). Like a real diode vs an ideal one, a differentiable analogue with finite slope everywhere would allow learnable thresholds via backprop. E.g. replace hard threshold with a steep sigmoid (`σ(k*(x - θ))`, large k), and the Schmitt trigger's hysteresis with a recurrent sigmoid cell. Would enable end-to-end training of binarization parameters rather than hand-tuning low/high/init_thresh.
 
 ## Open questions
 
