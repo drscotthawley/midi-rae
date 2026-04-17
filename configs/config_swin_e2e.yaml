@@ -46,8 +46,9 @@ flow:
   encoded_dir:  $HOME/datasets/POP909_encoded_e2e_EVVFa3
   coarse_ckpt:  ~   # no pretrained coarse model; train fine with teacher forcing
   fine_teacher_forcing: true
-  fine_raw: false   # PCA mode (override config_swin default of true)
-  checkpoint: ~     # start fresh (raw-mode ckpt incompatible with PCA dims)
+  fine_raw: false        # PCA mode (override config_swin default of true)
+  fine_model_type: mlp   # ConditionalFineFlowModel (override config_swin unet default)
+  checkpoint: ~          # start fresh
 
 generate:
   decoder_ckpt: $HOME/runs/midi-rae/e2e_recon_EVVFa3/checkpoints/SwinDecoder_e2e_recon_EVVFa3_best.pt
