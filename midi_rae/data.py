@@ -464,12 +464,12 @@ class ConditionalFlowDataset(Dataset):
             for pf in unified_files:
                 d = torch.load(pf, weights_only=False)
                 c_tensors = [d[lv].float() for lv in pca_levels]
-                if not hasattr(self, '_coarse_n_comp'):
-                    self._coarse_n_comp    = [t.shape[-1] for t in c_tensors]
-                    self._coarse_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in c_tensors]
+                if not hasattr(self, '_cond_n_comp'):
+                    self._cond_n_comp    = [t.shape[-1] for t in c_tensors]
+                    self._cond_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in c_tensors]
                 c_tensors = [t.flatten(1) if t.dim() == 3 else t for t in c_tensors]
-                if not hasattr(self, '_coarse_level_dims'):
-                    self._coarse_level_dims = [t.shape[1] for t in c_tensors]
+                if not hasattr(self, '_cond_level_dims'):
+                    self._cond_level_dims = [t.shape[1] for t in c_tensors]
                 coarse_chunk = torch.cat(c_tensors, dim=1)
                 coarse_all.append(coarse_chunk)
                 self._chunk_offsets.append(self._chunk_offsets[-1] + len(coarse_chunk))
@@ -503,12 +503,12 @@ class ConditionalFlowDataset(Dataset):
             for pf, fp in zip(pca_files, fine_files):
                 pd = torch.load(pf, weights_only=False)
                 c_tensors = [pd[lv].float() for lv in pca_levels]
-                if not hasattr(self, '_coarse_n_comp'):
-                    self._coarse_n_comp    = [t.shape[-1] for t in c_tensors]
-                    self._coarse_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in c_tensors]
+                if not hasattr(self, '_cond_n_comp'):
+                    self._cond_n_comp    = [t.shape[-1] for t in c_tensors]
+                    self._cond_n_patches = [t.shape[-2] if t.dim() == 3 else 1 for t in c_tensors]
                 c_tensors = [t.flatten(1) if t.dim() == 3 else t for t in c_tensors]
-                if not hasattr(self, '_coarse_level_dims'):
-                    self._coarse_level_dims = [t.shape[1] for t in c_tensors]
+                if not hasattr(self, '_cond_level_dims'):
+                    self._cond_level_dims = [t.shape[1] for t in c_tensors]
                 coarse_all.append(torch.cat(c_tensors, dim=1))
                 self._chunk_offsets.append(self._chunk_offsets[-1] + len(coarse_all[-1]))
                 fd = torch.load(fp, weights_only=False)
@@ -537,9 +537,9 @@ class ConditionalFlowDataset(Dataset):
             raw0 = torch.load(raw_files[0], weights_only=False)
             _c = [raw0[0][emb_key][li].float() for li in coarse_idxs]
             _f = [raw0[0][emb_key][li].float() for li in fine_levels]
-            self._coarse_n_patches = [e.shape[1] for e in _c]
-            self._coarse_n_comp    = [e.shape[2] for e in _c]
-            self._coarse_level_dims= [p*c for p,c in zip(self._coarse_n_patches, self._coarse_n_comp)]
+            self._cond_n_patches = [e.shape[1] for e in _c]
+            self._cond_n_comp    = [e.shape[2] for e in _c]
+            self._cond_level_dims= [p*c for p,c in zip(self._cond_n_patches, self._cond_n_comp)]
             self._fine_n_patches   = [e.shape[1] for e in _f]
             self._fine_n_comp      = [e.shape[2] for e in _f]
             self._fine_level_dims  = [p*c for p,c in zip(self._fine_n_patches, self._fine_n_comp)]
@@ -562,9 +562,9 @@ class ConditionalFlowDataset(Dataset):
             self._fine_chunk_idx  = -1
             self._fine_chunk_data = None
 
-        self.coarse_level_dims = self._coarse_level_dims
-        self.coarse_n_comp     = self._coarse_n_comp
-        self.coarse_n_patches  = self._coarse_n_patches
+        self.cond_level_dims = self._cond_level_dims
+        self.cond_n_comp     = self._cond_n_comp
+        self.cond_n_patches  = self._cond_n_patches
         self.fine_level_dims   = self._fine_level_dims
         self.fine_n_comp       = self._fine_n_comp
         self.fine_n_patches    = self._fine_n_patches

@@ -603,11 +603,11 @@ def sample_source(shape, device='cpu', source_df=None, source_scales=None, level
 
 # %% ../nbs/12_train_flow.ipynb #v87x51j2zw
 @torch.no_grad()
-def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim,
+def generate_samples_conditional(coarse_model, fine_model, n_samples, cond_dim,
                                  target_dims, device='cpu', n_steps=20,
                                  step_fn=rk4_step, warp_s=0.5,
-                                 coarse_source_df=None, coarse_source_scales=None,
-                                 coarse_level_dims=None, fine_source_scales=None,
+                                 coarse_source_df=None, cond_source_scales=None,
+                                 cond_level_dims=None, fine_source_scales=None,
                                  use_diffeq_fine=False):
     """Two-stage conditional sampler: coarse flow → fine conditional flow.
 
@@ -635,20 +635,20 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
     Args:
         coarse_model:        first-stage flow (CrossLevelFlowModel / PerLevelFlowModel)
         fine_model:          ConditionalFineFlowModel
-        coarse_dim:          total dim of coarse-level output (sum of PCA dims L0-L3)
+        cond_dim:          total dim of coarse-level output (sum of PCA dims L0-L3)
         target_dims:         list of flattened dims for fine levels (e.g. [D_L4, D_L5])
         coarse_source_*:     source distribution kwargs forwarded to the coarse stage
         fine_source_scales:  optional per-level scale factors for fine-level noise
         use_diffeq_fine:     use torchdiffeq/dopri5 for fine ODE (coarse is always RK4)
     Returns:
-        coarse_out : [n_samples, coarse_dim]
+        coarse_out : [n_samples, cond_dim]
         fine_out   : [n_samples, sum(target_dims)]
     """
     fine_dim = sum(target_dims)
-    y_coarse = sample_source((n_samples, coarse_dim), device=device,
+    y_coarse = sample_source((n_samples, cond_dim), device=device,
                              source_df=coarse_source_df,
-                             source_scales=coarse_source_scales,
-                             level_dims=coarse_level_dims)
+                             source_scales=cond_source_scales,
+                             level_dims=cond_level_dims)
     y_fine = sample_source((n_samples, fine_dim), device=device,
                            source_scales=fine_source_scales,
                            level_dims=target_dims)
@@ -661,7 +661,7 @@ def generate_samples_conditional(coarse_model, fine_model, n_samples, coarse_dim
 
         # x1_pred_coarse: coarse model's predicted endpoint at current state/time
         v_coarse_pred  = coarse_model(y_coarse, t)
-        x1_pred_coarse = y_coarse + (1 - t_s) * v_coarse_pred  # [n_samples, coarse_dim]
+        x1_pred_coarse = y_coarse + (1 - t_s) * v_coarse_pred  # [n_samples, cond_dim]
 
         # Advance coarse state (step_fn may call coarse_model again internally for RK4)
         y_coarse = step_fn(coarse_model, y_coarse, t_s, dt)
@@ -1108,15 +1108,15 @@ def _wandb_log_jacobian(log_dict, eval_model, sample_data, n_t=20, n_epsilon=4,
 # %% ../nbs/12_train_flow.ipynb #9jf9xpgrqr
 @torch.no_grad()
 def decode_flow_to_piano_rolls(coarse_emb, fine_emb, pca_models,
-                                coarse_level_dims, fine_level_dims, fine_levels_idx,
+                                cond_level_dims, fine_level_dims, fine_levels_idx,
                                 cfg, decoder, device, n_samples=16,
-                                coarse_n_patches=None, fine_n_patches=None):
+                                cond_n_patches=None, fine_n_patches=None):
     """Decode flow-generated coarse + fine embeddings to piano rolls (no HMEP).
-    coarse_emb:      (B, sum_coarse_dims) — PCA-compressed or raw coarse embeddings
+    coarse_emb:      (B, sum_cond_dims) — PCA-compressed or raw coarse embeddings
     fine_emb:        (B, sum_fine_dims)   — PCA-compressed or raw fine embeddings
     pca_models:      dict {level_idx: sklearn PCA} or None. If None or level missing,
                      embeddings are treated as already in full embedding space.
-    coarse_n_patches: list of n_patches per coarse level (required for raw mode)
+    cond_n_patches: list of n_patches per coarse level (required for raw mode)
     fine_n_patches:   list of n_patches per fine level (required for raw mode)
     """
     from midi_rae.generate import build_patch_states, batch_patch_states, build_enc_out, make_grid_pos, binarize
@@ -1127,8 +1127,8 @@ def decode_flow_to_piano_rolls(coarse_emb, fine_emb, pca_models,
     fine_emb   = fine_emb[:B].float()
 
     # Coarse levels → PatchState list (PCA inverse or raw)
-    states = [build_patch_states(coarse_emb[b], coarse_level_dims, device,
-                                 pca_models=pca_models, n_patches_list=coarse_n_patches)
+    states = [build_patch_states(coarse_emb[b], cond_level_dims, device,
+                                 pca_models=pca_models, n_patches_list=cond_n_patches)
               for b in range(B)]
     all_levels = batch_patch_states(states)
 
@@ -1365,13 +1365,17 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     print(f"epoch_start = {epoch_start}")
 
     # --- Dataset dims ---
-    coarse_level_dims    = dataset.coarse_level_dims
-    coarse_level_names   = [f'L{i}' for i in range(len(coarse_level_dims))]
-    coarse_dim           = dataset.coarse.shape[1]
-    fine_level_dims      = dataset.fine_level_dims if do_fine else None
-    n_coarse             = len(coarse_level_dims)
-    coarse_source_scales = all_source_scales[:n_coarse] if all_source_scales else None
-    fine_source_scales   = all_source_scales[n_coarse:]  if all_source_scales else None
+    if is_pixel:
+        cond_level_dims = cond_level_names = cond_source_scales = fine_source_scales = []
+        cond_dim = fine_level_dims = n_coarse = 0
+    else:
+        cond_level_dims    = dataset.cond_level_dims
+        cond_level_names   = [f'L{i}' for i in range(len(cond_level_dims))]
+        cond_dim           = dataset.coarse.shape[1]
+        fine_level_dims      = dataset.fine_level_dims if do_fine else None
+        n_coarse             = len(cond_level_dims)
+        cond_source_scales = all_source_scales[:n_coarse] if all_source_scales else None
+        fine_source_scales   = all_source_scales[n_coarse:]  if all_source_scales else None
 
     def _get_eval_fine(n=2000):
         if getattr(dataset, '_use_fine_pca', False): return dataset.fine[:n].float()
@@ -1386,11 +1390,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             chunk_n = min(batch_size, remaining)
             _gc, _gf = generate_samples_conditional(
                 eval_c, eval_f,
-                n_samples=chunk_n, coarse_dim=coarse_dim,
+                n_samples=chunk_n, cond_dim=cond_dim,
                 target_dims=fine_level_dims, device=device,
                 n_steps=20, warp_s=warp_s,
-                coarse_level_dims=coarse_level_dims,
-                coarse_source_scales=coarse_source_scales,
+                cond_level_dims=cond_level_dims,
+                cond_source_scales=cond_source_scales,
                 fine_source_scales=fine_source_scales,
                 use_diffeq_fine=True)
             c_chunks.append(_gc.cpu())
@@ -1405,10 +1409,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         while remaining > 0:
             chunk_n = min(batch_size, remaining)
             chunks.append(generate_samples(eval_c, n_samples=chunk_n,
-                                           dim=coarse_dim, device=device,
+                                           dim=cond_dim, device=device,
                                            n_steps=20, warp_s=warp_s,
-                                           source_scales=coarse_source_scales,
-                                           level_dims=coarse_level_dims).cpu())
+                                           source_scales=cond_source_scales,
+                                           level_dims=cond_level_dims).cpu())
             remaining -= chunk_n
         return torch.cat(chunks, dim=0)
 
@@ -1474,8 +1478,8 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             t = sample_time((B, 1), schedule=time_schedule, warp_s=warp_s, sine_kappa=sine_kappa, device=device)
 
             noise_coarse = sample_source((B, real_coarse.size(1)), device=device,
-                                         source_scales=coarse_source_scales,
-                                         level_dims=coarse_level_dims)
+                                         source_scales=cond_source_scales,
+                                         level_dims=cond_level_dims)
             if do_fine:
                 real_fine  = real_fine.to(device)
                 if fine_structured_source:
@@ -1619,9 +1623,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             # Coarse metrics: only when coarse model is actually being trained
             if mode != 'fine':
                 coarse_metrics = eval_flow(eval_coarse, real_coarse_eval, n_samples=eval_n_samples,
-                                            level_dims=coarse_level_dims, gen=gen_coarse_cpu,
-                                            level_names=coarse_level_names,
-                                            level_n_patches=dataset.coarse_n_patches)
+                                            level_dims=cond_level_dims, gen=gen_coarse_cpu,
+                                            level_names=cond_level_names,
+                                            level_n_patches=dataset.cond_n_patches)
                 log_dict.update({f'eval/{k}': v for k, v in coarse_metrics.items()})
 
             if (wandb.run is not None) and viz_every and epoch % viz_every == 0:
@@ -1631,18 +1635,18 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         real_scatter_logged, gen=tf_fine_cpu, level_names=fine_level_names,
                         level_n_components=dataset.fine_n_comp, pca_cache=scatter_pca_cache)
                 if mode != 'fine':
-                    _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, coarse_level_dims,
-                                   epoch, False, gen=gen_coarse_cpu, level_names=coarse_level_names,
-                                   level_n_components=dataset.coarse_n_comp, pca_cache=scatter_pca_cache)
+                    _wandb_log_viz(log_dict, eval_coarse, real_coarse_eval, cond_level_dims,
+                                   epoch, False, gen=gen_coarse_cpu, level_names=cond_level_names,
+                                   level_n_components=dataset.cond_n_comp, pca_cache=scatter_pca_cache)
                 if do_fine and decoder is not None:
                     n_rolls = 64
                     _dec_kw = dict(pca_models=pca_models,
-                                   coarse_n_patches=dataset.coarse_n_patches,
+                                   cond_n_patches=dataset.cond_n_patches,
                                    fine_n_patches=dataset.fine_n_patches)
                     # piano_rolls_real: decode real embeddings directly (upper-bound quality check)
                     real_rolls = decode_flow_to_piano_rolls(
                         real_coarse_eval[:n_rolls].cpu(), real_fine_eval[:n_rolls].cpu(),
-                        coarse_level_dims=coarse_level_dims, fine_level_dims=fine_level_dims,
+                        cond_level_dims=cond_level_dims, fine_level_dims=fine_level_dims,
                         fine_levels_idx=fine_levels_idx, cfg=cfg, decoder=decoder,
                         device=device, n_samples=n_rolls, **_dec_kw)
                     real_grid = make_grid(real_rolls[:n_rolls], nrow=8, normalize=True)
@@ -1653,18 +1657,18 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                         c_model.to(device)
                         gen_coarse_64, gen_fine_64 = generate_samples_conditional(
                             c_model, f_model,
-                            n_samples=n_rolls, coarse_dim=coarse_dim,
+                            n_samples=n_rolls, cond_dim=cond_dim,
                             target_dims=fine_level_dims, device=device,
                             n_steps=20, warp_s=warp_s,
-                            coarse_level_dims=coarse_level_dims,
-                            coarse_source_scales=coarse_source_scales,
+                            cond_level_dims=cond_level_dims,
+                            cond_source_scales=cond_source_scales,
                             fine_source_scales=fine_source_scales,
                             use_diffeq_fine=True)
                         c_model.to('cpu')
                         gen_coarse_64, gen_fine_64 = gen_coarse_64.cpu(), gen_fine_64.cpu()
                         rolls = decode_flow_to_piano_rolls(
                             gen_coarse_64, gen_fine_64,
-                            coarse_level_dims=coarse_level_dims, fine_level_dims=fine_level_dims,
+                            cond_level_dims=cond_level_dims, fine_level_dims=fine_level_dims,
                             fine_levels_idx=fine_levels_idx, cfg=cfg, decoder=decoder,
                             device=device, n_samples=n_rolls, **_dec_kw)
                         grid = make_grid(rolls[:n_rolls], nrow=8, normalize=True)
@@ -1685,7 +1689,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
                                     y_fine_tf = y_fine_tf + f_model(y_fine_tf, t_tf, tf_coarse) * dt_tf
                             tf_rolls = decode_flow_to_piano_rolls(
                                 tf_coarse.cpu(), y_fine_tf.cpu(),
-                                coarse_level_dims=coarse_level_dims, fine_level_dims=fine_level_dims,
+                                cond_level_dims=cond_level_dims, fine_level_dims=fine_level_dims,
                                 fine_levels_idx=fine_levels_idx, cfg=cfg, decoder=decoder,
                                 device=device, n_samples=n_rolls, **_dec_kw)
                             tf_grid = make_grid(tf_rolls[:n_rolls], nrow=8, normalize=True)
@@ -1787,14 +1791,14 @@ def _run_flow(cfg: DictConfig):
         fine_n_components = fine_n_components,
         fine_raw          = fc.get('fine_raw', False),
     )
-    print(f"  {len(dataset)} samples  coarse_dims={dataset.coarse_level_dims}  fine_dims={dataset.fine_level_dims}")
+    print(f"  {len(dataset)} samples  cond_dims={dataset.cond_level_dims}  fine_dims={dataset.fine_level_dims}")
 
-    coarse_level_dims = dataset.coarse_level_dims
-    coarse_n_comp     = dataset.coarse_n_comp   # inferred from data shape — no config needed
+    cond_level_dims = dataset.cond_level_dims
+    cond_n_comp     = dataset.cond_n_comp   # inferred from data shape — no config needed
 
     coarse_model = CrossLevelFlowModel(
-        level_dims    = coarse_level_dims,
-        level_n_comp  = coarse_n_comp,
+        level_dims    = cond_level_dims,
+        level_n_comp  = cond_n_comp,
         h_dim         = fc.get('coarse_h_dim', fc.h_dim),
         n_layers      = fc.get('coarse_n_layers', fc.n_layers),
         n_attn_layers = fc.get('n_attn_layers', 2),
@@ -1817,7 +1821,7 @@ def _run_flow(cfg: DictConfig):
         fine_model_type = fc.get('fine_model_type', 'mlp')
         if fine_model_type == 'unet':
             fine_model = UNetFineFlowModel(
-                cond_dims      = coarse_level_dims,
+                cond_dims      = cond_level_dims,
                 target_dims    = dataset.fine_level_dims,
                 target_n_comp  = fine_n_comp,
                 h_dim          = fc.h_dim,
@@ -1827,10 +1831,10 @@ def _run_flow(cfg: DictConfig):
             print(f"  UNetFineFlowModel: {n_params:,} parameters")
         else:
             fine_model = ConditionalFineFlowModel(
-                cond_dims             = coarse_level_dims,
+                cond_dims             = cond_level_dims,
                 target_dims           = dataset.fine_level_dims,
                 target_n_comp         = fine_n_comp,
-                cond_n_comp           = coarse_n_comp,
+                cond_n_comp           = cond_n_comp,
                 h_dim                 = fc.h_dim,
                 n_layers              = fc.n_layers,
                 t_dim                 = fc.get('t_dim', 64),
@@ -1859,7 +1863,7 @@ def _run_flow(cfg: DictConfig):
             for p in decoder.parameters(): p.requires_grad_(False)
             if getattr(dataset, '_use_fine_pca', False):
                 pca_dir    = Path(os.path.expandvars(os.path.expanduser(str(fc.pca_dir))))
-                pca_models = load_pca_models(str(pca_dir), len(coarse_level_dims) + len(fine_levels))
+                pca_models = load_pca_models(str(pca_dir), len(cond_level_dims) + len(fine_levels))
                 print(f"  Loaded decoder + {len(pca_models)} PCA models for piano roll viz")
             else:
                 print("  Decoder loaded; raw mode — pca_models=None for viz")
