@@ -1205,7 +1205,7 @@ def make_warmup_cosine_restart_scheduler(optimizer, T_0, T_mult=2, warmup_frac=0
 
 # %% ../nbs/12_train_flow.ipynb #tss6l3odpb
 def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
-                           decoder=None, pca_models=None):
+                           decoder=None, pca_models=None, pixel_val_dataset=None):
     """Train flow model(s).  Mode is read from cfg.flow.mode:
       'coarse' – train coarse_model only (unconditional CrossLevelFlowModel)
       'fine'   – train fine_model with frozen coarse as conditioning signal (default)
@@ -1225,8 +1225,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     fc   = cfg.flow
     mode = fc.get('mode', 'fine')
-    assert mode in ('coarse', 'fine', 'both'), f"cfg.flow.mode must be coarse/fine/both; got {mode!r}"
+    assert mode in ('coarse', 'fine', 'both', 'pixel'), f"cfg.flow.mode must be coarse/fine/both/pixel; got {mode!r}"
     do_fine = mode in ('fine', 'both')
+    is_pixel = mode == 'pixel'
     fine_teacher_forcing = fc.get('fine_teacher_forcing', False)
     use_amp_fine         = fc.get('use_amp_fine', True) and device != 'cpu'
     if do_fine:
@@ -1238,9 +1239,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     # --- Hyperparameters ---
     n_epochs             = fc.n_epochs
     lr                   = fc.lr
-    if mode == 'coarse': batch_size = fc.get('coarse_batch_size', fc.batch_size)
-    elif mode == 'fine': batch_size = fc.get('fine_batch_size',   fc.batch_size)
-    else:                batch_size = fc.get('fine_batch_size',   fc.batch_size)  # both: fine is limiting
+    if mode == 'coarse':   batch_size = fc.get('coarse_batch_size', fc.batch_size)
+    elif mode == 'fine':   batch_size = fc.get('fine_batch_size',   fc.batch_size)
+    elif mode == 'both':   batch_size = fc.get('fine_batch_size',   fc.batch_size)
+    else:                  batch_size = fc.batch_size  # pixel
     warp_s               = fc.warp_s
     time_schedule        = fc.get('time_schedule', 'warp')
     sine_kappa           = fc.get('sine_kappa', 0.0)
@@ -1272,6 +1274,10 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
     checkpoint = os.path.expandvars(os.path.expanduser(fc.get('checkpoint', '') or '')) or None
 
+    if is_pixel:
+        from torchcfm.conditional_flow_matching import ExactOptimalTransportConditionalFlowMatcher
+        _fm_pixel = ExactOptimalTransportConditionalFlowMatcher(sigma=fc.get('sigma', 0.0))
+
     use_wandb = not cfg.get('no_wandb', False) and hasattr(cfg.wandb, 'flow_project')
     if use_wandb:
         wandb.init(project=cfg.wandb.flow_project, config=dict(fc))
@@ -1286,7 +1292,11 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     ema_kw = dict(eta=ema_eta, update_every=1, dtype=torch.float32,
                   eta_warmup_steps=(1 if ema_warmup else 0))
     coarse_ema   = EMAModel(coarse_model, **ema_kw)
-    if mode == 'coarse':
+    if mode == 'pixel':
+        coarse_model.train()
+        fine_ema  = None
+        optimizer = optim.Adam(coarse_model.parameters(), lr=lr)
+    elif mode == 'coarse':
         coarse_model.train()
         fine_ema  = None
         optimizer = optim.Adam(coarse_model.parameters(), lr=lr)
@@ -1305,14 +1315,22 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             list(coarse_model.parameters()) + list(fine_model.parameters()), lr=lr)
 
     # --- DataLoader ---
-    use_fine_pca = getattr(dataset, '_use_fine_pca', False)
-    if isinstance(dataset, ConditionalFlowDataset) and not use_fine_pca:
-        sampler = ConditionalFlowChunkSampler(dataset)
-        dl = DataLoader(dataset, batch_size=batch_size, sampler=sampler,
-                        num_workers=0, pin_memory=(device != 'cpu'), drop_last=True)
-    else:
+    val_real_pixel = None
+    if is_pixel:
         dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                        num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
+                        num_workers=fc.get('num_workers', 4), pin_memory=(device != 'cpu'), drop_last=True)
+        if pixel_val_dataset is not None:
+            _vdl = DataLoader(pixel_val_dataset, batch_size=fc.get('n_gen', 64), shuffle=True, drop_last=True)
+            val_real_pixel = next(iter(_vdl))['img'].to(device)
+    else:
+        use_fine_pca = getattr(dataset, '_use_fine_pca', False)
+        if isinstance(dataset, ConditionalFlowDataset) and not use_fine_pca:
+            sampler = ConditionalFlowChunkSampler(dataset)
+            dl = DataLoader(dataset, batch_size=batch_size, sampler=sampler,
+                            num_workers=0, pin_memory=(device != 'cpu'), drop_last=True)
+        else:
+            dl = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                            num_workers=2, pin_memory=(device != 'cpu'), drop_last=True)
     dl_iter = None
     _steps  = steps_per_epoch or len(dl)
 
@@ -1432,9 +1450,27 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
             batches = dl
         pbar = tqdm(batches, total=_steps, desc=f'Epoch {epoch}/{n_epochs} [{mode}]', leave=False)
 
-        for real_coarse, real_fine in pbar:
+        for _batch in pbar:
+            if is_pixel:
+                real_coarse = _batch['img'].to(device)
+                real_fine   = None
+            else:
+                real_coarse, real_fine = _batch
             real_coarse = real_coarse.to(device)
             B = real_coarse.size(0)
+            if is_pixel:
+                x0 = torch.randn_like(real_coarse)
+                t_p, xt, ut = _fm_pixel.sample_location_and_conditional_flow(x0, real_coarse)
+                loss = (coarse_model(t_p, xt) - ut).pow(2).mean()
+                optimizer.zero_grad()
+                loss.backward()
+                if grad_clip > 0: torch.nn.utils.clip_grad_norm_(coarse_model.parameters(), grad_clip)
+                optimizer.step()
+                coarse_ema.update(coarse_model)
+                epoch_loss += loss.item()
+                pbar.set_postfix(loss=f'{loss.item():.4f}')
+                global_step += 1
+                continue
             t = sample_time((B, 1), schedule=time_schedule, warp_s=warp_s, sine_kappa=sine_kappa, device=device)
 
             noise_coarse = sample_source((B, real_coarse.size(1)), device=device,
@@ -1533,7 +1569,36 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
         print(f'Epoch {epoch}/{n_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  [{mode}]')
         log_dict = {'train/loss': avg_loss, 'train/lr': cur_lr, 'epoch': epoch}
 
-        if eval_every and epoch % eval_every == 0:
+        if is_pixel and eval_every and epoch % eval_every == 0:
+            from torchvision.utils import make_grid
+            _eval_m = coarse_ema.ema
+            _eval_m.eval()
+            n_gen = fc.get('n_gen', 64)
+            with torch.no_grad():
+                x = torch.randn(n_gen, 1, 128, 128, device=device)
+                dt = 1.0 / fc.get('n_ode_steps', 100)
+                for _i in range(fc.get('n_ode_steps', 100)):
+                    _t = torch.full((n_gen,), _i * dt, device=device)
+                    x  = x + _eval_m(_t, x) * dt
+            _eval_m.train()
+            gen_bin = (x > 0.5).float().cpu()
+            log_dict['eval/note_density_gen']  = gen_bin.mean().item()
+            if val_real_pixel is not None:
+                log_dict['eval/note_density_real'] = val_real_pixel.float().mean().item()
+                r_pitch = val_real_pixel.float().cpu().mean(dim=(0,1,3)).numpy().reshape(-1,1)
+                g_pitch = gen_bin.mean(dim=(0,1,3)).numpy().reshape(-1,1)
+                log_dict['eval/wasserstein_pitch'] = wasserstein_score(r_pitch, g_pitch, n_projections=1)
+            if wandb.run is not None and viz_every and epoch % viz_every == 0:
+                g_min = x.flatten(1).min(1)[0].view(-1,1,1,1)
+                g_rng = (x.flatten(1).max(1)[0].view(-1,1,1,1) - g_min).clamp(min=1e-8)
+                log_dict['media/piano_rolls_gen']     = wandb.Image(make_grid(gen_bin, nrow=8),
+                                                                    caption=f'Binarized epoch {epoch}')
+                log_dict['media/piano_rolls_gen_raw'] = wandb.Image(make_grid(((x-g_min)/g_rng).cpu(), nrow=8),
+                                                                    caption=f'Raw epoch {epoch}')
+                if val_real_pixel is not None:
+                    log_dict['media/piano_rolls_real'] = wandb.Image(make_grid(val_real_pixel.cpu(), nrow=8),
+                                                                     caption=f'Real epoch {epoch}')
+        elif not is_pixel and eval_every and epoch % eval_every == 0:
             use_ema     = epoch >= ema_start_epoch
             eval_coarse = coarse_ema.ema if (mode != 'fine' and use_ema) else coarse_model
             eval_fine   = fine_ema.ema   if (do_fine and use_ema)        else (fine_model if do_fine else None)
@@ -1633,7 +1698,7 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
         if (wandb.run is not None): wandb.log(log_dict, step=global_step)
 
-        if mode == 'coarse':
+        if is_pixel or mode == 'coarse':
             save_checkpoint((coarse_ema, coarse_model), epoch, avg_loss, cfg or {},
                              optimizer=optimizer, save_every=save_every, tag=cfg.tag)
         elif mode == 'fine':
@@ -1776,8 +1841,47 @@ def _run_flow(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config_swin")
 def train_flow_main(cfg: DictConfig):
-    _run_flow(cfg)
+    stage = cfg.get('flow_stage', None)
+    if stage == 'pixel':
+        _run_flow_pixel(cfg)
+    else:
+        _run_flow(cfg)
 
 if __name__ == '__main__':
     train_flow_main()
+
+
+# %% ../nbs/12_train_flow.ipynb #pixel_entry_fn
+#| eval: false
+def _run_flow_pixel(cfg: DictConfig):
+    """Build UNetModelWrapper and AnchorDatasets, then call train_flow_conditional(mode='pixel')."""
+    from midi_rae.data import AnchorDataset
+    from torchcfm.models.unet.unet import UNetModelWrapper
+
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"device = {device}")
+
+    fc       = cfg.flow_pixel
+    data_dir = os.path.expandvars(os.path.expanduser(str(fc.data_dir)))
+
+    train_dataset = AnchorDataset(image_dataset_dir=data_dir, split='train', verbose=True)
+    val_dataset   = AnchorDataset(image_dataset_dir=data_dir, split='val',   verbose=True)
+
+    channel_mult = list(fc.get('channel_mult', [1, 2, 4, 4]))
+    model = UNetModelWrapper(
+        dim=(1, 128, 128),
+        num_res_blocks=fc.get('num_res_blocks', 2),
+        num_channels=fc.get('num_channel', 128),
+        channel_mult=channel_mult,
+        num_heads=fc.get('num_heads', 4),
+        num_head_channels=fc.get('num_head_channels', 64),
+        attention_resolutions=str(fc.get('attention_resolutions', '16')),
+        dropout=fc.get('dropout', 0.1),
+    )
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  UNetModelWrapper: {n_params:,} parameters  channel_mult={channel_mult}")
+
+    # coarse_model=UNet, fine_model=None, dataset=train, pixel_val_dataset=val
+    train_flow_conditional(model, None, train_dataset, cfg,
+                           device=device, pixel_val_dataset=val_dataset)
 
