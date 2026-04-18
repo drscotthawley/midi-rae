@@ -4,6 +4,9 @@ defaults:
 
 flow_stage: pixel
 
+flow:
+  mode: pixel
+
 flow_pixel:
   data_dir: $HOME/datasets/POP909_images_basic
   n_epochs: 500
