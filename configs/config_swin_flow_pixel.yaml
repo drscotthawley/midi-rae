@@ -10,7 +10,7 @@ flow:
 flow_pixel:
   data_dir: $HOME/datasets/POP909_images_basic
   n_epochs: 500
-  batch_size: 32
+  batch_size: 24
   lr: 1e-4
   grad_clip: 1.0
   sigma: 0.0
