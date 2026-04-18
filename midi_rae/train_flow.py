@@ -1717,6 +1717,9 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
 
 # %% ../nbs/12_train_flow.ipynb #pixel_entry_fn
 #| eval: false
+import hydra
+from omegaconf import DictConfig
+
 def _run_flow_pixel(cfg: DictConfig):
     """Build UNetModelWrapper and AnchorDatasets, then call train_flow_conditional(mode='pixel')."""
     from midi_rae.data import AnchorDataset
