@@ -1715,6 +1715,41 @@ def train_flow_conditional(coarse_model, fine_model, dataset, cfg, device='cpu',
     print(f"FINISHED. Best loss: {save_checkpoint.best_val_loss:.6f}")
 
 
+# %% ../nbs/12_train_flow.ipynb #pixel_entry_fn
+#| eval: false
+def _run_flow_pixel(cfg: DictConfig):
+    """Build UNetModelWrapper and AnchorDatasets, then call train_flow_conditional(mode='pixel')."""
+    from midi_rae.data import AnchorDataset
+    from torchcfm.models.unet.unet import UNetModelWrapper
+
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"device = {device}")
+
+    fc       = cfg.flow_pixel
+    data_dir = os.path.expandvars(os.path.expanduser(str(fc.data_dir)))
+
+    train_dataset = AnchorDataset(image_dataset_dir=data_dir, split='train', verbose=True)
+    val_dataset   = AnchorDataset(image_dataset_dir=data_dir, split='val',   verbose=True)
+
+    channel_mult = list(fc.get('channel_mult', [1, 2, 4, 4]))
+    model = UNetModelWrapper(
+        dim=(1, 128, 128),
+        num_res_blocks=fc.get('num_res_blocks', 2),
+        num_channels=fc.get('num_channel', 128),
+        channel_mult=channel_mult,
+        num_heads=fc.get('num_heads', 4),
+        num_head_channels=fc.get('num_head_channels', 64),
+        attention_resolutions=str(fc.get('attention_resolutions', '16')),
+        dropout=fc.get('dropout', 0.1),
+    )
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  UNetModelWrapper: {n_params:,} parameters  channel_mult={channel_mult}")
+
+    # coarse_model=UNet, fine_model=None, dataset=train, pixel_val_dataset=val
+    train_flow_conditional(model, None, train_dataset, cfg,
+                           device=device, pixel_val_dataset=val_dataset)
+
+
 # %% ../nbs/12_train_flow.ipynb #qhs2e2vgban
 #| eval: false
 import hydra
@@ -1849,39 +1884,4 @@ def train_flow_main(cfg: DictConfig):
 
 if __name__ == '__main__':
     train_flow_main()
-
-
-# %% ../nbs/12_train_flow.ipynb #pixel_entry_fn
-#| eval: false
-def _run_flow_pixel(cfg: DictConfig):
-    """Build UNetModelWrapper and AnchorDatasets, then call train_flow_conditional(mode='pixel')."""
-    from midi_rae.data import AnchorDataset
-    from torchcfm.models.unet.unet import UNetModelWrapper
-
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"device = {device}")
-
-    fc       = cfg.flow_pixel
-    data_dir = os.path.expandvars(os.path.expanduser(str(fc.data_dir)))
-
-    train_dataset = AnchorDataset(image_dataset_dir=data_dir, split='train', verbose=True)
-    val_dataset   = AnchorDataset(image_dataset_dir=data_dir, split='val',   verbose=True)
-
-    channel_mult = list(fc.get('channel_mult', [1, 2, 4, 4]))
-    model = UNetModelWrapper(
-        dim=(1, 128, 128),
-        num_res_blocks=fc.get('num_res_blocks', 2),
-        num_channels=fc.get('num_channel', 128),
-        channel_mult=channel_mult,
-        num_heads=fc.get('num_heads', 4),
-        num_head_channels=fc.get('num_head_channels', 64),
-        attention_resolutions=str(fc.get('attention_resolutions', '16')),
-        dropout=fc.get('dropout', 0.1),
-    )
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"  UNetModelWrapper: {n_params:,} parameters  channel_mult={channel_mult}")
-
-    # coarse_model=UNet, fine_model=None, dataset=train, pixel_val_dataset=val
-    train_flow_conditional(model, None, train_dataset, cfg,
-                           device=device, pixel_val_dataset=val_dataset)
 
