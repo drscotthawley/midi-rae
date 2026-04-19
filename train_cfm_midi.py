@@ -42,11 +42,13 @@ flags.DEFINE_integer("batch_size", 32, help="batch size")
 flags.DEFINE_integer("num_workers", 4, help="workers of Dataloader")
 flags.DEFINE_float("ema_decay", 0.9999, help="ema decay rate")
 # Evaluation
-flags.DEFINE_integer("save_step", 2500, help="frequency of saving/logging, 0 to disable")
+flags.DEFINE_integer("eval_step", 1000, help="frequency of eval/wandb logging")
+flags.DEFINE_integer("save_step", 10000, help="frequency of checkpoint saves, 0 to disable")
 flags.DEFINE_boolean("use_checkpoint", False, help="gradient checkpointing to save VRAM (slower)")
 flags.DEFINE_integer("crop_size", 128, help="spatial crop size (square)")
 flags.DEFINE_integer("n_gen", 64, help="number of samples to generate for eval")
 flags.DEFINE_integer("n_ode_steps", 100, help="ODE steps for sample generation")
+flags.DEFINE_integer("ema_image_step", 20000, help="frequency of EMA image logging to wandb (0=same as eval_step)")
 # Wandb
 flags.DEFINE_string("wandb_project", "cfm-pixel", help="wandb project name")
 flags.DEFINE_string("run_name", "", help="wandb run name (empty = auto)")
@@ -129,7 +131,7 @@ def train(argv):
     val_dataset = AnchorDataset(
         image_dataset_dir=FLAGS.data_dir,
         crop_size=(crop_size, crop_size),
-        split='val', aug_y_max=0, sigma=7, verbose=False,
+        split='val', verbose=False,
     )
     dataloader = torch.utils.data.DataLoader(
         train_dataset, batch_size=FLAGS.batch_size,
@@ -196,23 +198,37 @@ def train(argv):
                 print(f"step {step} loss {loss_val:.4f}", flush=True)
                 wandb.log({"train/loss": loss_val, "train/lr": sched.get_last_lr()[0]}, step=step)
 
-            if FLAGS.save_step > 0 and step > 0 and step % FLAGS.save_step == 0:
-                gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size)
-                gen_ema    = generate_samples(ema_model,  savedir, step, "ema",   crop_size)
-                nd_gen, nd_real, wass, mmd, gen_bin = compute_metrics(gen_ema, real_ref)
-                wandb.log({
-                    "eval/note_density_gen":  nd_gen,
-                    "eval/note_density_real": nd_real,
-                    "eval/wasserstein_pitch": wass,
-                    "eval/mmd":               mmd,
+            if FLAGS.eval_step > 0 and step > 0 and step % FLAGS.eval_step == 0:
+                ema_img_step = FLAGS.ema_image_step if FLAGS.ema_image_step > 0 else FLAGS.eval_step
+                log_ema_img  = (step % ema_img_step == 0)
+                gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size)
+                nd_gen_n, nd_real, wass_n, mmd_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
+                log_dict = {
+                    "eval/normal/note_density":      nd_gen_n,
+                    "eval/real/note_density":        nd_real,
+                    "eval/normal/wasserstein_pitch": wass_n,
+                    "eval/normal/mmd":               mmd_n,
                     "media/normal": wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
                                                 caption=f"normal step {step}"),
-                    "media/ema":    wandb.Image(make_grid(gen_ema.cpu(),    nrow=8),
-                                                caption=f"ema step {step}"),
-                    "media/ema_binarized": wandb.Image(make_grid(gen_bin, nrow=8),
-                                                       caption=f"ema binarized step {step}"),
-                }, step=step)
-                del gen_normal, gen_ema, gen_bin
+                    "media/normal_binarized": wandb.Image(make_grid(gen_bin_n, nrow=8),
+                                                          caption=f"normal binarized step {step}"),
+                }
+                del gen_normal, gen_bin_n
+                if log_ema_img:
+                    gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size)
+                    nd_gen_e, _, wass_e, mmd_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
+                    log_dict.update({
+                        "eval/ema/note_density":         nd_gen_e,
+                        "eval/ema/wasserstein_pitch":    wass_e,
+                        "eval/ema/mmd":                  mmd_e,
+                        "media/ema": wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
+                                                 caption=f"ema step {step}"),
+                        "media/ema_binarized": wandb.Image(make_grid(gen_bin_e, nrow=8),
+                                                           caption=f"ema binarized step {step}"),
+                    })
+                    del gen_ema, gen_bin_e
+                wandb.log(log_dict, step=step)
+            if FLAGS.save_step > 0 and step > 0 and step % FLAGS.save_step == 0:
                 torch.save(
                     {"net_model": net_model.state_dict(), "ema_model": ema_model.state_dict(),
                      "sched": sched.state_dict(), "optim": optim.state_dict(), "step": step},
