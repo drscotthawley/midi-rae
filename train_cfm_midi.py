@@ -72,29 +72,54 @@ def infiniteloop(dataloader):
             yield batch['img']   # (B, 1, H, W), values in [0, 1]
 
 
-def mmd_rbf(x, y, sigma=1.0):
-    """MMD with RBF kernel between two sets of flat vectors (CPU numpy arrays)."""
-    def rbf(a, b):
-        diff = a[:, None] - b[None, :]          # (n, m, d)
-        return np.exp(-((diff ** 2).sum(-1)) / (2 * sigma ** 2))
-    return rbf(x, x).mean() - 2 * rbf(x, y).mean() + rbf(y, y).mean()
+def mmd_rbf(x, y, n_sub=2000):
+    """Unbiased MMD² with RBF kernel, median bandwidth heuristic. x, y: (N,D) tensors."""
+    if x.size(0) > n_sub: x = x[torch.randperm(x.size(0))[:n_sub]]
+    if y.size(0) > n_sub: y = y[torch.randperm(y.size(0))[:n_sub]]
+    xy = torch.cat([x, y], dim=0)
+    sigma2 = torch.cdist(xy, xy).median().pow(2).clamp(min=1e-6)
+    def rbf(a, b): return torch.exp(-torch.cdist(a, b).pow(2) / (2 * sigma2))
+    return (rbf(x, x).mean() + rbf(y, y).mean() - 2 * rbf(x, y).mean()).item()
+
+
+def wasserstein_score(x, y, n_projections=200, n_sub=2000):
+    """Sliced Wasserstein on flat images. x, y: (N,D) numpy arrays."""
+    rng = np.random.default_rng(0)
+    D = x.shape[1]
+    projs = rng.standard_normal((D, n_projections))
+    projs /= np.linalg.norm(projs, axis=0, keepdims=True)
+    px, py = x[:n_sub] @ projs, y[:n_sub] @ projs
+    return float(np.mean([wasserstein_distance(px[:, i], py[:, i]) for i in range(n_projections)]))
 
 
 def compute_metrics(gen_gpu, real_cpu):
     """All metrics on CPU. gen_gpu: (N,1,H,W) GPU tensor in [0,1]."""
-    gen = (gen_gpu > 0.5).float().cpu()                        # binarize
-    note_density_gen  = gen.mean().item()
-    note_density_real = real_cpu.mean().item()
+    from scipy.stats import skew, kurtosis
+    gen  = (gen_gpu > 0.5).float().cpu()                        # binarize
+    n_sub = min(2000, gen.shape[0], real_cpu.shape[0])
+    g_flat_t = gen.view(gen.shape[0], -1)
+    r_flat_t = real_cpu.float().view(real_cpu.shape[0], -1)
+    g_flat = g_flat_t[:n_sub].numpy()
+    r_flat = r_flat_t[:n_sub].numpy()
     # pitch marginals: mean over (batch, channel, time) → (H,)
     g_pitch = gen.mean(dim=(0, 1, 3)).numpy()
     r_pitch = real_cpu.mean(dim=(0, 1, 3)).numpy()
-    wass    = wasserstein_distance(r_pitch, g_pitch)
-    # MMD on downsampled flat images (subsample for speed)
-    n_sub = min(256, gen.shape[0], real_cpu.shape[0])
-    g_flat = gen[:n_sub].view(n_sub, -1).numpy()
-    r_flat = real_cpu[:n_sub].float().view(n_sub, -1).numpy()
-    mmd    = float(mmd_rbf(g_flat, r_flat))
-    return note_density_gen, note_density_real, wass, mmd, gen
+    metrics = {
+        "note_density_gen":   gen.mean().item(),
+        "note_density_real":  real_cpu.mean().item(),
+        "gen_mean":           float(g_flat.mean()),
+        "gen_std":            float(g_flat.std()),
+        "gen_skew":           float(skew(g_flat.ravel())),
+        "gen_kurt":           float(kurtosis(g_flat.ravel())),
+        "real_mean":          float(r_flat.mean()),
+        "real_std":           float(r_flat.std()),
+        "real_skew":          float(skew(r_flat.ravel())),
+        "real_kurt":          float(kurtosis(r_flat.ravel())),
+        "mmd":                mmd_rbf(g_flat_t[:n_sub], r_flat_t[:n_sub]),
+        "wasserstein":        wasserstein_score(g_flat, r_flat),
+        "wasserstein_pitch":  float(wasserstein_distance(r_pitch, g_pitch)),
+    }
+    return metrics, gen
 
 
 def generate_samples(model, savedir, step, net_="normal", n=64, crop_size=128):
@@ -202,30 +227,23 @@ def train(argv):
                 ema_img_step = FLAGS.ema_image_step if FLAGS.ema_image_step > 0 else FLAGS.eval_step
                 log_ema_img  = (step % ema_img_step == 0)
                 gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size)
-                nd_gen_n, nd_real, wass_n, mmd_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
-                log_dict = {
-                    "eval/normal/note_density":      nd_gen_n,
-                    "eval/real/note_density":        nd_real,
-                    "eval/normal/wasserstein_pitch": wass_n,
-                    "eval/normal/mmd":               mmd_n,
-                    "media/normal": wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
-                                                caption=f"normal step {step}"),
-                    "media/normal_binarized": wandb.Image(make_grid(gen_bin_n, nrow=8),
-                                                          caption=f"normal binarized step {step}"),
-                }
+                m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
+                log_dict = {f"eval/normal/{k}": v for k, v in m_n.items()}
+                log_dict.update({f"eval/real/{k}": v for k, v in m_n.items()
+                                 if k.startswith("real_")})
+                log_dict["media/normal"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
+                                                       caption=f"normal step {step}")
+                log_dict["media/normal_binarized"] = wandb.Image(make_grid(gen_bin_n, nrow=8),
+                                                                  caption=f"normal binarized step {step}")
                 del gen_normal, gen_bin_n
                 if log_ema_img:
                     gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size)
-                    nd_gen_e, _, wass_e, mmd_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
-                    log_dict.update({
-                        "eval/ema/note_density":         nd_gen_e,
-                        "eval/ema/wasserstein_pitch":    wass_e,
-                        "eval/ema/mmd":                  mmd_e,
-                        "media/ema": wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
-                                                 caption=f"ema step {step}"),
-                        "media/ema_binarized": wandb.Image(make_grid(gen_bin_e, nrow=8),
-                                                           caption=f"ema binarized step {step}"),
-                    })
+                    m_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
+                    log_dict.update({f"eval/ema/{k}": v for k, v in m_e.items()})
+                    log_dict["media/ema"] = wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
+                                                        caption=f"ema step {step}")
+                    log_dict["media/ema_binarized"] = wandb.Image(make_grid(gen_bin_e, nrow=8),
+                                                                   caption=f"ema binarized step {step}")
                     del gen_ema, gen_bin_e
                 wandb.log(log_dict, step=step)
             if FLAGS.save_step > 0 and step > 0 and step % FLAGS.save_step == 0:
