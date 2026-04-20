@@ -22,15 +22,41 @@ from torchcfm.conditional_flow_matching import (
     TargetConditionalFlowMatcher,
     VariancePreservingConditionalFlowMatcher,
 )
-from torchcfm.models.unet.unet import UNetModelWrapper
+from torchcfm.models.unet.unet_mlc import UNetModelWrapperMLC
 
+from pathlib import Path
 from midi_rae.data import AnchorDataset
+
+
+class PreencodedImageDataset(torch.utils.data.IterableDataset):
+    """Stream img+PCA conditioning from pre-encoded chunk pairs."""
+    def __init__(self, data_dir, crop_size=128, split='train'):
+        self.enc_chunks = sorted(Path(data_dir).glob(f"{split}_chunk*.pt"))
+        pca_dir = Path(str(data_dir).replace("encoded", "pca"))
+        self.pca_chunks = sorted(pca_dir.glob(f"{split}_chunk*_pca.pt"))
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        pairs = list(zip(self.enc_chunks, self.pca_chunks))
+        if worker_info is not None:
+            pairs = pairs[worker_info.id::worker_info.num_workers]
+        for enc_p, pca_p in pairs:
+            enc = torch.load(enc_p, weights_only=False)
+            pca = torch.load(pca_p, weights_only=False)
+            offset = 0
+            for rec in enc:
+                n = rec['img1'].shape[0]
+                cond = [pca[k][offset:offset+n] for k in sorted(pca.keys())]
+                offset += n
+                for i, img in enumerate(rec['img1'].unbind(0)):
+                    yield {'img': img.float(), 'cond': [c[i] for c in cond]}
 
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string("model", "otcfm", help="flow matching model type")
 flags.DEFINE_string("output_dir", "./results/cfm_midi/", help="output directory")
 flags.DEFINE_string("data_dir", "~/datasets/POP909_images_basic/", help="piano roll image dir")
+flags.DEFINE_string("data_mode", "anchor", help="data loading: anchor or preencoded")
+flags.DEFINE_string("preencoded_dir", "", help="dir of preencoded .pt chunks (data_mode=preencoded)")
 # UNet
 flags.DEFINE_integer("num_channel", 128, help="base channel of UNet")
 # Training
@@ -69,7 +95,11 @@ def ema(source, target, decay):
 def infiniteloop(dataloader):
     while True:
         for batch in dataloader:
-            yield batch['img']   # (B, 1, H, W), values in [0, 1]
+            #yield batch['img']   # (B, 1, H, W), values in [0, 1]
+            cond = batch.get('cond', None)
+            if cond is not None: # reshape to (B, n_comps, H, W)
+                cond = [c.view(c.shape[0], int(c.shape[1]**0.5), int(c.shape[1]**0.5), c.shape[2]).permute(0,3,1,2) for c in cond]
+            yield batch['img'], cond   # (B, 1, H, W), list of (B, cond_dim)
 
 
 def mmd_rbf(x, y, n_sub=2000):
@@ -121,10 +151,21 @@ def compute_metrics(gen_gpu, real_cpu):
     }
     return metrics, gen
 
+class CFGWrapper(torch.nn.Module):
+    def __init__(self, m, c, strength):
+        super().__init__(); 
+        self.m = m; self.c = c; self.strength = strength
+    def forward(self, t, x, strength=None):
+        # Note: torchdyn will only call forward(t, x) so the strength= kwarg won't be reachable via the ODE solver
+        strength = self.strength if strength is None else strength
+        v_uncond = self.m(t, x, mlcond=None)
+        v_cond   = self.m(t, x, mlcond=self.c)
+        return v_uncond + strength * (v_cond - v_uncond)
 
-def generate_samples(model, savedir, step, net_="normal", n=64, crop_size=128):
+def generate_samples(model, savedir, step, net_="normal", n=64, crop_size=128, mlcond=None, cfg_strength=1.0):
     model.eval()
     model_ = copy.deepcopy(model)
+    if mlcond is not None: model_ = CFGWrapper(model_, mlcond, cfg_strength)
     node_ = NeuralODE(model_, solver="euler", sensitivity="adjoint")
     with torch.no_grad():
         traj = node_.trajectory(
@@ -138,6 +179,33 @@ def generate_samples(model, savedir, step, net_="normal", n=64, crop_size=128):
     return traj   # GPU tensor, [0,1]
 
 
+def mlc_dropout(mlcond, p_uncond=0.1, p_keep_level=0.1, p_zero_level: list | None = None, p_patch: list | None = None):
+    """ 'dropout' for multilevel conditioning"""
+    if mlcond is None: return None 
+    if p_zero_level is None:  p_zero_level = [0.2] * len(mlcond)
+    if p_patch is None:  p_patch = [0.2] * len(mlcond)
+ 
+    case = torch.rand(()).item()
+    if case < p_uncond:  # case 1:
+        return None   # classic CFG, 10% of time, drop all conditioning
+    elif case < p_uncond + p_keep_level: # case 2: single level only
+        keep = torch.randint(len(mlcond), ()).item()
+        for i in range(len(mlcond)):
+            if i != keep: mlcond[i] *= 0    # case 2: keep only single level, zero all others.
+    else: # case 3: per-level/patch dropout
+        B = mlcond[0].shape[0]               # batch size
+        for i, cond in enumerate(mlcond):
+            drop = torch.rand(B) < p_zero_level[i]
+            if drop.any(): cond[drop] = 0   # drop entire level 
+            elif (apply := torch.rand(B) < p_patch[i]).any(): # drop patches within levels
+                H, W = cond.shape[2], cond.shape[3]
+                mask = (torch.rand(B, 1, H, W, device=cond.device) > 0.5).float()
+                mask[~apply] = 1.0
+                mlcond[i] *= mask
+    return mlcond
+
+
+
 def train(argv):
     crop_size = FLAGS.crop_size
     print(f"lr={FLAGS.lr}, steps={FLAGS.total_steps}, ema={FLAGS.ema_decay}, model={FLAGS.model}")
@@ -148,27 +216,38 @@ def train(argv):
                            ema_decay=FLAGS.ema_decay, crop_size=crop_size,
                            save_step=FLAGS.save_step))
 
-    train_dataset = AnchorDataset(
-        image_dataset_dir=FLAGS.data_dir,
-        crop_size=(crop_size, crop_size),
-        split='train', aug_y_max=12, sigma=7,
-    )
-    val_dataset = AnchorDataset(
-        image_dataset_dir=FLAGS.data_dir,
-        crop_size=(crop_size, crop_size),
-        split='val', verbose=False,
-    )
+    if FLAGS.data_mode == "preencoded":
+        train_dataset = PreencodedImageDataset(FLAGS.preencoded_dir, crop_size=crop_size, split='train')
+        val_dataset   = PreencodedImageDataset(FLAGS.preencoded_dir, crop_size=crop_size, split='val')
+    else:
+        train_dataset = AnchorDataset(
+            image_dataset_dir=FLAGS.data_dir,
+            crop_size=(crop_size, crop_size),
+            split='train', aug_y_max=12, sigma=7,
+        )
+        val_dataset = AnchorDataset(
+            image_dataset_dir=FLAGS.data_dir,
+            crop_size=(crop_size, crop_size),
+            split='val', verbose=False,
+        )
+    shuffle = not isinstance(train_dataset, torch.utils.data.IterableDataset)
     dataloader = torch.utils.data.DataLoader(
         train_dataset, batch_size=FLAGS.batch_size,
-        shuffle=True, num_workers=FLAGS.num_workers, drop_last=True,
+        shuffle=shuffle, num_workers=FLAGS.num_workers, drop_last=True,
     )
     datalooper = infiniteloop(dataloader)
 
     # Fixed real reference batch for metrics (CPU, loaded once)
-    val_dl = torch.utils.data.DataLoader(val_dataset, batch_size=FLAGS.n_gen, shuffle=True)
-    real_ref = next(iter(val_dl))['img']   # (n_gen, 1, H, W) CPU, [0,1]
+    val_shuffle = not isinstance(val_dataset, torch.utils.data.IterableDataset)
+    val_dl = torch.utils.data.DataLoader(val_dataset, batch_size=FLAGS.n_gen, shuffle=val_shuffle)
+    real_batch = next(iter(val_dl))  # (n_gen, 1, H, W) CPU, [0,1]
+    real_ref = real_batch['img']
+    cond_ref = real_batch.get('cond', None)
+    if cond_ref is not None:
+        cond_ref = [c.view(c.shape[0], int(c.shape[1]**0.5), int(c.shape[1]**0.5), c.shape[2])
+                    .permute(0,3,1,2) for c in cond_ref]
 
-    net_model = UNetModelWrapper(
+    net_model = UNetModelWrapperMLC(
         dim=(1, crop_size, crop_size),
         num_res_blocks=2,
         num_channels=FLAGS.num_channel,
@@ -206,11 +285,15 @@ def train(argv):
     with trange(FLAGS.total_steps, dynamic_ncols=True) as pbar:
         for step in pbar:
             optim.zero_grad()
-            x1 = next(datalooper).to(device)
+            x1, cond = next(datalooper)
+            cond = mlc_dropout(cond, p_uncond=0.1) 
+            x1 = x1.to(device)
+            if cond is not None:
+                cond = [c.to(device) for c in cond]
             x1 = x1 * 2 - 1          # [0, 1] → [-1, 1]
             x0 = torch.randn_like(x1)
             t, xt, ut = FM.sample_location_and_conditional_flow(x0, x1)
-            vt = net_model(t, xt)
+            vt = net_model(t, xt, mlcond=cond)
             loss = torch.mean((vt - ut) ** 2)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net_model.parameters(), FLAGS.grad_clip)
@@ -223,10 +306,13 @@ def train(argv):
                 print(f"step {step} loss {loss_val:.4f}", flush=True)
                 wandb.log({"train/loss": loss_val, "train/lr": sched.get_last_lr()[0]}, step=step)
 
+            # SAMPLING & EVAL
             if FLAGS.eval_step > 0 and step > 0 and step % FLAGS.eval_step == 0:
                 ema_img_step = FLAGS.ema_image_step if FLAGS.ema_image_step > 0 else FLAGS.eval_step
                 log_ema_img  = (step % ema_img_step == 0)
-                gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size)
+                #gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size)
+                cond_gpu = [c.to(device) for c in cond_ref] if cond_ref is not None else None
+                gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size, mlcond=cond_gpu)
                 m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
                 log_dict = {f"eval/normal/{k}": v for k, v in m_n.items()}
                 log_dict.update({f"eval/real/{k}": v for k, v in m_n.items()
@@ -237,7 +323,7 @@ def train(argv):
                                                                   caption=f"normal binarized step {step}")
                 del gen_normal, gen_bin_n
                 if log_ema_img:
-                    gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size)
+                    gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size, mlcond=cond_gpu)
                     m_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
                     log_dict.update({f"eval/ema/{k}": v for k, v in m_e.items()})
                     log_dict["media/ema"] = wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
