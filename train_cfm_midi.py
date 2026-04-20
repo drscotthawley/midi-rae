@@ -247,6 +247,8 @@ def train(argv):
         cond_ref = [c.view(c.shape[0], int(c.shape[1]**0.5), int(c.shape[1]**0.5), c.shape[2])
                     .permute(0,3,1,2) for c in cond_ref]
 
+    mlcond_shapes = {c.shape[2]: (i, c.shape[1]) for i, c in enumerate(cond_ref)} if cond_ref is not None else None
+
     net_model = UNetModelWrapperMLC(
         dim=(1, crop_size, crop_size),
         num_res_blocks=2,
@@ -257,6 +259,7 @@ def train(argv):
         attention_resolutions="16",
         dropout=0.1,
         use_checkpoint=FLAGS.use_checkpoint,
+        mlcond_shapes=mlcond_shapes,
     ).to(device)
 
     ema_model = copy.deepcopy(net_model)
