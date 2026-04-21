@@ -72,7 +72,8 @@ flags.DEFINE_integer("eval_step", 1000, help="frequency of eval/wandb logging")
 flags.DEFINE_integer("save_step", 10000, help="frequency of checkpoint saves, 0 to disable")
 flags.DEFINE_boolean("use_checkpoint", False, help="gradient checkpointing to save VRAM (slower)")
 flags.DEFINE_integer("crop_size", 128, help="spatial crop size (square)")
-flags.DEFINE_integer("n_gen", 4*64, help="number of samples to generate for eval")
+flags.DEFINE_integer("n_gen", 64, help="number of samples to generate for eval")
+flags.DEFINE_integer("gen_loops", 4, help="number of gen-loops over which to aggregate eval metrics (for stability, set to >1 to reduce noise from small eval sample size)")
 flags.DEFINE_integer("n_ode_steps", 100, help="ODE steps for sample generation")
 flags.DEFINE_integer("ema_image_step", 20000, help="frequency of EMA image logging to wandb (0=same as eval_step)")
 # Wandb
@@ -122,10 +123,10 @@ def wasserstein_score(x, y, n_projections=200, n_sub=2000):
     return float(np.mean([wasserstein_distance(px[:, i], py[:, i]) for i in range(n_projections)]))
 
 
-def compute_metrics(gen_gpu, real_cpu):
-    """All metrics on CPU. gen_gpu: (N,1,H,W) GPU tensor in [0,1]."""
+def compute_metrics(gen_bin_cpu, real_cpu):
+    """All metrics on CPU. gen_bin_cpu: (N,1,H,W) binarized CPU float tensor."""
     from scipy.stats import skew, kurtosis
-    gen  = (gen_gpu > 0.5).float().cpu()                        # binarize
+    gen = gen_bin_cpu.float()
     n_sub = min(2000, gen.shape[0], real_cpu.shape[0])
     g_flat_t = gen.view(gen.shape[0], -1)
     r_flat_t = real_cpu.float().view(real_cpu.shape[0], -1)
@@ -134,7 +135,7 @@ def compute_metrics(gen_gpu, real_cpu):
     # pitch marginals: mean over (batch, channel, time) → (H,)
     g_pitch = gen.mean(dim=(0, 1, 3)).numpy()
     r_pitch = real_cpu.mean(dim=(0, 1, 3)).numpy()
-    metrics = {
+    return {
         "note_density_gen":   gen.mean().item(),
         "note_density_real":  real_cpu.mean().item(),
         "gen_mean":           float(g_flat.mean()),
@@ -149,7 +150,6 @@ def compute_metrics(gen_gpu, real_cpu):
         "wasserstein":        wasserstein_score(g_flat, r_flat),
         "wasserstein_pitch":  float(wasserstein_distance(r_pitch, g_pitch)),
     }
-    return metrics, gen
 
 class CFGWrapper(torch.nn.Module):
     def __init__(self, m, c, strength):
@@ -239,7 +239,7 @@ def train(argv):
 
     # Fixed real reference batch for metrics (CPU, loaded once)
     val_shuffle = not isinstance(val_dataset, torch.utils.data.IterableDataset)
-    val_dl = torch.utils.data.DataLoader(val_dataset, batch_size=FLAGS.n_gen, shuffle=val_shuffle)
+    val_dl = torch.utils.data.DataLoader(val_dataset, batch_size=FLAGS.n_gen * FLAGS.gen_loops, shuffle=val_shuffle)
     real_batch = next(iter(val_dl))  # (n_gen, 1, H, W) CPU, [0,1]
     real_ref = real_batch['img']
     cond_ref = real_batch.get('cond', None)
@@ -317,24 +317,38 @@ def train(argv):
                 #gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size)
                 cond_gpu = [c.to(device) for c in cond_ref] if cond_ref is not None else None
                 log_dict = {}
-                for gen_type, cond in zip(["uncond", "cond"], [None, cond_gpu]):
-                    gen_normal = generate_samples(net_model, savedir, step, gen_type, n=FLAGS.n_gen, crop_size=crop_size, mlcond=cond)
-                    m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
+                for gen_type, cond_all in zip(["uncond", "cond"], [None, cond_gpu]):
+                    gen_bins = []
+                    for loop_i in range(FLAGS.gen_loops):
+                        cond_batch = [c[loop_i*FLAGS.n_gen:(loop_i+1)*FLAGS.n_gen] for c in cond_all] if cond_all is not None else None
+                        gen_batch = generate_samples(net_model, savedir, step, gen_type, n=FLAGS.n_gen, crop_size=crop_size, mlcond=cond_batch)
+                        gen_bin_batch = (gen_batch > 0.5).float().cpu()
+                        if loop_i == 0:
+                            log_dict[f"media/normal_{gen_type}"] = wandb.Image(make_grid(gen_batch.cpu(), nrow=8),
+                                                                caption=f"{gen_type} step {step}")
+                            log_dict[f"media/normal_{gen_type}_binarized"] = wandb.Image(make_grid(gen_bin_batch, nrow=8),
+                                                                            caption=f"{gen_type} binarized step {step}")
+                        gen_bins.append(gen_bin_batch)
+                        del gen_batch
+                    gen_bin_all = torch.cat(gen_bins, dim=0)
+                    m_n = compute_metrics(gen_bin_all, real_ref)
                     log_dict.update({f"eval/{gen_type}/{k}": v for k, v in m_n.items()})
-                    log_dict[f"media/normal_{gen_type}"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
-                                                        caption=f"{gen_type} step {step}")
-                    log_dict[f"media/normal_{gen_type}_binarized"] = wandb.Image(make_grid(gen_bin_n, nrow=8),
-                                                                    caption=f"{gen_type} binarized step {step}")
-                    del gen_normal, gen_bin_n
+                    del gen_bin_all, gen_bins
                 if log_ema_img:
-                    gen_ema = generate_samples(ema_model, savedir, step, "ema", n=FLAGS.n_gen, crop_size=crop_size, mlcond=cond_gpu)
-                    m_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
+                    ema_bins = []
+                    for loop_i in range(FLAGS.gen_loops):
+                        cond_batch = [c[loop_i*FLAGS.n_gen:(loop_i+1)*FLAGS.n_gen] for c in cond_gpu] if cond_gpu is not None else None
+                        gen_ema = generate_samples(ema_model, savedir, step, "ema", n=FLAGS.n_gen, crop_size=crop_size, mlcond=cond_batch)
+                        ema_bin_batch = (gen_ema > 0.5).float().cpu()
+                        if loop_i == 0:
+                            log_dict["media/ema"] = wandb.Image(make_grid(gen_ema.cpu(), nrow=8), caption=f"ema step {step}")
+                            log_dict["media/ema_binarized"] = wandb.Image(make_grid(ema_bin_batch, nrow=8), caption=f"ema binarized step {step}")
+                        ema_bins.append(ema_bin_batch)
+                        del gen_ema
+                    ema_bin_all = torch.cat(ema_bins, dim=0)
+                    m_e = compute_metrics(ema_bin_all, real_ref)
                     log_dict.update({f"eval/ema/{k}": v for k, v in m_e.items()})
-                    log_dict["media/ema"] = wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
-                                                        caption=f"ema step {step}")
-                    log_dict["media/ema_binarized"] = wandb.Image(make_grid(gen_bin_e, nrow=8),
-                                                                   caption=f"ema binarized step {step}")
-                    del gen_ema, gen_bin_e
+                    del ema_bin_all, ema_bins
                 wandb.log(log_dict, step=step)
             if FLAGS.save_step > 0 and step > 0 and step % FLAGS.save_step == 0:
                 torch.save(
