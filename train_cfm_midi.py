@@ -321,7 +321,7 @@ def train(argv):
                 for gen_type, cond in zip(["uncond", "cond"], [None, cond_gpu]):
                     gen_normal = generate_samples(net_model, savedir, step, gen_type, crop_size=crop_size, mlcond=cond)
                     m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
-                    for k, v in m_n.items(): log_dict[f"eval/{gen_type}/{k}"] = v
+                    log_dict.update({f"eval/{gen_type}/{k}": v for k, v in m_n.items()})
                     log_dict[f"media/normal_{gen_type}"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
                                                         caption=f"{gen_type} step {step}")
                     log_dict[f"media/normal_{gen_type}_binarized"] = wandb.Image(make_grid(gen_bin_n, nrow=8),
@@ -330,7 +330,7 @@ def train(argv):
                 if log_ema_img:
                     gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size, mlcond=cond_gpu)
                     m_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
-                    for k, v in m_e.items(): log_dict[f"eval/ema/{k}"] = v
+                    log_dict.update({f"eval/ema/{k}": v for k, v in m_e.items()})
                     log_dict["media/ema"] = wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
                                                         caption=f"ema step {step}")
                     log_dict["media/ema_binarized"] = wandb.Image(make_grid(gen_bin_e, nrow=8),
