@@ -321,7 +321,7 @@ def train(argv):
                 for gen_type, cond in zip(["uncond", "cond"], [None, cond_gpu]):
                     gen_normal = generate_samples(net_model, savedir, step, gen_type, crop_size=crop_size, mlcond=cond)
                     m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
-                    log_dict.update({f"eval/{gen_type}/{k}": v for k, v in m_n.items()})
+                    log_dict.update({f"eval/{gt}/{k}": v for gt in [gen_type] for k, v in m_n.items()})
                     log_dict[f"media/normal_{gen_type}"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
                                                         caption=f"{gen_type} step {step}")
                     log_dict[f"media/normal_{gen_type}_binarized"] = wandb.Image(make_grid(gen_bin_n, nrow=8),
