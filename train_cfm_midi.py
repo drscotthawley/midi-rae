@@ -318,7 +318,7 @@ def train(argv):
                 cond_gpu = [c.to(device) for c in cond_ref] if cond_ref is not None else None
                 log_dict = {}
                 for gen_type, cond in zip(["uncond", "cond"], [None, cond_gpu]):
-                    gen_normal = generate_samples(net_model, savedir, step, gen_type, crop_size=crop_size, mlcond=cond)
+                    gen_normal = generate_samples(net_model, savedir, step, gen_type, n=FLAGS.n_gen, crop_size=crop_size, mlcond=cond)
                     m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
                     log_dict.update({f"eval/{gen_type}/{k}": v for k, v in m_n.items()})
                     log_dict[f"media/normal_{gen_type}"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
@@ -327,7 +327,7 @@ def train(argv):
                                                                     caption=f"{gen_type} binarized step {step}")
                     del gen_normal, gen_bin_n
                 if log_ema_img:
-                    gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size, mlcond=cond_gpu)
+                    gen_ema = generate_samples(ema_model, savedir, step, "ema", n=FLAGS.n_gen, crop_size=crop_size, mlcond=cond_gpu)
                     m_e, gen_bin_e = compute_metrics(gen_ema, real_ref)
                     log_dict.update({f"eval/ema/{k}": v for k, v in m_e.items()})
                     log_dict["media/ema"] = wandb.Image(make_grid(gen_ema.cpu(), nrow=8),
