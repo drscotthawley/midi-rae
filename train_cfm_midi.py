@@ -188,20 +188,20 @@ def mlc_dropout(mlcond, p_uncond=0.1, p_keep_level=0.1, p_zero_level: list | Non
     case = torch.rand(()).item()
     if case < p_uncond:  # case 1:
         return None   # classic CFG, 10% of time, drop all conditioning
-    elif case < p_uncond + p_keep_level: # case 2: single level only
-        keep = torch.randint(len(mlcond), ()).item()
-        for i in range(len(mlcond)):
-            if i != keep: mlcond[i] *= 0    # case 2: keep only single level, zero all others.
-    else: # case 3: per-level/patch dropout
-        B = mlcond[0].shape[0]               # batch size
-        for i, cond in enumerate(mlcond):
-            drop = torch.rand(B) < p_zero_level[i]
-            if drop.any(): cond[drop] = 0   # drop entire level 
-            elif (apply := torch.rand(B) < p_patch[i]).any(): # drop patches within levels
-                H, W = cond.shape[2], cond.shape[3]
-                mask = (torch.rand(B, 1, H, W, device=cond.device) > 0.5).float()
-                mask[~apply] = 1.0
-                mlcond[i] *= mask
+    # elif case < p_uncond + p_keep_level: # case 2: single level only
+    #     keep = torch.randint(len(mlcond), ()).item()
+    #     for i in range(len(mlcond)):
+    #         if i != keep: mlcond[i] *= 0    # case 2: keep only single level, zero all others.
+    # else: # case 3: per-level/patch dropout
+    #     B = mlcond[0].shape[0]               # batch size
+    #     for i, cond in enumerate(mlcond):
+    #         drop = torch.rand(B) < p_zero_level[i]
+    #         if drop.any(): cond[drop] = 0   # drop entire level 
+    #         elif (apply := torch.rand(B) < p_patch[i]).any(): # drop patches within levels
+    #             H, W = cond.shape[2], cond.shape[3]
+    #             mask = (torch.rand(B, 1, H, W, device=cond.device) > 0.5).float()
+    #             mask[~apply] = 1.0
+    #             mlcond[i] *= mask
     return mlcond
 
 
@@ -289,7 +289,7 @@ def train(argv):
       for step in pbar:
             optim.zero_grad()
             x1, cond = next(datalooper)
-            #cond = mlc_dropout(cond, p_uncond=0.1) 
+            cond = mlc_dropout(cond, p_uncond=0.1) 
             x1 = x1.to(device)
             if cond is not None:
                 cond = [c.to(device) for c in cond]
