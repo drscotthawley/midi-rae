@@ -15,6 +15,7 @@ from scipy.stats import wasserstein_distance
 from torchvision.utils import make_grid, save_image
 from torchdyn.core import NeuralODE
 from tqdm import trange
+from reloading import reloading
 
 from torchcfm.conditional_flow_matching import (
     ConditionalFlowMatcher,
@@ -72,7 +73,7 @@ flags.DEFINE_integer("eval_step", 1000, help="frequency of eval/wandb logging")
 flags.DEFINE_integer("save_step", 10000, help="frequency of checkpoint saves, 0 to disable")
 flags.DEFINE_boolean("use_checkpoint", False, help="gradient checkpointing to save VRAM (slower)")
 flags.DEFINE_integer("crop_size", 128, help="spatial crop size (square)")
-flags.DEFINE_integer("n_gen", 64, help="number of samples to generate for eval")
+flags.DEFINE_integer("n_gen", 4*64, help="number of samples to generate for eval")
 flags.DEFINE_integer("n_ode_steps", 100, help="ODE steps for sample generation")
 flags.DEFINE_integer("ema_image_step", 20000, help="frequency of EMA image logging to wandb (0=same as eval_step)")
 # Wandb
@@ -155,7 +156,7 @@ class CFGWrapper(torch.nn.Module):
     def __init__(self, m, c, strength):
         super().__init__(); 
         self.m = m; self.c = c; self.strength = strength
-    def forward(self, t, x, strength=None):
+    def forward(self, t, x, strength=None, **kwargs):
         # Note: torchdyn will only call forward(t, x) so the strength= kwarg won't be reachable via the ODE solver
         strength = self.strength if strength is None else strength
         v_uncond = self.m(t, x, mlcond=None)
@@ -285,11 +286,11 @@ def train(argv):
     savedir = os.path.join(FLAGS.output_dir, FLAGS.model)
     os.makedirs(savedir, exist_ok=True)
 
-    with trange(FLAGS.total_steps, dynamic_ncols=True) as pbar:
-        for step in pbar:
+    pbar = trange(FLAGS.total_steps, dynamic_ncols=True)
+    for step in reloading(pbar):
             optim.zero_grad()
             x1, cond = next(datalooper)
-            cond = mlc_dropout(cond, p_uncond=0.1) 
+            #cond = mlc_dropout(cond, p_uncond=0.1) 
             x1 = x1.to(device)
             if cond is not None:
                 cond = [c.to(device) for c in cond]
@@ -307,7 +308,8 @@ def train(argv):
             pbar.set_postfix(loss=f"{loss_val:.4f}")
             if step % 100 == 0:
                 print(f"step {step} loss {loss_val:.4f}", flush=True)
-                wandb.log({"train/loss": loss_val, "train/lr": sched.get_last_lr()[0]}, step=step)
+                wandb.log({"train/loss": loss_val, "train/lr": sched.get_last_lr()[0],
+                           "train/cond_proj_norm": net_model.mlcond_global_proj.weight.norm().item()}, step=step)
 
             # SAMPLING & EVAL
             if FLAGS.eval_step > 0 and step > 0 and step % FLAGS.eval_step == 0:
@@ -315,16 +317,16 @@ def train(argv):
                 log_ema_img  = (step % ema_img_step == 0)
                 #gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size)
                 cond_gpu = [c.to(device) for c in cond_ref] if cond_ref is not None else None
-                gen_normal = generate_samples(net_model, savedir, step, "normal", crop_size=crop_size, mlcond=cond_gpu)
-                m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
-                log_dict = {f"eval/normal/{k}": v for k, v in m_n.items()}
-                log_dict.update({f"eval/real/{k}": v for k, v in m_n.items()
-                                 if k.startswith("real_")})
-                log_dict["media/normal"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
-                                                       caption=f"normal step {step}")
-                log_dict["media/normal_binarized"] = wandb.Image(make_grid(gen_bin_n, nrow=8),
-                                                                  caption=f"normal binarized step {step}")
-                del gen_normal, gen_bin_n
+                log_dict = {}
+                for gen_type, cond in zip(["uncond", "cond"], [None, cond_gpu]):
+                    gen_normal = generate_samples(net_model, savedir, step, gen_type, crop_size=crop_size, mlcond=cond)
+                    m_n, gen_bin_n = compute_metrics(gen_normal, real_ref)
+                    log_dict.update({f"eval/{gen_type}/{k}": v for k, v in m_n.items()})
+                    log_dict[f"media/normal_{gen_type}"] = wandb.Image(make_grid(gen_normal.cpu(), nrow=8),
+                                                        caption=f"{gen_type} step {step}")
+                    log_dict[f"media/normal_{gen_type}_binarized"] = wandb.Image(make_grid(gen_bin_n, nrow=8),
+                                                                    caption=f"{gen_type} binarized step {step}")
+                    del gen_normal, gen_bin_n
                 if log_ema_img:
                     gen_ema = generate_samples(ema_model, savedir, step, "ema", crop_size=crop_size, mlcond=cond_gpu)
                     m_e, gen_bin_e = compute_metrics(gen_ema, real_ref)

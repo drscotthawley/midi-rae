@@ -37,8 +37,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" && "$TYPE" != "ssm" ]]; then
-    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', 'generate', or 'ssm', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" && "$TYPE" != "ssm" && "$TYPE" != "cfm" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', 'generate', 'ssm', or 'cfm', got '${TYPE}'"
     exit 1
 fi
 
@@ -72,7 +72,13 @@ $SSH "${HOST}" "mkdir -p ${RUN_DIR}/midi_rae ${RUN_DIR}/configs ${RUN_DIR}/check
 # Copy source snapshot (and configs for Hydra-based types)
 echo "Copying midi_rae/*.py to ${HOST}:${RUN_DIR}/ ..."
 scp "${REPO_DIR}"/midi_rae/*.py "${HOST}:${RUN_DIR}/midi_rae/"
-if [[ "$TYPE" != "ssm" ]]; then
+if [[ "$TYPE" == "cfm" ]]; then
+    echo "Copying train_cfm_midi.py to ${HOST}:${RUN_DIR}/ ..."
+    scp "${REPO_DIR}"/train_cfm_midi.py "${HOST}:${RUN_DIR}/"
+    echo "Copying unet_mlc.py to ${HOST} site-packages ..."
+    scp "${REPO_DIR}"/conditional-flow-matching/torchcfm/models/unet/unet_mlc.py \
+        "${HOST}:~/envs/midi-rae/lib/python3.10/site-packages/torchcfm/models/unet/unet_mlc.py"
+elif [[ "$TYPE" != "ssm" ]]; then
     echo "Copying configs/ to ${HOST}:${RUN_DIR}/ ..."
     scp "${REPO_DIR}"/configs/*.yaml "${HOST}:${RUN_DIR}/configs/"
 fi
@@ -91,11 +97,22 @@ elif [[ "$TYPE" = "ssm" ]]; then
 elif [[ "$TYPE" = "flow2" ]]; then
     MODULE="midi_rae.train_flow"   # _run_flow2 dispatched via ++flow_stage=2 Hydra override
     EXTRA_OVERRIDES="++flow_stage=2 ${EXTRA_OVERRIDES}"
-else
+elif [[ "$TYPE" != "cfm" ]]; then
     MODULE="midi_rae.train_${TYPE}"
 fi
 
-if [[ "$TYPE" = "ssm" ]]; then
+if [[ "$TYPE" = "cfm" ]]; then
+cat > /tmp/midi_rae_run.sh << EOF
+#!/bin/bash
+source ~/envs/midi-rae/bin/activate
+cd ${RUN_DIR}
+PYTHONPATH=${RUN_DIR} nohup python train_cfm_midi.py \
+    --run_name ${RUN_TAG} \
+    ${EXTRA_OVERRIDES} \
+    > ${RUN_DIR}/run.log 2>&1 &
+echo \$!
+EOF
+elif [[ "$TYPE" = "ssm" ]]; then
 cat > /tmp/midi_rae_run.sh << EOF
 #!/bin/bash
 source ~/envs/midi-rae/bin/activate
