@@ -548,3 +548,52 @@ Piano roll pixels form a natural binary lattice (note on/off). Discrete flow mat
 - **Epochs**: 100 epochs (~3.5 hrs) for final runs; with a flat LR schedule, 25 epochs (~50 min) may be sufficient to discriminate between ideas — 4x more experiments in the same wall time. Use a tiered strategy: 25 epochs to screen, 50 to confirm, 100 for final.
 - **Val_loss vs decoder F1 correlation**: Is encoder val_loss actually predictive of decoder F1? Worth verifying by running the decoder on a few encoder checkpoints with different val_losses. If the correlation is weak, we need a better proxy metric.
 - **Can decoder F1 exceed 99.2%?** This is the baseline with the current encoder. Does a better encoder push this higher, or is the decoder bottleneck elsewhere?
+
+## Probe distances: always per-patch first, never mean-pool embeddings first
+
+**Rule**: when comparing two encoder outputs, always compute per-patch distances first, then average those distances. Never average embeddings across patches first and then compute a single distance on the mean.
+
+- **Wrong**: `z1 = emb1.mean(dim=1); z2 = emb2.mean(dim=1); dist = (z1-z2).norm()`
+- **Right**: `dist = (emb1 - emb2).norm(dim=-1).mean()`
+
+Mean-pooling embeddings before distance hides real per-patch behavior and can produce artifacts that look like global sensitivity when there is none — e.g. a model with purely local receptive fields would still appear sensitive to large global shifts if embeddings are mean-pooled first. Always be explicit about when mean-pooling is introduced and why.
+
+## Paper framing and follow-up work (2026-04-24)
+
+### Overarching story
+The paper's central argument is **domain-bias-informed hierarchical design**: every architectural choice (Swin hierarchy, FPN, LeJEPA + SIGReg objectives, pitch/time curriculum) was motivated by what a musical representation *should* structurally look like — not by ablation search. STORMBIRD is the experimental confirmation that the model internalized this structure.
+
+### STORMBIRD as the results section
+Frame each probe as confirming a specific prediction from the musical-structure theory:
+- Chord probes → harmonic structure encoded
+- Transposition equivariance → pitch-shift symmetry respected
+- Time translation equivariance → temporal-shift symmetry respected
+- Melody separation → compositional structure (TOTAL − PIANO ≈ MELODY in embedding space)
+- EMOPIA emotion → mid-level semantic content captured at L2/L3
+
+This reads as hypothesis-driven, not exploratory — a key defense against "too ambitious, not rigorous enough."
+
+### FPN finding (important for paper)
+Even the finest level (L5, 4×4 patch) shows monotonic distance increase out to 64px time shift — far beyond its local receptive field. Explanation: the FPN top-down pathway injects global context from L0 (128×128 global view) into L5. So fine levels encode "local texture + global context from above," not just local patches. This is a stronger and more interesting claim than "coarse=global, fine=local."
+
+### DINO baseline (follow-up, high priority)
+Add `--dino` flag to probe_musicality.py to run STORMBIRD with a pretrained DINO backbone instead of the Swin encoder. Rationale:
+1. The original RAE paper used DINO encodings — this is a direct apples-to-apples RAE backbone comparison.
+2. DINO had zero musical training but massive scale; our Swin encoder has far less data but music-specific objectives (equivariance, SIGReg).
+3. The gap on STORMBIRD probes — especially transposition and time equivariance — quantifies exactly what the musical inductive bias buys you over a generic vision encoder.
+4. Answers the implicit reviewer question: "couldn't any decent image encoder do this?"
+
+### Delta injection into encoder (follow-up)
+Currently deltas (shift distances between crop pairs) are used only in the loss, never fed into the encoder. Injecting the delta (or a sinusoidal encoding of it) into the encoder — e.g. added to patch embeddings before the Swin stages, or as cross-attention conditioning — would let the network learn globally position-aware equivariance rather than being limited by local windowed receptive fields. Per-patch equivariance at fine levels (L4, L5) currently breaks down once shifts exceed patch size, because patches have no access to global song position. This is the same motivation as Music Transformer's relative attention and RoPE: distance between tokens matters more than absolute position. The delta is already the training signal; injection just makes it available as encoder input too. Not "cheating" — just providing geometric information the network currently has no way to access from purely local windowed attention.
+
+### Factorization loss at coarse levels only (follow-up)
+Re-introduce `factorization_loss` but apply it selectively at coarse levels (L0, L1) rather than uniformly. Motivation: coarse levels have enormous unused capacity (~13 effective dims out of 256 at L0 per PCA), so factorization pressure has headroom to work without disrupting already-useful fine-level representations. L0 sees the full image — if any level should factorize pitch vs time axes it's the global one. Practical note: L0 has only 1 patch per image, so `lambda_fact` may need to be higher than usual to generate sufficient gradient signal.
+
+### Level-specific loss weights (follow-up, implement later)
+Allow `lambda_*` parameters in the config to be lists instead of scalars, e.g. `lambda_fact: [1.0, 0.5, 0.0, 0.0, 0.0, 0.0]`. Each loss function checks `isinstance(lw.get('lambda_fact'), list)` and indexes by level. Scalar values broadcast as before — fully backward compatible. This would let factorization, anchor, and attraction losses be tuned independently per level rather than uniformly applied everywhere. Natural pairing with the factorization-at-coarse-levels idea.
+
+### FPN ablation (follow-up)
+Train a Swin encoder with FPN disabled, then run STORMBIRD on it. Key prediction: L5's time translation equivariance curve should go flat beyond ~4px (its local receptive field), while L0 still rises. If confirmed, this is direct causal evidence that the FPN is responsible for global context propagation into fine levels — not just a post-hoc explanation. A clean, low-cost ablation that strengthens the FPN finding considerably.
+
+### Tomorrow's priority
+Verify that the conditioning controls generation in musically meaningful ways. If yes, the full arc is complete: principled hierarchical design → encoder learns correct musical structure (STORMBIRD confirms) → flow model uses that structure for controlled generation.

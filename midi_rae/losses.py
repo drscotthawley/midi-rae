@@ -129,7 +129,7 @@ def calc_enc_loss(z1, z2, global_step, z3=None, deltas=None, target=None, non_em
 def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None, target=None,
                              non_emptys=None, loss_weights=None, n_skip_finest=1, debug=False):
     """Compute encoder loss at each hierarchy level of the Swin encoder."""
-    lw = loss_weights or {}
+    lw = dict(loss_weights) if loss_weights else {}
     if not isinstance(z1, list):  # regular ViT
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
         return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(),
@@ -150,6 +150,9 @@ def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None
                 z3_flat = z3_l.reshape(-1, D).float()
                 ne_flat.append(ne[2].reshape(-1).bool())
             else: ne_flat.append(None)
+            if lev > 2:
+                if 'lambda_fact' in lw: lw['lambda_fact'] = 0.0
+                z3_flat = None  # skip factorization computation entirely
             d_expanded = deltas.repeat_interleave(N, dim=0).float() if deltas is not None else None
             t_expanded = target.repeat_interleave(N, dim=0).float() if target is not None else None
             ld = calc_enc_loss(z1_flat, z2_flat, global_step, z3=z3_flat, deltas=d_expanded, target=t_expanded,

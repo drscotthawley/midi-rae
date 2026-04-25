@@ -26,6 +26,7 @@ from torchcfm.models.unet.unet_mlc import UNetModelWrapperMLC
 
 from pathlib import Path
 from midi_rae.data import AnchorDataset
+from midi_rae.utils import set_seed
 
 
 class PreencodedImageDataset(torch.utils.data.IterableDataset):
@@ -53,7 +54,7 @@ class PreencodedImageDataset(torch.utils.data.IterableDataset):
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string("model", "otcfm", help="flow matching model type")
-flags.DEFINE_string("output_dir", "./results/cfm_midi/", help="output directory")
+flags.DEFINE_string("output_dir", "./checkpoints/", help="output directory")
 flags.DEFINE_string("data_dir", "~/datasets/POP909_images_basic/", help="piano roll image dir")
 flags.DEFINE_string("data_mode", "anchor", help="data loading: anchor or preencoded")
 flags.DEFINE_string("preencoded_dir", "", help="dir of preencoded .pt chunks (data_mode=preencoded)")
@@ -69,7 +70,8 @@ flags.DEFINE_integer("num_workers", 4, help="workers of Dataloader")
 flags.DEFINE_float("ema_decay", 0.9999, help="ema decay rate")
 # Evaluation
 flags.DEFINE_integer("eval_step", 1000, help="frequency of eval/wandb logging")
-flags.DEFINE_integer("save_step", 10000, help="frequency of checkpoint saves, 0 to disable")
+flags.DEFINE_integer("save_step", 2000, help="frequency of checkpoint saves, 0 to disable")
+flags.DEFINE_integer("n_keep", 5, help="number of most-recent checkpoints to keep (older ones deleted)")
 flags.DEFINE_boolean("use_checkpoint", False, help="gradient checkpointing to save VRAM (slower)")
 flags.DEFINE_integer("crop_size", 128, help="spatial crop size (square)")
 flags.DEFINE_integer("n_gen", 64, help="number of samples to generate for eval")
@@ -282,8 +284,10 @@ def train(argv):
     else:
         raise NotImplementedError(f"Unknown model {FLAGS.model}")
 
-    savedir = os.path.join(FLAGS.output_dir, FLAGS.model)
+    savedir = os.path.join("./results/cfm_midi", FLAGS.model)
+    ckptdir = FLAGS.output_dir
     os.makedirs(savedir, exist_ok=True)
+    os.makedirs(ckptdir, exist_ok=True)
 
     with trange(FLAGS.total_steps, dynamic_ncols=True) as pbar:
       for step in pbar:
@@ -318,6 +322,7 @@ def train(argv):
                 cond_gpu = [c.to(device) for c in cond_ref] if cond_ref is not None else None
                 log_dict = {}
                 for gen_type, cond_all in zip(["uncond", "cond"], [None, cond_gpu]):
+                    set_seed(step)   # same noise for uncond and cond
                     gen_bins = []
                     for loop_i in range(FLAGS.gen_loops):
                         cond_batch = [c[loop_i*FLAGS.n_gen:(loop_i+1)*FLAGS.n_gen] for c in cond_all] if cond_all is not None else None
@@ -351,11 +356,19 @@ def train(argv):
                     del ema_bin_all, ema_bins
                 wandb.log(log_dict, step=step)
             if FLAGS.save_step > 0 and step > 0 and step % FLAGS.save_step == 0:
+                ckpt_path = os.path.join(ckptdir, f"{FLAGS.model}_midi_weights_step_{step}.pt")
                 torch.save(
                     {"net_model": net_model.state_dict(), "ema_model": ema_model.state_dict(),
                      "sched": sched.state_dict(), "optim": optim.state_dict(), "step": step},
-                    os.path.join(savedir, f"{FLAGS.model}_midi_weights_step_{step}.pt"),
+                    ckpt_path,
                 )
+                # Rolling deletion: keep only the n_keep most recent checkpoints
+                import glob as _glob
+                all_ckpts = sorted(
+                    _glob.glob(os.path.join(ckptdir, f"{FLAGS.model}_midi_weights_step_*.pt")),
+                    key=os.path.getmtime)
+                for old in all_ckpts[:-FLAGS.n_keep]:
+                    os.remove(old)
 
     wandb.finish()
 

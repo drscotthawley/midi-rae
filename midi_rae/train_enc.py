@@ -181,6 +181,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
 # %% ../nbs/06_train_enc.ipynb #69be248f-4310-4da7-81f2-826063804f8d
 def train(cfg: DictConfig):
     dict_test = dict(cfg) # force resolution of required fields (e.g. tag=???)
+    OmegaConf.set_struct(cfg, False)  # allow runtime modifications (e.g. curriculum)
     
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     cjprint(f"config file: {HydraConfig.get().job.config_name}\nconfig: {cfg}\ndevice = {device}",color="green")
@@ -250,6 +251,7 @@ def train(cfg: DictConfig):
     # Flat + cosine-tail LR schedule: warmup -> flat -> cosine decay in last tail_epochs.
     epochs = cfg.training.epochs
     lr = cfg.training.lr
+    max_lambda_fact = cfg.training.get('lambda_fact', 0.0)
     warmup_epochs = cfg.training.get('lr_warmup_epochs', 3)
     tail_epochs   = cfg.training.get('lr_tail_epochs', 10)
     def lr_lambda(epoch):
@@ -284,6 +286,7 @@ def train(cfg: DictConfig):
     rprint("And this is training \n","yellow")
     best_val_loss = float('inf')
     for epoch in range(epoch_start, cfg.training.epochs+1):
+        cfg.training.lambda_fact = max_lambda_fact * min(1.0, epoch / 150)  # ramp up factorization loss over first 150 epochs (after that it's fully on)
         if wandb.run is not None: wandb.log({"epoch": epoch})
         encoder.train()
         train_loss = 0
@@ -323,7 +326,7 @@ def train(cfg: DictConfig):
             if wandb.run is not None: 
                 log = {"lr": optimizer.param_groups[0]['lr'], 'epoch': epoch,
                        'ema_eta': ema_encoder.eta if ema_encoder is not None else cfg.training.get('ema_eta',0),
-                       'lambda_sim': loss_weights['lambda_sim'],
+                       'lambda_sim': loss_weights['lambda_sim'], 'lambda_fact': cfg.training.get('lambda_fact', 0.0),
                        "max_shift_x": shared_ct_dict['training']['max_shift_x'], "max_shift_y": shared_ct_dict['training']['max_shift_y']}
                 for prefix, ld in [("train", loss_dict), ("val", val_loss_dict)]:
                     for k in ('loss', 'sim', 'sigreg', 'anchor', 'fact', 'mae', 'mep'):

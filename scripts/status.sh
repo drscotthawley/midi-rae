@@ -15,10 +15,22 @@ if [ -z "\$RUN_DIR" ]; then echo "No runs found under ${RUNS_DIR}"; exit 1; fi
 echo "Run: \$RUN_DIR"
 echo ""
 
-# Main process only: lowest-PID python -m midi_rae.* process
-MAIN_PID=\$(ps aux | grep '[p]ython -m midi_rae' | awk '{print \$2}' | sort -n | head -1)
-if [ -n "\$MAIN_PID" ]; then
-    echo "Status: RUNNING (PID \$MAIN_PID)"
+# Check if log is growing (most reliable running indicator)
+LOG_GROWING=0
+if [ -f "\$RUN_DIR/run.log" ]; then
+    SIZE1=\$(wc -c < "\$RUN_DIR/run.log")
+    sleep 2
+    SIZE2=\$(wc -c < "\$RUN_DIR/run.log")
+    [ "\$SIZE2" -gt "\$SIZE1" ] && LOG_GROWING=1
+fi
+
+# Main process only: lowest-PID midi_rae training process (module or script form)
+MAIN_PID=\$(ps aux | grep -E '[p]ython -m midi_rae|[p]ython train_cfm_midi|[p]ython train_flow' | awk '{print \$2}' | sort -n | head -1)
+if [ "\$LOG_GROWING" -eq 1 ]; then
+    echo "Status: RUNNING (log growing$([ -n "\$MAIN_PID" ] && echo ", PID \$MAIN_PID"))"
+    [ -n "\$MAIN_PID" ] && echo "  \$(ps -p \$MAIN_PID -o cmd=)"
+elif [ -n "\$MAIN_PID" ]; then
+    echo "Status: RUNNING (PID \$MAIN_PID, log not growing)"
     echo "  \$(ps -p \$MAIN_PID -o cmd=)"
 else
     echo "Status: NOT RUNNING"
