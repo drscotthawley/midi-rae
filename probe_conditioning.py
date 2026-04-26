@@ -116,6 +116,25 @@ flags.DEFINE_boolean("no_wandb",      False,        "disable wandb logging")
 flags.DEFINE_string("wandb_project",  "cond-probe",  "wandb project name")
 flags.DEFINE_string("run_name",       "",           "wandb run name (empty = auto)")
 flags.DEFINE_float("cfg_strength",    10.0,         "CFG guidance strength (1.0 = no amplification)")
+flags.DEFINE_boolean("partial_cond",  True,         "also probe keep/drop level and patch50 variants")
+
+
+def apply_partial_cond(cond_batch, mode, level=None):
+    """Return a modified copy of cond_batch with partial conditioning applied.
+    mode: 'keep_level' (zero all but `level`), 'drop_level' (zero `level`), 'patch50' (50% patch dropout on L1+).
+    """
+    cond = [c.clone() for c in cond_batch]
+    n_levels = len(cond)
+    if mode == 'keep_level':
+        for i in range(n_levels):
+            if i != level: cond[i] = torch.zeros_like(cond[i])
+    elif mode == 'drop_level':
+        cond[level] = torch.zeros_like(cond[level])
+    elif mode == 'patch50':
+        for i in range(1, n_levels):  # skip L0 (coarsest)
+            mask = (torch.rand(cond[i].shape[0], 1, 1, 1) < 0.5).float().to(cond[i].device)
+            cond[i] = cond[i] * mask
+    return cond
 
 
 def load_val_samples(preencoded_dir, n_samples, split='val'):
@@ -310,6 +329,50 @@ def main(argv):
     _report("Polyphony corr (↑)",      matched_poly,    shuffled_poly,    uncond_poly)
     _report("Note density ratio (↓)",  matched_dens,    shuffled_dens,    uncond_dens,    higher_better=False)
 
+    # Partial conditioning ablations
+    n_levels = len(cond_m_batch)
+    partial_xcorr = {}   # label → per-sample xcorr array
+    partial_gens  = {}   # label → (n_viz, 1, H, W) cpu tensor for visualization
+    if FLAGS.partial_cond:
+        gen_args = dict(n_steps=FLAGS.n_ode_steps, solver=FLAGS.solver, cfg_strength=FLAGS.cfg_strength)
+        for lev in range(n_levels):
+            for mode, tag in [('keep_level', f'keep_L{lev}'), ('drop_level', f'drop_L{lev}')]:
+                pc = apply_partial_cond(cond_m_batch, mode, level=lev)
+                gen = generate_samples(model, x0_batch, pc, desc=tag, **gen_args)
+                partial_xcorr[tag] = _per_sample(xcorr_peak, gen.cpu())
+                partial_gens[tag]  = gen[:FLAGS.n_viz].cpu()
+        pc = apply_partial_cond(cond_m_batch, 'patch50')
+        gen = generate_samples(model, x0_batch, pc, desc='patch50', **gen_args)
+        partial_xcorr['patch50'] = _per_sample(xcorr_peak, gen.cpu())
+        partial_gens['patch50']  = gen[:FLAGS.n_viz].cpu()
+
+        # Reference xcorr values for comparison
+        ref_m = matched_xcorr.mean()
+        ref_u = uncond_xcorr.mean()
+        print(f"\n=== Partial Conditioning — XCorr Peak (matched={ref_m:.4f}, uncond={ref_u:.4f}) ===")
+        for tag, scores in partial_xcorr.items():
+            bar = '█' * int(20 * (scores.mean() - ref_u) / max(ref_m - ref_u, 1e-6))
+            print(f"  {tag:<12}  {scores.mean():.4f}  {bar}")
+
+        # Save viz grid: columns = Real | Full | KeepL0 | KeepL{mid} | KeepL{fine} | Uncond
+        mid  = n_levels // 2
+        fine = n_levels - 1
+        viz_cols = [
+            ("Real",              viz_real[0]),
+            ("Full",              viz_matched[0]),
+            (f"KeepL0",           partial_gens[f'keep_L0']),
+            (f"KeepL{mid}",       partial_gens[f'keep_L{mid}']),
+            (f"KeepL{fine}",      partial_gens[f'keep_L{fine}']),
+            ("Uncond",            viz_uncond[0]),
+        ]
+        nrow = FLAGS.n_viz
+        n_cols = len(viz_cols)
+        all_imgs = torch.cat([v for _, v in viz_cols], dim=0)
+        idx = [i + c * nrow for i in range(nrow) for c in range(n_cols)]
+        grid_partial = all_imgs[idx]
+        save_image(grid_partial, 'probe_partial_cond_grid.png', nrow=n_cols)
+        print(f"Saved → probe_partial_cond_grid.png  (columns: {' | '.join(l for l, _ in viz_cols)})")
+
     # Pitch regression: does PCA conditioning retain absolute pitch info?
     from sklearn.linear_model import Ridge
     from sklearn.model_selection import cross_val_score
@@ -400,6 +463,10 @@ def main(argv):
             **_wandb_metric("density_ratio", matched_dens,   shuffled_dens,   uncond_dens,   hi=False),
             **{f"eval/pitch_r2_pca/{k}": v for k, v in pitch_r2s.items()},
             **{f"eval/pitch_r2_raw/{k}": v for k, v in pitch_r2s_raw.items()},
+            **{f"eval/partial_xcorr/{tag}": scores.mean() for tag, scores in partial_xcorr.items()},
+            **({"media/partial_cond_grid": wandb.Image('probe_partial_cond_grid.png',
+                caption="Real | Full | KeepL0 | KeepLmid | KeepLfine | Uncond")}
+               if partial_xcorr else {}),
         }, step=step)
         wandb.finish()
 

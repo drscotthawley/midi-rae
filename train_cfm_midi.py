@@ -93,6 +93,7 @@ flags.DEFINE_integer("ema_image_step", 20000, help="frequency of EMA image loggi
 # Wandb
 flags.DEFINE_string("wandb_project", "cfm-pixel", help="wandb project name")
 flags.DEFINE_string("run_name", "", help="wandb run name (empty = auto)")
+flags.DEFINE_string("ckpt", "", help="checkpoint .pt to resume from")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -278,6 +279,16 @@ def train(argv):
     optim = torch.optim.Adam(net_model.parameters(), lr=FLAGS.lr)
     sched = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=warmup_lr)
 
+    start_step = 0
+    if FLAGS.ckpt:
+        ckpt = torch.load(os.path.expanduser(FLAGS.ckpt), map_location=device, weights_only=False)
+        net_model.load_state_dict(ckpt['net_model'])
+        ema_model.load_state_dict(ckpt['ema_model'])
+        if 'optim' in ckpt: optim.load_state_dict(ckpt['optim'])
+        if 'sched'  in ckpt: sched.load_state_dict(ckpt['sched'])
+        start_step = ckpt.get('step', 0)
+        print(f"Resumed from {FLAGS.ckpt} at step {start_step}")
+
     model_size = sum(p.data.nelement() for p in net_model.parameters())
     print(f"Model params: {model_size / 1024 / 1024:.2f} M")
     wandb.config.update({"n_params_M": model_size / 1024 / 1024})
@@ -299,7 +310,7 @@ def train(argv):
     os.makedirs(savedir, exist_ok=True)
     os.makedirs(ckptdir, exist_ok=True)
 
-    with trange(FLAGS.total_steps, dynamic_ncols=True) as pbar:
+    with trange(start_step, FLAGS.total_steps, dynamic_ncols=True) as pbar:
       for step in pbar:
             optim.zero_grad()
             x1, cond = next(datalooper)
