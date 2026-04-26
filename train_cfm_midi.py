@@ -192,29 +192,28 @@ def generate_samples(model, savedir, step, net_="normal", n=64, crop_size=128, m
     return traj   # GPU tensor, [0,1]
 
 
-def mlc_dropout(mlcond, p_uncond=0.1, p_keep_level=0.1, p_zero_level: list | None = None, p_patch: list | None = None):
+def mlc_dropout(mlcond, p_uncond=0.2, p_full=0.5, p_patch=0.5, mask_val=0.0):
     """ 'dropout' for multilevel conditioning"""
     if mlcond is None: return None 
-    if p_zero_level is None:  p_zero_level = [0.2] * len(mlcond)
-    if p_patch is None:  p_patch = [0.2] * len(mlcond)
- 
     case = torch.rand(()).item()
-    if case < p_uncond:  # case 1:
-        return None   # classic CFG, 10% of time, drop all conditioning
-    # elif case < p_uncond + p_keep_level: # case 2: single level only
-    #     keep = torch.randint(len(mlcond), ()).item()
-    #     for i in range(len(mlcond)):
-    #         if i != keep: mlcond[i] *= 0    # case 2: keep only single level, zero all others.
-    # else: # case 3: per-level/patch dropout
-    #     B = mlcond[0].shape[0]               # batch size
-    #     for i, cond in enumerate(mlcond):
-    #         drop = torch.rand(B) < p_zero_level[i]
-    #         if drop.any(): cond[drop] = 0   # drop entire level 
-    #         elif (apply := torch.rand(B) < p_patch[i]).any(): # drop patches within levels
-    #             H, W = cond.shape[2], cond.shape[3]
-    #             mask = (torch.rand(B, 1, H, W, device=cond.device) > 0.5).float()
-    #             mask[~apply] = 1.0
-    #             mlcond[i] *= mask
+    if case < p_uncond:  return None   # classic CFG, drop all conditioning
+    if case > 1-p_full:  return mlcond # full conditioning 
+    # remaining cases: drop level, keep only one level, zero out patches, 3-way split by random
+    case = torch.rand(()).item()
+    if case < 0.33: # drop level 
+        lev = torch.randint(len(mlcond), ()).item()
+        mlcond[lev] *= mask_val
+        return mlcond 
+    if case > 0.66: # keep only one level
+        keep = torch.randint(len(mlcond), ()).item()
+        for i in range(len(mlcond)):
+            if i != keep: mlcond[i] *= mask_val 
+        return mlcond  
+    # last case: per-level/patch dropout, except on corasest (level 0)
+    for i, cond in enumerate(mlcond):
+        if i == 0: continue
+        mask = (torch.rand(cond.shape[0], 1, 1, 1, device=cond.device) < p_patch).float()
+        mlcond[i] = cond * mask + mask_val * (1 - mask)
     return mlcond
 
 
