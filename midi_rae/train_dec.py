@@ -4,8 +4,8 @@
 
 # %% auto #0
 __all__ = ['setup_dataloaders', 'setup_models', 'DINOv2Encoder', 'setup_tstate', 'get_embeddings_batch', 'train_step',
-           'MaskTokens', 'mask_enc_out', 'add_noise_to_enc_out', 'load_pca_models', 'pca_roundtrip_enc_out', 'train',
-           'train_dec_main']
+           'MaskTokens', 'mask_enc_out', 'add_noise_to_enc_out', 'load_pca_models', 'pca_roundtrip_enc_out',
+           'PreEncodedWithPitchMeanDataset', 'collate_preencode_pm', 'inject_pitch_mean', 'train', 'train_dec_main']
 
 # %% ../nbs/09_train_dec.ipynb #da21448f-b3e5-4d19-be98-1b309c7830a0
 import sys
@@ -47,25 +47,31 @@ torch.set_float32_matmul_precision('high')
 
 # %% ../nbs/09_train_dec.ipynb #f87c9456
 from .data import (PreEncodedChunkDataset, ChunkShuffleSampler,
-                            collate_preencode, get_pos_cache, emb_levels_to_enc_out)
+                            collate_preencode, collate_emb_levels, get_pos_cache, emb_levels_to_enc_out)
 
 
 # %% ../nbs/09_train_dec.ipynb #f0cf8a0f
-def setup_dataloaders(cfg, preencoded=False):
+def setup_dataloaders(cfg, preencoded=False, pca_dir=None):
     nw = cfg.training.get('num_workers', [6, 4])
     batch_size = cfg.training.dec_batch_size
     if preencoded:
         encoded_dir = cfg.preencode.output_dir
-        train_ds = PreEncodedChunkDataset(encoded_dir, split='train')
-        val_ds   = PreEncodedChunkDataset(encoded_dir, split='val')
+        if pca_dir is not None:
+            train_ds = PreEncodedWithPitchMeanDataset(encoded_dir, pca_dir, split='train')
+            val_ds   = PreEncodedWithPitchMeanDataset(encoded_dir, pca_dir, split='val')
+            cfn = collate_preencode_pm
+        else:
+            train_ds = PreEncodedChunkDataset(encoded_dir, split='train')
+            val_ds   = PreEncodedChunkDataset(encoded_dir, split='val')
+            cfn = collate_preencode
         train_dl = DataLoader(train_ds, batch_size=batch_size,
                               sampler=ChunkShuffleSampler(train_ds, shuffle=True),
                               num_workers=nw[0], persistent_workers=(nw[0]>0),
-                              collate_fn=collate_preencode)
+                              collate_fn=cfn)
         val_dl   = DataLoader(val_ds, batch_size=batch_size,
                               sampler=ChunkShuffleSampler(val_ds, shuffle=False),
                               num_workers=nw[1], persistent_workers=(nw[1]>0),
-                              collate_fn=collate_preencode)
+                              collate_fn=cfn)
     else:
         from midi_rae.data import DINOv2Dataset
         use_dino = cfg.model.get('encoder', 'vit') == 'dinov2'
@@ -77,6 +83,7 @@ def setup_dataloaders(cfg, preencoded=False):
         val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=nw[1],
                               pin_memory=True, drop_last=True, persistent_workers=(nw[1]>0))
     return train_dl, val_dl
+
 
 # %% ../nbs/09_train_dec.ipynb #b221cde1
 def setup_models(cfg, device, preencoded, verbose=True): 
@@ -312,6 +319,66 @@ def pca_roundtrip_enc_out(enc_out, pca_models, n_aug_levels, device, noise_std=0
         patches=HierarchicalPatchState(levels=new_levels),
         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
 
+# %% ../nbs/09_train_dec.ipynb #7756cb43
+from glob import glob as _iglob
+
+class PreEncodedWithPitchMeanDataset(Dataset):
+    "PreEncodedChunkDataset that also loads pitch_mean from paired PCA chunk files."
+    def __init__(self, encoded_dir, pca_dir, split='train', emb_key='emb1', img_key='img1'):
+        self.emb_key, self.img_key = emb_key, img_key
+        encoded_dir = os.path.expandvars(os.path.expanduser(str(encoded_dir)))
+        self.pca_dir = os.path.expandvars(os.path.expanduser(str(pca_dir)))
+        self.files = sorted(_iglob(os.path.join(encoded_dir, f'{split}_chunk*.pt')))
+        assert self.files, f"No {split}_chunk*.pt files in {encoded_dir}"
+        self.index, self._chunk_rec_offsets, self.chunk_sample_ranges = [], {}, {}
+        for ci, f in enumerate(self.files):
+            chunk = torch.load(f, map_location='cpu', weights_only=False)
+            start, offsets, abs_offset = len(self.index), [], 0
+            for ri, rec in enumerate(chunk):
+                B = rec[emb_key][0].shape[0]
+                offsets.append(abs_offset)
+                abs_offset += B
+                for si in range(B): self.index.append((ci, ri, si))
+            self._chunk_rec_offsets[ci] = offsets
+            self.chunk_sample_ranges[ci] = (start, len(self.index))
+            del chunk
+        self._cache_ci = self._pca_cache_ci = None
+        self._cache_data = self._pca_cache_pm = None
+
+    def __len__(self): return len(self.index)
+
+    def __getitem__(self, idx):
+        ci, ri, si = self.index[idx]
+        if ci != self._cache_ci:
+            self._cache_data = torch.load(self.files[ci], map_location='cpu', weights_only=False)
+            self._cache_ci = ci
+        rec = self._cache_data[ri]
+        emb = [lvl[si].float() for lvl in rec[self.emb_key]]
+        img = rec[self.img_key][si].float()
+        if ci != self._pca_cache_ci:
+            fname = os.path.basename(self.files[ci]).replace('.pt', '_pca.pt')
+            self._pca_cache_pm = torch.load(os.path.join(self.pca_dir, fname), map_location='cpu', weights_only=False)['pitch_mean']
+            self._pca_cache_ci = ci
+        return emb, img, self._pca_cache_pm[self._chunk_rec_offsets[ci][ri] + si]
+
+
+def collate_preencode_pm(batch):
+    "Collate (emb_levels, img, pitch_mean) from PreEncodedWithPitchMeanDataset."
+    return collate_emb_levels([b[0] for b in batch]), torch.stack([b[1] for b in batch]), torch.stack([b[2] for b in batch])
+
+
+def inject_pitch_mean(enc_out, pitch_mean, pitch_vecs, device):
+    "Add pitch_mean * pitch_vec[i] to each level's embeddings; pitch_mean shape (B,)."
+    pm = pitch_mean.to(device).float()
+    new_levels = []
+    for i, lvl in enumerate(enc_out.patches.levels):
+        v = pitch_vecs[i]
+        delta = pm[:, None, None] * v[None, None, :]
+        new_levels.append(PatchState(emb=lvl.emb + delta, pos=lvl.pos, non_empty=lvl.non_empty, mae_mask=lvl.mae_mask))
+    return EncoderOutput(patches=HierarchicalPatchState(levels=new_levels),
+                         full_pos=enc_out.full_pos, full_non_empty=enc_out.full_non_empty, mae_mask=enc_out.mae_mask)
+
+
 # %% ../nbs/09_train_dec.ipynb #198855af
 def train(cfg: DictConfig):
     dict_test = dict(cfg) # force resolution of required fields (e.g. tag=???)
@@ -320,7 +387,9 @@ def train(cfg: DictConfig):
     set_seed()
     preencoded = cfg.get('preencoded', False)
 
-    train_dl, val_dl  = setup_dataloaders(cfg, preencoded)
+    use_pitch_mean = preencoded and cfg.training.get('pca_aug', False) and cfg.training.get('use_pitch_mean', False)
+    _pca_dir = cfg.training.pca_dir if use_pitch_mean else None
+    train_dl, val_dl  = setup_dataloaders(cfg, preencoded, pca_dir=_pca_dir)
     encoder, decoder  = setup_models(cfg, device, preencoded)
     patch_size = cfg.model.get('patch_size', cfg.model.get('patch_h', 16))
 
@@ -362,8 +431,17 @@ def train(cfg: DictConfig):
     if emb_noise_max > 0:
         cjprint(f"Latent noising enabled: emb_noise_max={emb_noise_max} (emb_noise_std ~ Uniform(0, max) per sample)", color='magenta')
 
+    pitch_vecs = None
+    if use_pitch_mean:
+        n_levels = len(cfg.model.depths)
+        dims = [cfg.model.embed_dim * (2 ** (n_levels - 1 - i)) for i in range(n_levels)]
+        pitch_vecs = nn.ParameterList([nn.Parameter(torch.zeros(d)) for d in dims]).to(device)
+        cjprint(f"Pitch mean injection enabled: {n_levels} learnable direction vectors", color='magenta')
+
+    extra_p = list(mask_tokens.parameters()) if mask_tokens else []
+    if pitch_vecs is not None: extra_p += list(pitch_vecs.parameters())
     tstate = setup_tstate(cfg, device, decoder, encoder=encoder,
-                          extra_params=list(mask_tokens.parameters()) if mask_tokens else None)
+                          extra_params=extra_p if extra_p else None)
 
     if cfg.training.get('dec_init_ckpt', None):
         decoder = load_checkpoint(decoder, os.path.expandvars(os.path.expanduser(cfg.training.dec_init_ckpt)))
@@ -390,15 +468,19 @@ def train(cfg: DictConfig):
         for batch in tqdm(train_dl, desc=f'Epoch {epoch}/{cfg.training.dec_epochs}'):
             global_step += 1
             if preencoded:
-                emb_levels, img_real = batch
+                emb_levels, img_real = batch[0], batch[1]
+                pitch_mean = batch[2] if len(batch) > 2 else None
                 img_real = img_real.to(device).float()
                 enc_out = emb_levels_to_enc_out(emb_levels, pos_cache, device)
                 note_weights = None
             else:
                 enc_out, img_real, note_weights = get_embeddings_batch(batch, encoder, device,
                                                                         allow_grad=(tstate.opt_enc is not None))
+                pitch_mean = None
             if pca_models is not None and torch.rand(1).item() < pca_aug_prob:
                 enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=0.0)
+            if pitch_vecs is not None and pitch_mean is not None:
+                enc_out = inject_pitch_mean(enc_out, pitch_mean, pitch_vecs, device)
             enc_out = add_noise_to_enc_out(enc_out, emb_noise_max)
             losses, img_recon = train_step(epoch, enc_out, img_real, decoder, tstate, cfg, note_weights=note_weights, mask_tokens=mask_tokens)
             train_loss += losses['dec'].item()
@@ -411,14 +493,18 @@ def train(cfg: DictConfig):
             for batch in val_dl:
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                     if preencoded:
-                        emb_levels, img_real = batch
+                        emb_levels, img_real = batch[0], batch[1]
+                        pitch_mean = batch[2] if len(batch) > 2 else None
                         img_real = img_real.to(device).float()
                         enc_out = emb_levels_to_enc_out(emb_levels, pos_cache, device)
                     else:
                         enc_out, img_real, _ = get_embeddings_batch(batch, encoder, device)
+                        pitch_mean = None
                     # no noise during val — clean eval
                     if pca_models is not None:
                         enc_out = pca_roundtrip_enc_out(enc_out, pca_models, pca_aug_levels, device, noise_std=0.0)
+                    if pitch_vecs is not None and pitch_mean is not None:
+                        enc_out = inject_pitch_mean(enc_out, pitch_mean, pitch_vecs, device)
                     enc_out = mask_enc_out(enc_out, mask_ratio=emb_mask_ratio,
                                            mr_level_fac=cfg.training.get('emb_mask_level_fac', 1.25),
                                            mask_levels=mask_levels, mask_tokens=mask_tokens)
@@ -461,6 +547,7 @@ def train(cfg: DictConfig):
 
     wandb.finish()
     return best_val_loss
+
 
 # %% ../nbs/09_train_dec.ipynb #cf0d6973
 #| eval: false
