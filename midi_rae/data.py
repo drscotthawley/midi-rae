@@ -34,12 +34,19 @@ def shift_no_wrap(x, shifts, dims):
     return out
 
 # %% ../nbs/01_data.ipynb #9cbee8f8-d8ff-4f74-882e-7dde4db4f684
-def sample_shift(max_shift, sigma=7, size=None):
+def sample_shift(max_shift, sigma=None, size=None, type='trunchnorm'):
     "Samples shifts amounts as integers from a truncated normal distribution"
-    a, b = -max_shift / sigma, max_shift / sigma
-    samples = truncnorm.rvs(a, b, loc=0, scale=sigma, size=size)
-    if size is None: return int(round(samples))
-    return np.rint(samples).astype(int)
+    if type == 'beta':
+        samples = np.random.beta(2.2, 2.2, size=size) * 2 * max_shift - max_shift
+        if size is None: return int(round(samples))
+        return np.rint(samples).astype(int)
+    else:
+        sigma = max_shift / 1.75 if sigma is None else sigma
+        a, b = -max_shift / sigma, max_shift / sigma
+        samples = truncnorm.rvs(a, b, loc=0, scale=sigma, size=size)
+        if size is None: return int(round(samples))
+        return np.rint(samples).astype(int)
+
 
 # %% ../nbs/01_data.ipynb #7250ec68-df48-486b-8b30-00b9df5cf2cf
 def note_length_weights(img, min_weight=1.0, power=0.5):
@@ -132,7 +139,7 @@ class AnchorDataset(Dataset):
         }
 
 # %% ../nbs/01_data.ipynb #9b1f47bb-c1cc-4a0a-a5f3-5083b91eca58
-def sample_shifts(max_x, max_y, sigma):
+def sample_shifts(max_x, max_y, sigma=None):
     "Get X and Y shifts; one of them must be non-zero"
     while True:
         sx, sy = sample_shift(max_x, sigma), sample_shift(max_y, sigma)
@@ -150,7 +157,7 @@ class PRPairDataset(Dataset):
             val_fraction=0.1,
             seed=42,
             verbose=True,
-            sigma=7,               # param for truncnorm dist for sampling shifts/deltas
+            sigma=None,               # param for truncnorm dist for sampling shifts/deltas
             shared=None,   # Possible shared memory thing for changing deets on the fly
             ):
         self.crop_size, self.max_shift_x, self.max_shift_y = crop_size, max_shift_x, max_shift_y
@@ -179,7 +186,7 @@ class PRPairDataset(Dataset):
     def __len__(self):
         return self.actual_len * 100  # arbitrary large number for epoch length
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, shift_x=None, shift_y=None):
         # ignore idx, just randomly sample
         file_idx = random.randint(0, self.actual_len - 1)
         img = torch.from_numpy(self.images[file_idx]).float() 
@@ -191,7 +198,12 @@ class PRPairDataset(Dataset):
         h, w = img.shape
         msx = self.shared['training']['max_shift_x'] if self.shared else self.max_shift_x
         msy = self.shared['training']['max_shift_y'] if self.shared else self.max_shift_y
-        shift_x, shift_y = sample_shifts(msx, msy, self.sigma)
+        sx, sy = sample_shifts(msx, msy, self.sigma)
+        if shift_x is None: shift_x = sx
+        if shift_y is None: shift_y = sy
+        # clamp caller-supplied shifts to what's valid for this image
+        max_valid = w - self.crop_size
+        shift_x = max(-max_valid, min(max_valid, shift_x))
 
         # cropping
         # sample loc1 such that both crops are valid

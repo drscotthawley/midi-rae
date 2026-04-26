@@ -90,8 +90,9 @@ class CurriculumSchedule():
     def step(self, epoch, optimizer):
         stage_idx = min(bisect_right(self.epoch_bounds, epoch), len(self.intervals)-1)
         if stage_idx != self.prev_stage:
+            pct_start = 30 / self.cfg.training.epochs
             self.scheduler = OneCycleLR(optimizer, max_lr=self.cfg.training.lr,
-                                   steps_per_epoch=1, epochs=self.intervals[stage_idx], div_factor=5)
+                                   steps_per_epoch=1, epochs=self.intervals[stage_idx], div_factor=5, pct_start=pct_start)
             self.prev_stage = stage_idx
         else:
             self.scheduler.step()
@@ -287,6 +288,7 @@ def train(cfg: DictConfig):
     best_val_loss = float('inf')
     for epoch in range(epoch_start, cfg.training.epochs+1):
         cfg.training.lambda_fact = max_lambda_fact * min(1.0, epoch / 150)  # ramp up factorization loss over first 150 epochs (after that it's fully on)
+        loss_weights['lambda_fact'] = cfg.training.lambda_fact
         if wandb.run is not None: wandb.log({"epoch": epoch})
         encoder.train()
         train_loss = 0

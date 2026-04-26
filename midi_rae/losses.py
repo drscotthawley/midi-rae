@@ -63,17 +63,21 @@ def SIGReg(x, global_step, num_slices=256, chunk_size=32):
 
 def attraction_loss(z1, z2,        # embeddings of two "views" of the same thing (in batches)
                     deltas=None,   # optional/TBD: info on semantic 'distance' between z1 & z2
-                    alpha = 1.0,   # scaled margin strenth 
+                    margin_scale = 0.5,   # margin scaling
                     **kwargs,      # unused stuff, kept for compatibility of calling sequence with other attr losses
-                    ):   
+                    ):
     "Pull similar 'views' together, but with delta-scaled margin to prevent over-collapse"
     if deltas is None: return safe_mean( (z1 - z2).square() )
     if deltas.dim() == 1: deltas = deltas.unsqueeze(-1)
     dist = (z1 - z2).norm(dim=-1)
-    delta_diag = (deltas**2).sum(dim=1)
-    margin = alpha * delta_diag.sqrt() 
-    sim = safe_mean( (dist - margin).clamp(min=0).square() )
-    #if not z1.requires_grad: sim = sim*2     # "compensate" for one of the points not moving, to match historical performance.
+    max_shifts = torch.tensor([12.0, 128.0], device=z1.device)  # [pitch, time]; hardcoded for now
+    deltas_norm = deltas / max_shifts[:deltas.shape[-1]]         # normalise each axis to [0,1]
+    delta_diag = (deltas_norm**2).sum(dim=1)
+    dim = z1.shape[-1]
+    natural_scale = (2 * dim) ** 0.5   # expected pairwise L2 distance under unit Gaussian
+    margin = margin_scale * natural_scale * delta_diag.sqrt()
+    #sim = safe_mean( (dist - margin).clamp(min=0).square() )  # hard margin
+    sim = safe_mean( (dist - margin).square() )    # smooth local minimum at margin
     return sim
 
 # %% ../nbs/03_losses.ipynb #3a9a0faf-a370-4410-84df-5e7e63f9ec65
@@ -130,6 +134,7 @@ def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None
                              non_emptys=None, loss_weights=None, n_skip_finest=1, debug=False):
     """Compute encoder loss at each hierarchy level of the Swin encoder."""
     lw = dict(loss_weights) if loss_weights else {}
+
     if not isinstance(z1, list):  # regular ViT
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
         return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(),

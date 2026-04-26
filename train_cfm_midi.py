@@ -29,6 +29,15 @@ from midi_rae.data import AnchorDataset
 from midi_rae.utils import set_seed
 
 
+def mean_pitch_normalized(img):
+    """Normalized mean pitch (0-1) for a (1, H, W) piano roll tensor."""
+    H = img.shape[-2]
+    density = img[0].float().sum(dim=-1)  # (H,)
+    pitch_idx = torch.arange(H, dtype=torch.float32)
+    mp = (pitch_idx * density).sum() / density.sum().clamp(min=1e-6)
+    return mp / H  # normalize to [0, 1]
+
+
 class PreencodedImageDataset(torch.utils.data.IterableDataset):
     """Stream img+PCA conditioning from pre-encoded chunk pairs."""
     def __init__(self, data_dir, crop_size=128, split='train'):
@@ -49,7 +58,10 @@ class PreencodedImageDataset(torch.utils.data.IterableDataset):
                 cond = [pca[k][offset:offset+n] for k in sorted(pca.keys())]
                 offset += n
                 for i, img in enumerate(rec['img1'].unbind(0)):
-                    yield {'img': img.float(), 'cond': [c[i] for c in cond]}
+                    img_f = img.float()
+                    mp = mean_pitch_normalized(img_f)
+                    cond_i = [torch.cat([c[i], torch.full((c[i].shape[0], 1), mp.item())], dim=1) for c in cond]
+                    yield {'img': img_f, 'cond': cond_i}
 
 FLAGS = flags.FLAGS
 
@@ -166,8 +178,7 @@ class CFGWrapper(torch.nn.Module):
 
 def generate_samples(model, savedir, step, net_="normal", n=64, crop_size=128, mlcond=None, cfg_strength=1.0):
     model.eval()
-    model_ = copy.deepcopy(model)
-    if mlcond is not None: model_ = CFGWrapper(model_, mlcond, cfg_strength)
+    model_ = CFGWrapper(model, mlcond, cfg_strength) if mlcond is not None else model
     node_ = NeuralODE(model_, solver="euler", sensitivity="adjoint")
     with torch.no_grad():
         traj = node_.trajectory(
@@ -299,7 +310,14 @@ def train(argv):
                 cond = [c.to(device) for c in cond]
             x1 = x1 * 2 - 1          # [0, 1] → [-1, 1]
             x0 = torch.randn_like(x1)
-            t, xt, ut = FM.sample_location_and_conditional_flow(x0, x1)
+            if isinstance(FM, ExactOptimalTransportConditionalFlowMatcher):  # re-pair x0/x1 AND keep cond aligned
+                pi = FM.ot_sampler.get_map(x0, x1)
+                i, j = FM.ot_sampler.sample_map(pi, x0.shape[0])
+                x0, x1 = x0[i], x1[j]
+                if cond is not None: cond = [c[j] for c in cond]
+                t, xt, ut = ConditionalFlowMatcher.sample_location_and_conditional_flow(FM, x0, x1)
+            else:
+                t, xt, ut = FM.sample_location_and_conditional_flow(x0, x1)
             vt = net_model(t, xt, mlcond=cond)
             loss = torch.mean((vt - ut) ** 2)
             loss.backward()

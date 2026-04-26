@@ -30,6 +30,7 @@ training:
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
   lambda_anchor: 0.0     # l2 loss on empty patch embeddings
+  lambda_fact: 1.0      # strength of factorization loss term (coarsest levels only)
   ema_eta: 0.96
   ema_update_every: 1 
   dec_batch_size: 256     # decoder-training batch size

@@ -841,7 +841,8 @@ def main():
     if not args.no_wandb:
         run_name = args.wandb_tag or os.path.splitext(os.path.basename(args.ckpt))[0]
         wandb.init(project='probe_musicality', name=run_name,
-                   config={'ckpt': args.ckpt, 'n_crops': args.n_crops, 'device': args.device})
+                   config={**OmegaConf.to_container(cfg, resolve=True),
+                           'ckpt': args.ckpt, 'n_crops': args.n_crops, 'device': args.device})
         levels = list(range(n_levels))
         level_keys = [f'L{l}' for l in levels]
 
