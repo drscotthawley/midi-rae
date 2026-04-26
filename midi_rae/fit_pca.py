@@ -92,6 +92,16 @@ def _project_chunks(encoded_dir, output_dir, levels, pcas, key, split):
                 flat = embs.reshape(N*P, D).numpy()
                 proj = torch.tensor(pcas[level].transform(flat), dtype=torch.float32).reshape(N, P, -1)
                 out[f"L{level}"] = proj
+        # Normalized pitch mean per image from img1; single scalar, consumers tile across levels/patches
+        pitch_means = []
+        for rec in data:
+            imgs = rec['img1'].float()              # (B, 1, H, W)
+            H = imgs.shape[-2]
+            density = imgs[:, 0].sum(dim=-1)        # (B, H) — sum over time axis
+            pitch_idx = torch.arange(H, dtype=torch.float32)
+            mp = (pitch_idx * density).sum(dim=-1) / density.sum(dim=-1).clamp(min=1e-6)
+            pitch_means.append(mp / H)              # (B,) normalized to [0, 1]
+        out['pitch_mean'] = torch.cat(pitch_means, dim=0)  # (N,)
         torch.save(out, output_dir / f"{chunk_path.stem}_pca.pt")
     print(f"  done → {output_dir}")
 
