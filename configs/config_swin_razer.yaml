@@ -5,6 +5,10 @@ defaults:
 training:
   batch_size: 250
   num_workers: [4, 2]
+  dec_batch_size: 600
+  use_pitch_mean: true
+
+preencoded: true
 
 encoder_ckpt: $HOME/runs/midi-rae/exp26-wide3/checkpoints/SwinEncoder_exp26-wide3_best.pt
 
