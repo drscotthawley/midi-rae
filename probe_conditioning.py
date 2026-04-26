@@ -255,7 +255,7 @@ def main(argv):
         dropout=0.1,
         mlcond_shapes=mlcond_shapes,
     ).to(device).eval()
-    model.load_state_dict(state)
+    model.load_state_dict(state, strict=False)
     print(f"Loaded {key} from step {step}")
 
     if not FLAGS.no_wandb:
@@ -469,7 +469,9 @@ def main(argv):
                if partial_xcorr else {}),
         }, step=step)
         wandb.finish()
+        print("FINISHED.")
 
 
 if __name__ == '__main__':
     app.run(main)
+    
