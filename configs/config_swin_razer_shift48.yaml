@@ -1,0 +1,14 @@
+defaults:
+  - config_swin_razer
+  - _self_
+
+# Ablation: max_shift_x=48 (from config_swin base), no factorization loss.
+# Isolates the effect of large temporal augmentation from the factorization loss.
+# After enc training completes, set encoder_ckpt to the new checkpoint before launching dec.
+
+training:
+  lambda_fact: 0.0
+  # pca_aug inherits false from config_swin_razer → clean F1 comparison without needing PCA pkl files
+
+encoder_ckpt: ???  # fill in after enc run completes, e.g.:
+                   # $HOME/runs/midi-rae/enc48_XXXXXX/checkpoints/SwinEncoder_enc48_XXXXXX_best.pt
