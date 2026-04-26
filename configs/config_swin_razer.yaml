@@ -6,7 +6,7 @@ training:
   batch_size: 250
   num_workers: [4, 2]
 
-encoder_ckpt: $HOME/runs/midi-rae/exp26_z1olvN/checkpoints/SwinEncoder_exp26_z1olvN_best.pt
+encoder_ckpt: $HOME/runs/midi-rae/exp26-wide3/checkpoints/SwinEncoder_exp26-wide3_best.pt
 
 preencode:
   batch_size: 512   # razer has 16 GB RAM; default 1024 causes swap thrashing; 256 uses 6-7 GB, 512 should be fine
