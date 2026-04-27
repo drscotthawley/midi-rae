@@ -1,0 +1,13 @@
+defaults:
+  - config_swin_razer
+  - _self_
+
+# Sanity check: replicate dec26 conditions (exp26 encoder, clean full embeddings, dec26 warm start).
+# Expected F1 ~0.995. If not reproduced, something in the decoder pipeline changed.
+
+encoder_ckpt: $HOME/runs/midi-rae/exp26_z1olvN/checkpoints/SwinEncoder_exp26_z1olvN_best.pt
+
+training:
+  dec_init_ckpt: $HOME/runs/midi-rae/dec26_2JIbRt/checkpoints/SwinDecoder_dec26_2JIbRt_best.pt
+  # pca_aug: false inherited from config_swin_razer
+  # preencoded: true inherited; uses POP909_encoded_exp26 from config_swin base
