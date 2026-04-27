@@ -10,5 +10,7 @@ training:
   lambda_fact: 0.0
   # pca_aug inherits false from config_swin_razer → clean F1 comparison without needing PCA pkl files
 
-encoder_ckpt: ???  # fill in after enc run completes, e.g.:
-                   # $HOME/runs/midi-rae/enc48_XXXXXX/checkpoints/SwinEncoder_enc48_XXXXXX_best.pt
+encoder_ckpt: $HOME/runs/midi-rae/enc48_kDrJLt/checkpoints/SwinEncoder_enc48_kDrJLt_best.pt
+
+preencode:
+  output_dir: $HOME/datasets/POP909_encoded_enc48  # separate from exp26 encoded data
