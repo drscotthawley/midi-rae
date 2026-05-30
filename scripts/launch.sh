@@ -1,22 +1,57 @@
 #!/bin/bash
-# Launch encoder or decoder training on a remote GPU machine via SSH.
-# Creates a unique run directory under ~/runs/, copies source + config there,
-# and launches with PYTHONPATH pointing at that snapshot.
+# Launch training or analysis jobs on a remote GPU machine via SSH.
+# Creates a unique timestamped run directory under ~/runs/midi-rae/<RUN_TAG>/,
+# copies the relevant source snapshot there, and launches in the background.
 #
-# Usage:
-#   ./scripts/launch.sh <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]
-#   ./scripts/launch.sh <host> ssm - <tag> [argparse_args...]
+# ── Usage ────────────────────────────────────────────────────────────────────
 #
-#   host              — SSH host (as defined in ~/.ssh/config)
-#   type              — "enc", "dec", "hmep", "preencode", "fitpca", "flow", or "ssm"
-#   config            — config name without .yaml (e.g. config_swin_razer); use "-" for ssm
-#   tag               — short descriptive label (e.g. "dec1"); a 6-char random suffix is appended
-#   hydra_overrides   — (optional) Hydra overrides, or argparse args for ssm type
+#   ./scripts/launch.sh [--force] <host> <type> <config> <tag> [extra_args...]
 #
-# Example:
+#   --force   Skip GPU availability check (razer only — never use on lecun)
+#   host      SSH alias from ~/.ssh/config  (lecun | razer-docker | oryxpro)
+#   type      Job type — see table below
+#   config    Meaning depends on type — see table below
+#   tag       Short label; a 6-char random suffix is appended to form the run tag
+#   extra_args  Passed verbatim to the remote process (Hydra overrides or argparse flags)
+#
+# ── Job types ────────────────────────────────────────────────────────────────
+#
+#   Type        Config arg                  What runs
+#   ─────────── ─────────────────────────── ──────────────────────────────────
+#   enc         config name (no .yaml)      train_enc.py  (Hydra)
+#   dec         config name                 train_dec.py  (Hydra)
+#   hmep        config name                 train_hmep.py (Hydra)
+#   preencode   config name                 preencode.py  (Hydra)
+#   fitpca      config name                 fit_pca.py    (Hydra)
+#   flow        config name                 train_flow.py (Hydra, stage 1)
+#   flow2       config name                 train_flow.py (Hydra, stage 2)
+#   generate    config name                 generate.py   (Hydra)
+#   cfm         config name                 train_cfm_midi.py (argparse)
+#   ssm         - (unused, pass literal -)  ssm_analysis.py   (argparse, CPU)
+#   probe       encoder run-dir name        probe_musicality.py (argparse, CPU)
+#
+# ── probe type details ───────────────────────────────────────────────────────
+#
+#   config = the encoder run directory name under ~/runs/midi-rae/ on the remote
+#            host (e.g. "exp26_best").  The script auto-discovers the checkpoint
+#            as the first SwinEncoder_*_best.pt in that directory's checkpoints/.
+#            Data paths (POP909_images_basic, POP909_images, EMOPIA) are baked in.
+#            GPU check is skipped — add "--device cuda" in extra_args for GPU.
+#
+#   Typical usage:
+#     # Run only the fast sklearn probes (chord, density, chroma, key) — a few minutes:
+#     ./scripts/launch.sh lecun probe exp26_best probe_exp26 \
+#         --no_transposition --no_time --no_emopia --no_melody --no_wandb
+#
+#     # Full probe suite including equivariance curves and EMOPIA (~30 min on GPU):
+#     ./scripts/launch.sh lecun probe exp26_best probe_exp26_full --device cuda
+#
+# ── Examples ─────────────────────────────────────────────────────────────────
+#
 #   ./scripts/launch.sh lecun enc config_swin exp18
 #   ./scripts/launch.sh razer dec config_swin_razer dec1 ++training.dec_epochs=200
 #   ./scripts/launch.sh razer ssm - ssm_survey --n_songs 20
+#   ./scripts/launch.sh lecun probe exp26_best probe_exp26 --no_transposition --no_time --no_wandb
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -37,8 +72,8 @@ SSH="ssh -o ClearAllForwardings=yes"
 REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null || true)
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES//\~/$REMOTE_HOME}"
 
-if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" && "$TYPE" != "ssm" && "$TYPE" != "cfm" ]]; then
-    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', 'generate', 'ssm', or 'cfm', got '${TYPE}'"
+if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "preencode" && "$TYPE" != "fitpca" && "$TYPE" != "flow" && "$TYPE" != "flow2" && "$TYPE" != "generate" && "$TYPE" != "ssm" && "$TYPE" != "cfm" && "$TYPE" != "probe" ]]; then
+    echo "Error: type must be 'enc', 'dec', 'hmep', 'preencode', 'fitpca', 'flow', 'flow2', 'generate', 'ssm', 'cfm', or 'probe', got '${TYPE}'"
     exit 1
 fi
 
@@ -51,8 +86,8 @@ echo "Run tag: ${RUN_TAG}"
 
 # Check GPU availability on the remote host (skip for CPU-only analysis types)
 echo "Checking GPU on ${HOST}..."
-if [[ "$TYPE" == "ssm" ]]; then
-    echo "(ssm: CPU-only analysis, skipping GPU check)"
+if [[ "$TYPE" == "ssm" || "$TYPE" == "probe" ]]; then
+    echo "(${TYPE}: analysis run, skipping GPU check — add --device cuda to use GPU)"
 elif [[ $FORCE -eq 1 ]]; then
     echo "(--force: skipping GPU check)"
 elif ! $SSH "${HOST}" 'bash -s' < "${SCRIPT_DIR}/is_gpu_free.sh"; then
@@ -78,6 +113,9 @@ if [[ "$TYPE" == "cfm" ]]; then
     echo "Copying unet_mlc.py to ${HOST} site-packages ..."
     scp "${REPO_DIR}"/conditional-flow-matching/torchcfm/models/unet/unet_mlc.py \
         "${HOST}:~/envs/midi-rae/lib/python3.10/site-packages/torchcfm/models/unet/unet_mlc.py"
+elif [[ "$TYPE" == "probe" ]]; then
+    echo "Copying probe_musicality.py to ${HOST}:${RUN_DIR}/ ..."
+    scp "${REPO_DIR}"/probe_musicality.py "${HOST}:${RUN_DIR}/"
 elif [[ "$TYPE" != "ssm" ]]; then
     echo "Copying configs/ to ${HOST}:${RUN_DIR}/ ..."
     scp "${REPO_DIR}"/configs/*.yaml "${HOST}:${RUN_DIR}/configs/"
@@ -118,6 +156,25 @@ cat > /tmp/midi_rae_run.sh << EOF
 source ~/envs/midi-rae/bin/activate
 cd ${RUN_DIR}
 PYTHONPATH=${RUN_DIR} nohup python -m ${MODULE} --out_dir ${RUN_DIR}/results/ssm ${EXTRA_OVERRIDES} > ${RUN_DIR}/run.log 2>&1 &
+echo \$!
+EOF
+elif [[ "$TYPE" = "probe" ]]; then
+# CONFIG = encoder run directory name (e.g. exp26_best); checkpoint auto-discovered via glob.
+cat > /tmp/midi_rae_run.sh << EOF
+#!/bin/bash
+source ~/envs/midi-rae/bin/activate
+cd ${RUN_DIR}
+CKPT=\$(ls ${REMOTE_HOME}/runs/midi-rae/${CONFIG}/checkpoints/SwinEncoder_*_best.pt 2>/dev/null | head -1)
+if [[ -z "\$CKPT" ]]; then echo "ERROR: no SwinEncoder checkpoint found in ${REMOTE_HOME}/runs/midi-rae/${CONFIG}/checkpoints/"; exit 1; fi
+echo "Using checkpoint: \$CKPT"
+PYTHONPATH=${RUN_DIR} nohup python probe_musicality.py \
+    --ckpt \$CKPT \
+    --config ${REMOTE_HOME}/runs/midi-rae/${CONFIG}/configs/config_swin.yaml \
+    --data ${REMOTE_HOME}/datasets/POP909_images_basic \
+    --pop909 ${REMOTE_HOME}/datasets/POP909_images \
+    --emopia ${REMOTE_HOME}/datasets/EMOPIA \
+    ${EXTRA_OVERRIDES} \
+    > ${RUN_DIR}/run.log 2>&1 &
 echo \$!
 EOF
 else

@@ -24,6 +24,7 @@ import argparse, sys, os, glob, urllib.request, zipfile, multiprocessing as mp, 
 import wandb
 from contextlib import redirect_stdout
 import numpy as np
+import pandas as pd
 import torch
 import pretty_midi
 from PIL import Image
@@ -43,6 +44,24 @@ sys.path.insert(0, os.path.dirname(__file__))
 from midi_rae.data import AnchorDataset, PRPairDataset
 from midi_rae.swin import SwinEncoder
 from midi_rae.utils import load_checkpoint
+
+
+class DinoWrapper:
+    """Wraps DINOv2Encoder to accept (B,1,128,128) like SwinEncoder — handles crop+normalise internally."""
+    _mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    _std  = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+    def __init__(self, dino_enc):
+        self.encoder = dino_enc
+
+    def __call__(self, x):
+        x = x[:, :, 1:-1, 1:-1]                                  # (B,1,128,128) → (B,1,126,126)
+        x = x.repeat(1, 3, 1, 1)                                  # → (B,3,126,126)
+        x = (x - self._mean.to(x.device)) / self._std.to(x.device)
+        return self.encoder(x)
+
+    def eval(self):   self.encoder.eval();   return self
+    def parameters(self): return self.encoder.parameters()
 
 # ── Chord templates (from polyffusion chord_class.py) ───────────────────────
 
@@ -80,6 +99,26 @@ QUALITY_GROUPS = {
     'dim': 'dim', 'dim7': 'dim',
     'aug': 'aug',
 }
+
+# ── Krumhansl-Schmuckler key profiles ────────────────────────────────────────
+# Major and minor tonal hierarchies (from Krumhansl 1990)
+KS_MAJOR = np.array([6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88], dtype=np.float32)
+KS_MINOR = np.array([6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17], dtype=np.float32)
+KEY_NAMES = [f"{n}:maj" for n in NOTE_NAMES] + [f"{n}:min" for n in NOTE_NAMES]  # 24 labels
+
+def chroma_to_key(chroma: np.ndarray):
+    """Krumhansl-Schmuckler key estimation. Returns key_idx in [0,23] or None for silence."""
+    if chroma.sum() == 0:
+        return None
+    best_r, best_key = -2.0, 0
+    for root in range(12):
+        r_maj = float(np.corrcoef(chroma, np.roll(KS_MAJOR, root))[0, 1])
+        r_min = float(np.corrcoef(chroma, np.roll(KS_MINOR, root))[0, 1])
+        if r_maj > best_r:
+            best_r, best_key = r_maj, root           # major: 0-11
+        if r_min > best_r:
+            best_r, best_key = r_min, root + 12      # minor: 12-23
+    return best_key
 
 
 # ── Chroma extraction from piano roll image ──────────────────────────────────
@@ -181,6 +220,50 @@ def run_chord_probes(embeddings_per_level, root_labels, group_labels, n_levels):
     return qual_accs, root_accs, chance_qual, chance_root
 
 
+# ── Probe 10: chroma regression ──────────────────────────────────────────────
+
+def run_chroma_regression_probe(embeddings_per_level, chromas, n_levels):
+    """Ridge regression from mean-pooled embedding → 12-dim chroma vector.
+
+    R² averaged across all 12 chroma bins (sklearn multioutput default).
+    Measures how much tonal/harmonic content is linearly encoded per level.
+    """
+    print(f"\n=== Probe 10: Chroma Regression (R² per level) ===")
+    print(f"{'Level':>6}  {'R²':>8}")
+    y = np.array(chromas)   # (N, 12)
+    reg = make_pipeline(StandardScaler(), Ridge())
+    r2s = []
+    for lev in range(n_levels):
+        r2 = cross_val_score(reg, embeddings_per_level[lev], y, cv=5, scoring='r2', n_jobs=1).mean()
+        print(f"  L{lev}    {r2:.3f}")
+        r2s.append(float(r2))
+    return r2s
+
+
+# ── Probe 11: key detection ───────────────────────────────────────────────────
+
+def run_key_detection_probe(embeddings_per_level, key_labels, n_levels):
+    """24-class (12 major + 12 minor) linear key probe using K-S-derived labels.
+
+    Chance for uniform 24-class: 1/24 ≈ 0.042.
+    POP909 keys are not uniformly distributed so we also report empirical chance.
+    """
+    print(f"\n=== Probe 11: Key Detection (24-class, K-S profiles) ===")
+    key_le = LabelEncoder().fit(key_labels)
+    y = key_le.transform(key_labels)
+    empirical_chance = float(np.bincount(y).max() / len(y))
+    n_classes = len(key_le.classes_)
+    print(f"  {n_classes} distinct keys, empirical chance={empirical_chance:.3f}  (uniform 1/24={1/24:.3f})")
+    print(f"{'Level':>6}  {'Acc':>8}  {'Chance':>8}")
+    clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000, C=1.0))
+    accs = []
+    for lev in range(n_levels):
+        acc = cross_val_score(clf, embeddings_per_level[lev], y, cv=5, scoring='accuracy', n_jobs=1).mean()
+        print(f"  L{lev}    {acc:.3f}    {empirical_chance:.3f}")
+        accs.append(float(acc))
+    return accs, empirical_chance
+
+
 # ── Probe 3: pitch transposition equivariance ────────────────────────────────
 
 def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=24, batch_size=32):
@@ -211,18 +294,19 @@ def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=2
 
     colors = plt.cm.viridis(np.linspace(0, 1, n_levels))
     fig, ax = plt.subplots(figsize=(8, 5))
-    all_means = {}
+    all_means, all_stds = {}, {}
     for lev in range(n_levels):
         mean_dists = [np.mean(dist_by_shift[lev][s]) for s in shifts]
         std_dists  = [np.std(dist_by_shift[lev][s])  for s in shifts]
         all_means[lev] = mean_dists
+        all_stds[lev] = std_dists
         patch_px = 128 // (2 ** lev)
         ax.errorbar(shifts, mean_dists, yerr=std_dists, marker='o', capsize=3,
                     color=colors[lev], label=f'L{lev} ({patch_px}×{patch_px} patch)')
     ax.set_xlabel('Pitch shift (semitones)')
-    ax.set_ylabel('Euclidean distance in embedding space (symlog)')
+    ax.set_ylabel('Euclidean distance in embedding space')
     ax.set_title('Pitch Transposition Equivariance — all levels')
-    ax.set_yscale('symlog', linthresh=0.01)
+    #ax.set_yscale('symlog', linthresh=0.01)
     ax.axhline(0, color='gray', ls='--', alpha=0.4)
     ax.legend(fontsize=8)
     plt.tight_layout()
@@ -231,6 +315,11 @@ def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=2
     print(f"  shift=0  dist(L0)={mean_dists_l0[0]:.3f}  (should be ~0)")
     print(f"  shift=12 dist(L0)={mean_dists_l0[shifts.index(12)]:.3f}  (octave)")
     print(f"  Saved → probe_transposition.png")
+    df = pd.DataFrame({ 'shift': shifts,
+        **{f'L{l}_mean': all_means[l] for l in sorted(all_means)},
+        **{f'L{l}_std':  all_stds[l]  for l in sorted(all_stds)}
+    })
+    df.to_csv('probe_transposition.csv', index=False)
     return shifts, all_means
 
 
@@ -269,18 +358,19 @@ def run_time_translation_probe(encoder, dataset, device, n_samples=200, max_shif
 
     colors = plt.cm.viridis(np.linspace(0, 1, n_levels))
     fig, ax = plt.subplots(figsize=(8, 5))
-    all_means = {}
+    all_means, all_stds = {}, {}
     for lev in range(n_levels):
         mean_dists = [np.mean(dist_by_shift[lev][s]) for s in shifts]
         std_dists  = [np.std(dist_by_shift[lev][s])  for s in shifts]
         all_means[lev] = mean_dists
+        all_stds[lev] = std_dists
         patch_px = 128 // (2 ** lev)
         ax.errorbar(shifts, mean_dists, yerr=std_dists, marker='o', capsize=3,
                     color=colors[lev], label=f'L{lev} ({patch_px}×{patch_px} patch)')
     ax.set_xlabel('Time shift (pixels)')
-    ax.set_ylabel('Euclidean distance in embedding space (symlog)')
+    ax.set_ylabel('Euclidean distance in embedding space')
     ax.set_title('Time Translation Equivariance — all levels')
-    ax.set_yscale('symlog', linthresh=0.01)
+    #ax.set_yscale('symlog', linthresh=0.01)
     ax.axhline(0, color='gray', ls='--', alpha=0.4)
     ax.legend(fontsize=8)
     plt.tight_layout()
@@ -289,6 +379,12 @@ def run_time_translation_probe(encoder, dataset, device, n_samples=200, max_shif
     print(f"  shift=0   dist(L0)={mean_dists_l0[0]:.3f}  (should be ~0)")
     print(f"  shift=64  dist(L0)={mean_dists_l0[-1]:.3f}")
     print(f"  Saved → probe_time_translation.png")
+    #df = pd.DataFrame({'shift': shifts, **{f'L{l}': all_means[l] for l in sorted(all_means)}})
+    df = pd.DataFrame({ 'shift': shifts,
+        **{f'L{l}_mean': all_means[l] for l in sorted(all_means)},
+        **{f'L{l}_std':  all_stds[l]  for l in sorted(all_stds)}
+    })
+    df.to_csv('probe_time_translation.csv', index=False)
     return shifts, all_means
 
 
@@ -690,8 +786,9 @@ class _Tee(io.TextIOBase):
         self._live.flush()
 
 
-def _worker_group_a(embeddings_per_level, root_labels, group_labels, file_idxs, densities, n_levels):
-    """Probes 1, 2, 4, 5 — sklearn only, reads pre-computed embeddings."""
+def _worker_group_a(embeddings_per_level, root_labels, group_labels, file_idxs, densities,
+                    chromas, key_labels, n_levels):
+    """Probes 1, 2, 4, 5, 10, 11 — sklearn only, reads pre-computed embeddings."""
     import sys
     buf = io.StringIO()
     sys.stdout = _Tee(sys.__stdout__, buf)
@@ -700,17 +797,26 @@ def _worker_group_a(embeddings_per_level, root_labels, group_labels, file_idxs, 
             embeddings_per_level, root_labels, group_labels, n_levels)
         cross_song_ratios = run_cross_song_probe(embeddings_per_level, file_idxs, n_levels)
         density_r2s = run_density_probe(embeddings_per_level, densities, n_levels)
+        chroma_r2s = run_chroma_regression_probe(embeddings_per_level, chromas, n_levels)
+        key_accs, key_chance = run_key_detection_probe(embeddings_per_level, key_labels, n_levels)
     finally:
         sys.stdout = sys.__stdout__
-    return buf.getvalue(), qual_accs, root_accs, chance_qual, chance_root, cross_song_ratios, density_r2s
+    return (buf.getvalue(), qual_accs, root_accs, chance_qual, chance_root,
+            cross_song_ratios, density_r2s, chroma_r2s, key_accs, key_chance)
 
 
-def _worker_group_b(ckpt, config_path, data_dir, device, n_crops, emopia_dir, pop909_dir, flags):
+def _worker_group_b(ckpt, config_path, data_dir, device, n_crops, emopia_dir, pop909_dir, flags,
+                    encoder_type='swin', dino_model='facebook/dinov2-base'):
     """Probes 3, 6, 7, 8, 9 — loads its own encoder, does forward passes."""
     import sys
-    cfg = OmegaConf.load(config_path)
-    encoder = build_encoder(cfg, device)
-    encoder = load_checkpoint(encoder, ckpt)
+    if encoder_type == 'dino':
+        from midi_rae.train_dec import DINOv2Encoder
+        encoder = DinoWrapper(DINOv2Encoder(model_name=dino_model).to(device))
+        cfg = OmegaConf.create({'data': {'image_size': 128}})  # minimal cfg for dataset/probes
+    else:
+        cfg = OmegaConf.load(config_path)
+        encoder = build_encoder(cfg, device)
+        encoder = load_checkpoint(encoder, ckpt)
     encoder.eval()
     ds = PRPairDataset(image_dataset_dir=os.path.expandvars(os.path.expanduser(data_dir)),
                        split='val', verbose=False)
@@ -743,8 +849,10 @@ def _worker_group_b(ckpt, config_path, data_dir, device, n_crops, emopia_dir, po
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',    required=True, help='Path to SwinEncoder checkpoint')
-    p.add_argument('--config',  required=True, help='Path to config_swin.yaml used for that run')
+    p.add_argument('--ckpt',    default=None, help='Path to SwinEncoder checkpoint (not needed for --encoder dino)')
+    p.add_argument('--config',  default=None, help='Path to config_swin.yaml (not needed for --encoder dino)')
+    p.add_argument('--encoder', default='swin', choices=['swin', 'dino'], help='Encoder type')
+    p.add_argument('--dino_model', default='facebook/dinov2-base', help='HuggingFace DINOv2 model name')
     p.add_argument('--data',    default='$HOME/datasets/POP909_images_basic')
     p.add_argument('--n_crops', type=int, default=2000)
     p.add_argument('--device',  default='cpu')
@@ -760,11 +868,18 @@ def main():
     args = p.parse_args()
 
     device = args.device
-    cfg = OmegaConf.load(args.config)
-
-    print("Loading encoder...")
-    encoder = build_encoder(cfg, device)
-    encoder = load_checkpoint(encoder, args.ckpt)
+    if args.encoder == 'dino':
+        from midi_rae.train_dec import DINOv2Encoder
+        print(f"Loading DINOv2 encoder ({args.dino_model})...")
+        encoder = DinoWrapper(DINOv2Encoder(model_name=args.dino_model).to(device))
+        cfg = OmegaConf.create({'data': {'image_size': 128}})
+    else:
+        if not args.ckpt or not args.config:
+            p.error('--ckpt and --config are required for --encoder swin')
+        cfg = OmegaConf.load(args.config)
+        print("Loading encoder...")
+        encoder = build_encoder(cfg, device)
+        encoder = load_checkpoint(encoder, args.ckpt)
     encoder.eval()
 
     print(f"Loading {args.n_crops} crops from AnchorDataset...")
@@ -772,6 +887,7 @@ def main():
 
     embeddings_per_level = None
     root_labels, group_labels, file_idxs, densities = [], [], [], []
+    chromas, key_labels = [], []
     n_levels = None
 
     for i in tqdm(range(args.n_crops), desc='Encoding crops'):
@@ -779,7 +895,7 @@ def main():
         img_t = sample['img'].unsqueeze(0).to(device)   # (1, 1, H, W)
         img_np = sample['img'].squeeze(0).numpy().astype(np.uint8)  # (H, W)
 
-        # chord label from chroma
+        # chord / chroma / key labels from piano roll
         chroma = image_to_chroma(img_np)
         root, qual, chord, group = chroma_to_chord(chroma)
         if root is None:
@@ -788,6 +904,8 @@ def main():
         group_labels.append(group)
         file_idxs.append(int(sample['file_idx']))
         densities.append(float(img_np.mean()))
+        chromas.append(chroma)
+        key_labels.append(chroma_to_key(chroma))
 
         # encoder forward
         with torch.no_grad():
@@ -806,6 +924,8 @@ def main():
     group_labels = np.array(group_labels)
     file_idxs    = np.array(file_idxs)
     densities    = np.array(densities)
+    chromas      = np.array(chromas)      # (N, 12)
+    key_labels   = np.array(key_labels)   # (N,) int 0-23
 
     print(f"\nCollected {len(root_labels)} crops across {len(set(file_idxs))} files.")
     unique, counts = np.unique(group_labels, return_counts=True)
@@ -820,11 +940,13 @@ def main():
     ctx = mp.get_context('spawn')
     with ctx.Pool(2) as pool:
         r_a = pool.apply_async(_worker_group_a, (
-            embeddings_per_level, root_labels, group_labels, file_idxs, densities, n_levels))
+            embeddings_per_level, root_labels, group_labels, file_idxs, densities,
+            chromas, key_labels, n_levels))
         r_b = pool.apply_async(_worker_group_b, (
             args.ckpt, args.config, args.data, args.device, args.n_crops,
-            args.emopia, args.pop909, flags))
-        text_a, qual_accs, root_accs, chance_qual, chance_root, cross_song_ratios, density_r2s = r_a.get()
+            args.emopia, args.pop909, flags, args.encoder, args.dino_model))
+        (text_a, qual_accs, root_accs, chance_qual, chance_root,
+         cross_song_ratios, density_r2s, chroma_r2s, key_accs, key_chance) = r_a.get()
         text_b, transp_shifts, transp_means, time_shifts, time_means, temp_r2s, emopia_data = r_b.get()
 
     log_path = 'stormbird_results.log'
@@ -839,7 +961,8 @@ def main():
 
     # ── W&B logging ──────────────────────────────────────────────────────────
     if not args.no_wandb:
-        run_name = args.wandb_tag or os.path.splitext(os.path.basename(args.ckpt))[0]
+        ckpt_name = os.path.splitext(os.path.basename(args.ckpt))[0] if args.ckpt else f'dino_{args.dino_model.split("/")[-1]}'
+        run_name = args.wandb_tag or ckpt_name
         wandb.init(project='probe_musicality', name=run_name,
                    config={**OmegaConf.to_container(cfg, resolve=True),
                            'ckpt': args.ckpt, 'n_crops': args.n_crops, 'device': args.device})
@@ -853,6 +976,8 @@ def main():
             log_dict[f'root_note/L{l}']        = root_accs[l]
             if cross_song_ratios: log_dict[f'cross_song_ratio/L{l}'] = cross_song_ratios[l]
             if density_r2s:       log_dict[f'density_r2/L{l}']       = density_r2s[l]
+            if chroma_r2s:        log_dict[f'chroma_r2/L{l}']        = chroma_r2s[l]
+            if key_accs:          log_dict[f'key_detection/L{l}']     = key_accs[l]
             if temp_r2s:          log_dict[f'temporal_dist_r2/L{l}']  = temp_r2s[l]
             if emopia_data:
                 log_dict[f'emopia_4class/L{l}'] = emopia_data[0][l]
