@@ -35,7 +35,7 @@ from torch.utils.data import DataLoader
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, GroupKFold
 import warnings
 warnings.filterwarnings('ignore')  # suppress sklearn CV/FutureWarnings
 from tqdm.auto import tqdm
@@ -176,6 +176,12 @@ def get_level_embeddings(enc_out) -> list[np.ndarray]:
     return embs
 
 
+@torch.no_grad()
+def get_raw_patch_embeddings(enc_out) -> list[np.ndarray]:
+    """Return per-level patch embeddings without pooling. Shape: (B, n_patches, dim)."""
+    return [lvl.emb.cpu().float().numpy() for lvl in enc_out.patches.levels]
+
+
 # ── Probe 1 & 2: chord quality + root linear probes ─────────────────────────
 
 def run_chord_probes(embeddings_per_level, root_labels, group_labels, n_levels):
@@ -222,21 +228,52 @@ def run_chord_probes(embeddings_per_level, root_labels, group_labels, n_levels):
 
 # ── Probe 10: chroma regression ──────────────────────────────────────────────
 
-def run_chroma_regression_probe(embeddings_per_level, chromas, n_levels):
-    """Ridge regression from mean-pooled embedding → 12-dim chroma vector.
+def run_chroma_regression_probe(raw_patches_per_level, raw_images, file_idxs, n_levels):
+    """Per-time-slice chroma regression. Slices each crop along the time axis at each level.
 
-    R² averaged across all 12 chroma bins (sklearn multioutput default).
-    Measures how much tonal/harmonic content is linearly encoded per level.
+    At level L the image is divided into T=2^L time windows. The P_pitch=2^L patch vectors
+    per time column are concatenated to give a 256-dim feature (P*dim = 256 at every level
+    by the Swin hierarchy design). Ridge regression maps each slice to a 12-dim chroma vector.
+    R² is averaged across 12 chroma bins; train/test split is by song (GroupKFold).
     """
-    print(f"\n=== Probe 10: Chroma Regression (R² per level) ===")
-    print(f"{'Level':>6}  {'R²':>8}")
-    y = np.array(chromas)   # (N, 12)
-    reg = make_pipeline(StandardScaler(), Ridge())
+    print(f"\n=== Probe 10: Chroma Regression (R² per level, per-time-slice) ===")
+    print(f"{'Level':>6}  {'T_slices':>9}  {'R²':>8}")
     r2s = []
     for lev in range(n_levels):
-        r2 = cross_val_score(reg, embeddings_per_level[lev], y, cv=5, scoring='r2', n_jobs=1).mean()
-        print(f"  L{lev}    {r2:.3f}")
-        r2s.append(float(r2))
+        T = 2 ** lev   # time slices = pitch patches = 2^level
+        P = 2 ** lev
+        X_rows, y_rows, g_rows = [], [], []
+        for i, (patches, img_np) in enumerate(zip(raw_patches_per_level[lev], raw_images)):
+            # patches: (P*T, dim_L) where dim_L = 256 // P (patch axis: pitch-outer, time-inner)
+            dim = patches.shape[-1]
+            grid = patches.reshape(P, T, dim)                   # (P_pitch, T_time, dim)
+            time_feats = grid.transpose(1, 0, 2).reshape(T, -1) # (T_time, 256)
+            W = img_np.shape[1]
+            W_slice = W // T
+            for t in range(T):
+                slc = img_np[:, t * W_slice:(t + 1) * W_slice if t < T - 1 else W]
+                chroma_t = image_to_chroma(slc)
+                if chroma_t.sum() == 0:
+                    continue   # skip silent slices
+                X_rows.append(time_feats[t])
+                y_rows.append(chroma_t)
+                g_rows.append(file_idxs[i])
+        if len(X_rows) < 10:
+            print(f"  L{lev}    {T:5d}    {'N/A':>8}  (too few non-silent slices)")
+            r2s.append(float('nan'))
+            continue
+        X = np.stack(X_rows)
+        y = np.stack(y_rows)
+        g = np.array(g_rows)
+        n_splits = min(5, len(np.unique(g)))
+        if n_splits < 2:
+            r2s.append(float('nan'))
+            continue
+        reg = make_pipeline(StandardScaler(), Ridge())
+        gkf = GroupKFold(n_splits=n_splits)
+        r2 = float(cross_val_score(reg, X, y, cv=gkf, groups=g, scoring='r2', n_jobs=1).mean())
+        print(f"  L{lev}    {T:5d}    {r2:.3f}")
+        r2s.append(r2)
     return r2s
 
 
@@ -787,7 +824,7 @@ class _Tee(io.TextIOBase):
 
 
 def _worker_group_a(embeddings_per_level, root_labels, group_labels, file_idxs, densities,
-                    chromas, key_labels, n_levels):
+                    chromas, key_labels, n_levels, raw_patches_per_level, raw_images):
     """Probes 1, 2, 4, 5, 10, 11 — sklearn only, reads pre-computed embeddings."""
     import sys
     buf = io.StringIO()
@@ -797,7 +834,7 @@ def _worker_group_a(embeddings_per_level, root_labels, group_labels, file_idxs, 
             embeddings_per_level, root_labels, group_labels, n_levels)
         cross_song_ratios = run_cross_song_probe(embeddings_per_level, file_idxs, n_levels)
         density_r2s = run_density_probe(embeddings_per_level, densities, n_levels)
-        chroma_r2s = run_chroma_regression_probe(embeddings_per_level, chromas, n_levels)
+        chroma_r2s = run_chroma_regression_probe(raw_patches_per_level, raw_images, file_idxs, n_levels)
         key_accs, key_chance = run_key_detection_probe(embeddings_per_level, key_labels, n_levels)
     finally:
         sys.stdout = sys.__stdout__
@@ -886,6 +923,8 @@ def main():
     ds = AnchorDataset(image_dataset_dir=os.path.expandvars(os.path.expanduser(args.data)), split='val', verbose=True)
 
     embeddings_per_level = None
+    raw_patches_per_level = None
+    raw_images = []
     root_labels, group_labels, file_idxs, densities = [], [], [], []
     chromas, key_labels = [], []
     n_levels = None
@@ -918,8 +957,16 @@ def main():
         for lev, e in enumerate(level_embs):
             embeddings_per_level[lev].append(e[0])   # (dim,)
 
+        raw_embs = get_raw_patch_embeddings(enc_out)  # list of (1, n_patches, dim) arrays
+        if raw_patches_per_level is None:
+            raw_patches_per_level = [[] for _ in range(n_levels)]
+        raw_images.append(img_np)
+        for lev, e in enumerate(raw_embs):
+            raw_patches_per_level[lev].append(e[0])  # (n_patches, dim)
+
     # stack
     embeddings_per_level = [np.stack(embeddings_per_level[lev]) for lev in range(n_levels)]
+    raw_patches_per_level = [np.stack(raw_patches_per_level[lev]) for lev in range(n_levels)]
     root_labels  = np.array(root_labels)
     group_labels = np.array(group_labels)
     file_idxs    = np.array(file_idxs)
@@ -941,7 +988,7 @@ def main():
     with ctx.Pool(2) as pool:
         r_a = pool.apply_async(_worker_group_a, (
             embeddings_per_level, root_labels, group_labels, file_idxs, densities,
-            chromas, key_labels, n_levels))
+            chromas, key_labels, n_levels, raw_patches_per_level, raw_images))
         r_b = pool.apply_async(_worker_group_b, (
             args.ckpt, args.config, args.data, args.device, args.n_crops,
             args.emopia, args.pop909, flags, args.encoder, args.dino_model))
