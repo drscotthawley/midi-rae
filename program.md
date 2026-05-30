@@ -563,6 +563,30 @@ Mean-pooling embeddings before distance hides real per-patch behavior and can pr
 ### Overarching story
 The paper's central argument is **domain-bias-informed hierarchical design**: every architectural choice (Swin hierarchy, FPN, LeJEPA + SIGReg objectives, pitch/time curriculum) was motivated by what a musical representation *should* structurally look like — not by ablation search. STORMBIRD is the experimental confirmation that the model internalized this structure.
 
+### What STORMBIRD stands for
+
+**S**hit **T**on **O**f **R**epresentational **M**usic **B**enchmarks, **I**nformation **R**etrieval & **D**iagnostics
+
+(Evolved from the earlier acronym STOMACH — **S**hit **T**on **O**f **M**usical **A**nalysis **C**omputational **H**oover, whose main routine was called `eat()` because it ingested audio and excreted feature vectors.) For publication, the polite expansion is:
+**S**ophisticated **T**rove **O**f **R**epresentational **M**usic **B**enchmarks, **I**nformation **R**etrieval & **D**iagnostics
+
+The name also references Stormbirds in *Horizon Zero Dawn* — formidable boss enemies that represent a significant challenge to the player. Here, a significant challenge to the model.
+
+### MRJ encoder run registry
+
+Authoritative mapping of paper model names to run tags and hosts. Verified from `run.sh` files (2026-05-30):
+
+| Paper name | Run tag | Host | max_shift_x | lambda_fact | Notes |
+|---|---|---|---|---|---|
+| MRJ-12 | exp26_z1olvN | lecun | 12 | 0.0 | baseline; `lambd=0.2` |
+| MRJ-12∧ | exp25_edckd7 | lecun | 12 | 0.5 | `config_swin_lecun`; has best checkpoint |
+| MRJ-48 | enc48_kDrJLt | razer-docker | 48 | 0.0 | `config_swin_razer_shift48` |
+| MRJ-48∧ | exp26-wide3 | razer-docker | 48 | 0.5 | `config_swin`; `lambd=0.15`; `depths=[2,2,2,6,2,2]` |
+
+Note: `exp26-48fact/` on razer is a duplicate directory of `exp26-wide3` — identical `run.sh`, same checkpoint (`SwinEncoder_exp26-wide3_best.pt`). Use `exp26-wide3` as the canonical name.
+
+The existing `paper/probe_equivariance/probe48_nofact/` and `probe_48fact/` results predate Probes 10 & 11 (chroma regression, key detection) added 2026-05-30. Those probes need to be re-run against enc48_kDrJLt and exp26-wide3.
+
 ### STORMBIRD as the results section
 Frame each probe as confirming a specific prediction from the musical-structure theory:
 - Chord probes → harmonic structure encoded

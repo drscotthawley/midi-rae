@@ -1,0 +1,35 @@
+#!/bin/bash
+# List files on a remote host via SSH.
+# All filtering happens on the remote side — no local pipes needed.
+#
+# Usage:
+#   bash scripts/ls-remote <host> <dir> [grep_pattern]
+#
+# Arguments:
+#   host         SSH alias (lecun | razer-docker | tsrazer-ts-docker | oryxpro)
+#   dir          Remote path to list (shell-expanded on the remote side, so ~ works)
+#   grep_pattern Optional ERE pattern passed to grep -E on the remote side
+#
+# Examples:
+#   bash scripts/ls-remote lecun ~/runs/midi-rae/
+#   bash scripts/ls-remote lecun ~/runs/midi-rae/ "^enc|^exp"
+#   bash scripts/ls-remote razer-docker ~/runs/midi-rae/enc48_kDrJLt/checkpoints/
+#   bash scripts/ls-remote lecun ~/runs/midi-rae/exp26_z1olvN/configs/ "fact"
+
+HOST="${1:?Usage: $0 <host> <dir> [grep_pattern]}"
+DIR="${2:?Usage: $0 <host> <dir> [grep_pattern]}"
+PATTERN="${3:-}"
+
+SSH="ssh -o ClearAllForwardings=yes"
+
+# Resolve remote $HOME and replace any local ~ expansion (local ~ → /home/vscode on this machine)
+REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null)
+LOCAL_HOME="${HOME}"
+# If the caller passed ~/... (expanded locally to $LOCAL_HOME/...), restore it as remote home
+DIR="${DIR/#$LOCAL_HOME/$REMOTE_HOME}"
+
+if [[ -n "$PATTERN" ]]; then
+    $SSH "${HOST}" "ls ${DIR} | grep -E '${PATTERN}'"
+else
+    $SSH "${HOST}" "ls ${DIR}"
+fi

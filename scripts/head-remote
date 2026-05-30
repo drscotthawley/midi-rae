@@ -1,0 +1,26 @@
+#!/bin/bash
+# Read the first N lines of a file on a remote host via SSH.
+#
+# Usage:
+#   bash scripts/head-remote <host> <file> [n_lines]
+#
+# Arguments:
+#   host      SSH alias (lecun | razer-docker | tsrazer-ts-docker | oryxpro)
+#   file      Remote file path (~ expanded on the remote side)
+#   n_lines   Number of lines to show (default: 20)
+#
+# Examples:
+#   bash scripts/head-remote razer-docker ~/runs/midi-rae/exp26-wide3/run.sh
+#   bash scripts/head-remote lecun ~/runs/midi-rae/exp26_z1olvN/run.log 50
+
+HOST="${1:?Usage: $0 <host> <file> [n_lines]}"
+FILE="${2:?Usage: $0 <host> <file> [n_lines]}"
+N="${3:-20}"
+
+SSH="ssh -o ClearAllForwardings=yes"
+
+REMOTE_HOME=$($SSH "${HOST}" "echo \$HOME" 2>/dev/null)
+LOCAL_HOME="${HOME}"
+FILE="${FILE/#$LOCAL_HOME/$REMOTE_HOME}"
+
+$SSH "${HOST}" "head -n ${N} ${FILE}"
