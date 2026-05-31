@@ -157,7 +157,7 @@ def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None
                 ne_flat.append(ne[2].reshape(-1).bool())
             else: ne_flat.append(None)
             lw_lev = dict(lw)
-            if isinstance(lambd_base, (list, tuple)): lw_lev['lambd'] = lambd_base[lev]
+            if not isinstance(lambd_base, (int, float)): lw_lev['lambd'] = float(lambd_base[lev])
             if lev > 2:
                 lw_lev['lambda_fact'] = 0.0
                 z3_flat = None  # skip factorization computation entirely
