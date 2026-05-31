@@ -69,6 +69,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.357557 | d_uniform3_fJumfJ | razer-docker |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.339736 | d_plus1_uJjogu | lecun |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.359185 | d_deep8_ZCUKtb | razer-docker |
+| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.334969 | d_plus2_rnhC3E | tsrazer-ts-docker |
 
 ## Notes
 
