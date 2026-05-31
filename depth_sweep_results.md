@@ -16,6 +16,8 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | -0.004 | 0.034 | 0.161 | 0.355 | 0.494 | 0.583 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | -0.012 | 0.005 | 0.076 | 0.297 | 0.610 | **0.746** |
 | d_plus2 ⚠️ | [4,4,4,6,4,4] | 26 | 48 | -0.003 | 0.043 | 0.138 | 0.351 | 0.617 | -125.515 |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | 0.007 | 0.050 | 0.172 | 0.389 | 0.529 | 0.537 |
+| d_coarse ⚠️ | [4,4,4,6,2,2] | 22 | 48 | 0.002 | 0.047 | 0.160 | 0.326 | 0.339 | -712.675 |
 
 ## Probe 11 — Key Detection (24-class accuracy)
 
@@ -27,6 +29,8 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.053 | N/A | N/A | N/A | N/A | N/A | 0.058 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.055 | 0.057 | 0.067 | 0.090 | 0.147 | 0.200 | 0.051 |
 | d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.059 | 0.057 | 0.088 | 0.110 | 0.136 | 0.192 | 0.057 |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | 0.065 | 0.067 | 0.099 | 0.127 | 0.141 | 0.210 | 0.052 |
+| d_coarse | [4,4,4,6,2,2] | 22 | 48 | 0.059 | 0.080 | 0.116 | **0.146** | **0.171** | 0.222 | 0.055 |
 
 ## Probe 5 — Density R²
 
@@ -38,6 +42,8 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.241 | 0.291 | 0.521 | 0.714 | 0.801 | 0.891 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.338 | 0.355 | 0.644 | 0.740 | 0.840 | 0.892 |
 | d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.290 | **0.501** | 0.678 | 0.792 | 0.872 | 0.903 |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | 0.268 | 0.306 | 0.486 | 0.654 | 0.817 | 0.892 |
+| d_coarse | [4,4,4,6,2,2] | 22 | 48 | 0.316 | 0.416 | 0.617 | 0.742 | 0.864 | **0.929** |
 
 ## Probe 2 — Root Note (12-class accuracy)
 
@@ -48,7 +54,9 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.100 | 0.116 | 0.161 | 0.218 | 0.230 | **0.301** | 0.083 |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.070 | 0.086 | 0.145 | 0.191 | 0.233 | 0.263 | 0.083 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.076 | 0.089 | 0.119 | 0.171 | 0.231 | 0.262 | 0.083 |
-| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | **0.104** | 0.106 | 0.131 | 0.172 | 0.203 | 0.265 | 0.083 |
+| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.104 | 0.106 | 0.131 | 0.172 | 0.203 | 0.265 | 0.083 |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | **0.108** | 0.131 | 0.148 | 0.199 | 0.241 | 0.264 | 0.083 |
+| d_coarse | [4,4,4,6,2,2] | 22 | 48 | 0.101 | 0.124 | 0.164 | 0.217 | 0.233 | 0.272 | 0.083 |
 
 ## Probe 4 — Cross-Song Ratio (lower = better)
 
@@ -60,6 +68,8 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | **0.507** | **0.511** | **0.538** | 0.655 | **0.607** | **0.599** |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.815 | 0.835 | 0.854 | 0.903 | 0.822 | 0.727 |
 | d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.751 | 0.815 | 0.807 | 0.874 | 0.802 | 0.829 |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | 0.884 | 0.886 | 0.874 | 0.873 | 0.829 | 0.789 |
+| d_coarse | [4,4,4,6,2,2] | 22 | 48 | 0.657 | 0.652 | 0.709 | 0.709 | 0.717 | 0.804 |
 
 ## Probe 1 — Chord Quality (4-class accuracy)
 
@@ -71,6 +81,8 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.544 | 0.550 | 0.537 | 0.545 | 0.534 | 0.540 | 0.545 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.537 | 0.528 | 0.542 | 0.557 | 0.544 | 0.529 | 0.525 |
 | d_plus2 ⚠️2cls | [4,4,4,6,4,4] | 26 | 48 | 0.533 | 0.526 | 0.526 | 0.529 | 0.529 | 0.526 | 0.506 |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | 0.524 | 0.527 | 0.534 | 0.520 | 0.532 | 0.523 | 0.498 |
+| d_coarse | [4,4,4,6,2,2] | 22 | 48 | 0.514 | 0.516 | 0.541 | 0.530 | 0.538 | 0.545 | 0.522 |
 
 ## Best metric (encoder val loss)
 
@@ -98,3 +110,9 @@ Cross-song ratio for lowsigreg2 is also substantially worse than baseline across
 **d_plus2 [4,4,4,6,4,4] ⚠️:** Best encoder val loss 0.334969 (best of all variants). Despite the best training metric, chroma L5=-125.515 — catastrophic collapse similar to lowsigreg2, despite using max_shift_x=48. All other probes at L5 are fine (density=0.903, root=0.265, key=0.192, cross-song=0.829). The collapse is L5-specific and sudden (L4 chroma=0.617 is normal). With depths=[4,4,4,6,4,4], all fine levels have depth=4, suggesting that deep fine-level blocks with a strong L3 bottleneck (depth=6) may destabilize L5 chroma encoding despite normal val loss. Note: Probe 1 dropped to 2-class (maj/min only) for this run — values not comparable with other variants.
 
 **d_deep8 [2,2,2,8,2,2]:** Best metric 0.359185. Chroma L5=**0.746** — new overall best, beating d_uniform3 (0.736) and baseline (0.701). Cross-song ratio is notably worse at intermediate levels (L0–L4: 0.815–0.903, vs baseline 0.631–0.699), recovering to 0.727 at L5 (comparable to d_uniform3 0.722). The deeper L3 bottleneck improves chroma at fine levels but degrades song disentanglement at coarse/mid levels. Density (0.892) and root note (0.262) at L5 are slightly below d_uniform3 (0.907, 0.301).
+
+**d_uniform4 [4,4,4,4,4,4]:** Best metric 0.321271 (new best). No chroma collapse (L5=0.537). However, chroma L5=0.537 is **well below** baseline (0.701), d_uniform3 (0.736), and d_deep8 (0.746) — more uniform depth does not help chroma. Key detection L5=0.210 and root note L5=0.264 are also below d_uniform3. The best metric improvement over d_uniform3 (0.321 vs 0.358) did not translate to better representations. Cross-song L5=0.789 is slightly better than baseline (0.830) but worse than d_uniform3 (0.722).
+
+**d_coarse [4,4,4,6,2,2] ⚠️:** Best metric 0.321069 (tied with d_uniform4). **Chroma collapse at L5=-712.675** despite shift=48 and shallow fine levels (L4=2, L5=2). L4 chroma=0.339 is already below baseline (0.575). This is now the 3rd chroma collapse pattern (with d_plus2 and lowsigreg2). **Emerging culprit: L0-L2=4 AND L3=6 together cause chroma collapse.** Baseline has L0-L2=2 (no collapse). d_uniform4 has L0-L2=4 but L3=4 (no collapse). d_plus2 and d_coarse both have L0-L2=4 AND L3=6 (collapse). d_deep8 has L0-L2=2, L3=8 (no collapse — deep L3 alone is safe). Density L5=**0.929** is the new best across all variants. Key detection wins at L3 (0.146) and L4 (0.171).
+
+**Chroma collapse pattern summary:** Collapse occurs when coarse levels are deep (L0-L2≥4) AND the bottleneck is deep (L3≥6). Shallow coarse levels (L0-L2=2) appear to protect against collapse regardless of bottleneck depth. This suggests the coarse pathway dominates pitch encoding under the current SIGReg + shift=48 regime, and overparameterizing the coarse pathway destabilizes it.
