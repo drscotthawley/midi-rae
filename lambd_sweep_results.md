@@ -11,9 +11,9 @@ Reference: d_uniform3 baseline used scalar lambd=0.15 on L0-L3 only (n_skip=2).
 
 | # | Config | lambd schedule [L0..L5] | Hypothesis | Host | Run tag | Status |
 |---|---|---|---|---|---|---|
-| 1 | u3s1_min     | [0.15, 0.15, 0.15, 0.15, 0.10, 0.05] | Minimal change: extend tapering to L4-L5 | lecun | u3s1_min_XiKRDN | RUNNING |
-| 2 | u3s2_gentle  | [0.15, 0.13, 0.12, 0.11, 0.10, 0.05] | Gentle descent from current L0 | tsrazer-ts-docker | u3s2_gentle_8ROxkz | RUNNING |
-| 3 | u3s3_std     | [0.30, 0.25, 0.20, 0.15, 0.10, 0.05] | Standard descent, doubles L0 pressure | razer-docker | u3s3_std_i8Io5p | RUNNING |
+| 1 | u3s1_min     | [0.15, 0.15, 0.15, 0.15, 0.10, 0.05] | Minimal change: extend tapering to L4-L5 | lecun | u3s1_min_DER7lU | RUNNING |
+| 2 | u3s2_gentle  | [0.15, 0.13, 0.12, 0.11, 0.10, 0.05] | Gentle descent from current L0 | tsrazer-ts-docker | u3s2_gentle_XjAgNx | RUNNING |
+| 3 | u3s3_std     | [0.30, 0.25, 0.20, 0.15, 0.10, 0.05] | Standard descent, doubles L0 pressure | razer-docker | u3s3_std_y34mwX | RUNNING |
 | 4 | u3s4_steep   | [0.50, 0.35, 0.25, 0.15, 0.10, 0.05] | Aggressive descent, heavy coarse pressure | lecun | — | QUEUED |
 | 5 | u3s5_inv1    | [0.10, 0.13, 0.15, 0.15, 0.10, 0.05] | Mild inversion: less SIGReg at L0 | tsrazer-ts-docker | — | QUEUED |
 | 6 | u3s6_inv2    | [0.05, 0.10, 0.15, 0.20, 0.10, 0.05] | Strong inversion: minimum at L0 | razer-docker | — | QUEUED |
@@ -121,9 +121,9 @@ Machine chains (sequential within each):
 | Variant | Best metric | Run tag | Host |
 |---|---|---|---|
 | d_uniform3 (ref) | 0.357557 | d_uniform3_fJumfJ | razer-docker |
-| u3s1_min | | u3s1_min_XiKRDN | lecun |
-| u3s2_gentle | | u3s2_gentle_8ROxkz | tsrazer-ts-docker |
-| u3s3_std | | u3s3_std_i8Io5p | razer-docker |
+| u3s1_min | | u3s1_min_DER7lU | lecun |
+| u3s2_gentle | | u3s2_gentle_XjAgNx | tsrazer-ts-docker |
+| u3s3_std | | u3s3_std_y34mwX | razer-docker |
 | u3s4_steep | | | lecun |
 | u3s5_inv1 | | | tsrazer-ts-docker |
 | u3s6_inv2 | | | razer-docker |
