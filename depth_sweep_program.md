@@ -258,22 +258,31 @@ For routine progress (variant N finished, results recorded, launching N+1), just
 
 ---
 
-## Part 3 — Current state (updated 2026-05-31)
+## Part 3 — Current state (updated 2026-05-31 ~07:30)
 
-**Completed variants (results in depth_sweep_results.md):**
-- lowsigreg2 (variant 0): done, probed, results recorded (catastrophic chroma collapse due to shift=12)
-- d_uniform3: done, probed, results recorded — beats baseline on all L5 metrics
-- d_plus1: done, probed — Probe 11 incomplete (run.log ends after L0=0.053); other probes complete
+**Completed variants (probed, results in depth_sweep_results.md):**
+- lowsigreg2 (variant 0): chroma collapse at L5 (shift=12 confirmed culprit)
+- d_uniform3 [3,3,3,3,3,3]: beats baseline on all L5 metrics; chroma L5=0.736
+- d_plus1 [3,3,3,6,3,3]: best cross-song L5=0.599; Probe 11 incomplete after L0
+- d_deep8 [2,2,2,8,2,2]: chroma L5=0.746 (new best); cross-song weaker at mid-levels
+- d_plus2 [4,4,4,6,4,4]: ⚠️ chroma L5=-125.515 collapse despite shift=48; best val loss 0.334969
 
-**Active runs:**
-- lecun: d_coarse_BH3myr training (PID 99109)
-- razer-docker: probe_d_deep8_6lSA30 probing (PID 442526, checkpoint d_deep8_ZCUKtb)
-- tsrazer-ts-docker: d_plus2_rnhC3E training (PID 52228)
+**Training done, probe running:**
+- d_uniform4 [4,4,4,4,4,4]: val loss 0.321271 (new best); probe_d_uniform4_CN0JJ4 on tsrazer
+- d_coarse [4,4,4,6,2,2]: val loss 0.321069 (tied best); probe_d_coarse_FOV8kY on lecun
 
-**Pending (not yet launched):**
-- lecun: d_pyramid [2,3,4,6,4,3] after d_coarse finishes
-- razer-docker: idle after d_deep8 probe completes
-- tsrazer-ts-docker: d_uniform4 [4,4,4,4,4,4] after d_plus2 finishes, then d_fine [2,2,2,6,4,4]
+**Training running:**
+- d_pyramid [2,3,4,6,4,3]: d_pyramid_6X6DEz on lecun (just launched)
+
+**Config created, waiting to launch:**
+- d_fine [2,2,2,6,4,4]: config_swin_d_fine.yaml ready; launch on tsrazer after d_uniform4 probe finishes
+
+**razer-docker:** IDLE (d_deep8 chain complete)
+
+**Active background waits:**
+- b2yf3tod6: d_uniform4 probe on tsrazer (60s poll) → on completion: read results, launch d_fine
+- br0lh1bd9: d_coarse probe on lecun (60s poll) → on completion: read results
+- boot40fz0: d_pyramid training on lecun (120s poll) → on completion: get metric, launch probe
 
 **Note on probe launch syntax** (corrected from earlier error):
 ```
