@@ -134,6 +134,7 @@ def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None
                              non_emptys=None, loss_weights=None, n_skip_finest=1, debug=False):
     """Compute encoder loss at each hierarchy level of the Swin encoder."""
     lw = dict(loss_weights) if loss_weights else {}
+    lambd_base = lw.get('lambd', 0.5)  # may be scalar or per-level list[n_levels]
 
     if not isinstance(z1, list):  # regular ViT
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
@@ -155,13 +156,15 @@ def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None
                 z3_flat = z3_l.reshape(-1, D).float()
                 ne_flat.append(ne[2].reshape(-1).bool())
             else: ne_flat.append(None)
+            lw_lev = dict(lw)
+            if isinstance(lambd_base, (list, tuple)): lw_lev['lambd'] = lambd_base[lev]
             if lev > 2:
-                if 'lambda_fact' in lw: lw['lambda_fact'] = 0.0
+                lw_lev['lambda_fact'] = 0.0
                 z3_flat = None  # skip factorization computation entirely
             d_expanded = deltas.repeat_interleave(N, dim=0).float() if deltas is not None else None
             t_expanded = target.repeat_interleave(N, dim=0).float() if target is not None else None
             ld = calc_enc_loss(z1_flat, z2_flat, global_step, z3=z3_flat, deltas=d_expanded, target=t_expanded,
-                               non_emptys=ne_flat, psize=psize, loss_weights=lw)
+                               non_emptys=ne_flat, psize=psize, loss_weights=lw_lev)
         else:
             ld = {'loss': torch.tensor(0.0, device=z1_l.device, dtype=z1_l.dtype)}  # dummy for skipped levels
         level_losses.append({k: v.detach() if hasattr(v, 'item') else v for k, v in ld.items()})
