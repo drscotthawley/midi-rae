@@ -15,6 +15,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | -0.004 | 0.045 | 0.188 | 0.415 | 0.585 | 0.736 |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | -0.004 | 0.034 | 0.161 | 0.355 | 0.494 | 0.583 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | -0.012 | 0.005 | 0.076 | 0.297 | 0.610 | **0.746** |
+| d_plus2 ⚠️ | [4,4,4,6,4,4] | 26 | 48 | -0.003 | 0.043 | 0.138 | 0.351 | 0.617 | -125.515 |
 
 ## Probe 11 — Key Detection (24-class accuracy)
 
@@ -25,6 +26,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.050 | 0.054 | 0.092 | 0.119 | 0.159 | **0.234** | 0.042 |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.053 | N/A | N/A | N/A | N/A | N/A | 0.058 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.055 | 0.057 | 0.067 | 0.090 | 0.147 | 0.200 | 0.051 |
+| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.059 | 0.057 | 0.088 | 0.110 | 0.136 | 0.192 | 0.057 |
 
 ## Probe 5 — Density R²
 
@@ -35,6 +37,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.267 | 0.347 | 0.558 | 0.624 | 0.735 | **0.907** |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.241 | 0.291 | 0.521 | 0.714 | 0.801 | 0.891 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.338 | 0.355 | 0.644 | 0.740 | 0.840 | 0.892 |
+| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.290 | **0.501** | 0.678 | 0.792 | 0.872 | 0.903 |
 
 ## Probe 2 — Root Note (12-class accuracy)
 
@@ -45,6 +48,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.100 | 0.116 | 0.161 | 0.218 | 0.230 | **0.301** | 0.083 |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.070 | 0.086 | 0.145 | 0.191 | 0.233 | 0.263 | 0.083 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.076 | 0.089 | 0.119 | 0.171 | 0.231 | 0.262 | 0.083 |
+| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | **0.104** | 0.106 | 0.131 | 0.172 | 0.203 | 0.265 | 0.083 |
 
 ## Probe 4 — Cross-Song Ratio (lower = better)
 
@@ -55,6 +59,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.715 | 0.781 | 0.736 | 0.745 | 0.748 | **0.722** |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | **0.507** | **0.511** | **0.538** | 0.655 | **0.607** | **0.599** |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.815 | 0.835 | 0.854 | 0.903 | 0.822 | 0.727 |
+| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.751 | 0.815 | 0.807 | 0.874 | 0.802 | 0.829 |
 
 ## Probe 1 — Chord Quality (4-class accuracy)
 
@@ -65,6 +70,7 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.553 | 0.556 | 0.561 | 0.556 | 0.549 | 0.554 | 0.542 |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.544 | 0.550 | 0.537 | 0.545 | 0.534 | 0.540 | 0.545 |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.537 | 0.528 | 0.542 | 0.557 | 0.544 | 0.529 | 0.525 |
+| d_plus2 ⚠️2cls | [4,4,4,6,4,4] | 26 | 48 | 0.533 | 0.526 | 0.526 | 0.529 | 0.529 | 0.526 | 0.506 |
 
 ## Best metric (encoder val loss)
 
@@ -75,7 +81,8 @@ Variant 0 (lowsigreg2) uses max_shift_x=12 — included for reference only, not 
 | d_uniform3 | [3,3,3,3,3,3] | 18 | 48 | 0.357557 | d_uniform3_fJumfJ | razer-docker |
 | d_plus1 | [3,3,3,6,3,3] | 22 | 48 | 0.339736 | d_plus1_uJjogu | lecun |
 | d_deep8 | [2,2,2,8,2,2] | 18 | 48 | 0.359185 | d_deep8_ZCUKtb | razer-docker |
-| d_plus2 | [4,4,4,6,4,4] | 26 | 48 | 0.334969 | d_plus2_rnhC3E | tsrazer-ts-docker |
+| d_plus2 ⚠️ | [4,4,4,6,4,4] | 26 | 48 | 0.334969 | d_plus2_rnhC3E | tsrazer-ts-docker |
+| d_uniform4 | [4,4,4,4,4,4] | 24 | 48 | **0.321271** | d_uniform4_zPcusI | tsrazer-ts-docker |
 
 ## Notes
 
@@ -86,5 +93,7 @@ Cross-song ratio for lowsigreg2 is also substantially worse than baseline across
 **d_plus1 [3,3,3,6,3,3]:** Probe 11 key detection only completed L0=0.053 before the probe process exited (run.log ends there). Missing L1–L5. Chroma L5=0.583 is below baseline (0.701) and d_uniform3 (0.736). Cross-song L5=0.599 is the **best** of all variants so far (lower is better). The deep L3=6 bottleneck preserves cross-song separation but hurts chroma encoding vs. uniform depth=3.
 
 **d_plus1 vs d_uniform3:** Keeping the L3 bottleneck (depth=6) improves cross-song separation (0.599 vs 0.722) but degrades chroma (0.583 vs 0.736). d_uniform3 wins on most musical content probes; d_plus1 wins on disentanglement.
+
+**d_plus2 [4,4,4,6,4,4] ⚠️:** Best encoder val loss 0.334969 (best of all variants). Despite the best training metric, chroma L5=-125.515 — catastrophic collapse similar to lowsigreg2, despite using max_shift_x=48. All other probes at L5 are fine (density=0.903, root=0.265, key=0.192, cross-song=0.829). The collapse is L5-specific and sudden (L4 chroma=0.617 is normal). With depths=[4,4,4,6,4,4], all fine levels have depth=4, suggesting that deep fine-level blocks with a strong L3 bottleneck (depth=6) may destabilize L5 chroma encoding despite normal val loss. Note: Probe 1 dropped to 2-class (maj/min only) for this run — values not comparable with other variants.
 
 **d_deep8 [2,2,2,8,2,2]:** Best metric 0.359185. Chroma L5=**0.746** — new overall best, beating d_uniform3 (0.736) and baseline (0.701). Cross-song ratio is notably worse at intermediate levels (L0–L4: 0.815–0.903, vs baseline 0.631–0.699), recovering to 0.727 at L5 (comparable to d_uniform3 0.722). The deeper L3 bottleneck improves chroma at fine levels but degrades song disentanglement at coarse/mid levels. Density (0.892) and root note (0.262) at L5 are slightly below d_uniform3 (0.907, 0.301).
