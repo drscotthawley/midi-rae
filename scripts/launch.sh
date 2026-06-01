@@ -52,17 +52,23 @@
 #   ./scripts/launch.sh razer dec config_swin_razer dec1 ++training.dec_epochs=200
 #   ./scripts/launch.sh razer ssm - ssm_survey --n_songs 20
 #   ./scripts/launch.sh lecun probe exp26_best probe_exp26 --no_transposition --no_time --no_wandb
+#   ./scripts/launch.sh --rerun u3s5_inv1_eWwtSU tsrazer-ts-docker enc config_swin_u3s5_inv1 u3s5_inv1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 FORCE=0
-if [[ "${1}" == "--force" ]]; then FORCE=1; shift; fi
+RERUN=""
+while true; do
+    if [[ "${1}" == "--force" ]]; then FORCE=1; shift;
+    elif [[ "${1}" == "--rerun" ]]; then RERUN="${2}"; shift 2;
+    else break; fi
+done
 
-HOST="${1:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
-TYPE="${2:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
-CONFIG="${3:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
-TAG="${4:?Usage: $0 [--force] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+HOST="${1:?Usage: $0 [--force] [--rerun <existing_tag>] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+TYPE="${2:?Usage: $0 [--force] [--rerun <existing_tag>] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+CONFIG="${3:?Usage: $0 [--force] [--rerun <existing_tag>] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
+TAG="${4:?Usage: $0 [--force] [--rerun <existing_tag>] <host> <enc|dec|hmep> <config> <tag> [hydra_overrides...]}"
 shift 4
 EXTRA_OVERRIDES="$*"  # all remaining args passed directly to Hydra
 
@@ -77,9 +83,14 @@ if [[ "$TYPE" != "enc" && "$TYPE" != "dec" && "$TYPE" != "hmep" && "$TYPE" != "p
     exit 1
 fi
 
-# Generate unique run tag: user tag + 6-char random alphanumeric suffix
-HASH=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 6)
-RUN_TAG="${TAG}_${HASH}"
+# Generate unique run tag, or reuse existing directory if --rerun was given
+if [[ -n "${RERUN}" ]]; then
+    RUN_TAG="${RERUN}"
+    echo "Rerunning in existing directory: ${RUN_TAG}"
+else
+    HASH=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 6)
+    RUN_TAG="${TAG}_${HASH}"
+fi
 RUN_DIR="~/runs/midi-rae/${RUN_TAG}"
 
 echo "Run tag: ${RUN_TAG}"
@@ -182,6 +193,7 @@ cat > /tmp/midi_rae_run.sh << EOF
 #!/bin/bash
 source ~/envs/midi-rae/bin/activate
 cd ${RUN_DIR}
+ulimit -n 65536
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTHONPATH=${RUN_DIR} nohup python -m ${MODULE} --config-name ${CONFIG} ++tag=${RUN_TAG} ${EXTRA_OVERRIDES} > ${RUN_DIR}/run.log 2>&1 &
 echo \$!
 EOF
