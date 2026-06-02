@@ -135,4 +135,21 @@ Machine chains (updated — razer-docker excluded):
 
 ## Notes
 
-*(To be filled as results come in.)*
+### Summary analysis
+
+**Nothing beat the reference.** On every musical content probe (chroma, key, density, root note), d_uniform3 with scalar lambd=0.15 and n_skip=2 outperforms all 9 sweep variants. The sweep explored lambd schedules ranging from very aggressive (u3s4_steep: 0.50 at L0) to very light (u3s9_lowest: 0.07 uniform) and inverted profiles, but none improved probe quality.
+
+**There is a critical confound.** The reference used `n_skip_finest_levels=2`, meaning SIGReg was only applied to L0–L3, leaving L4 and L5 to train freely. All sweep variants used `n_skip=0` (SIGReg on all 6 levels). The reference's edge on chroma and key at L5 may be explained entirely by the absence of SIGReg pressure at L4–L5, not by anything special about lambd=0.15. This sweep does not cleanly isolate the effect of the lambd *schedule* from the effect of *how many levels get SIGReg at all*.
+
+**Fine levels dominate; coarse levels are inert.** L5 produces the best results on every probe and every variant, consistently by a wide margin. L3–L4 sometimes approach L5 on density and root note. L0–L2 are essentially flat near chance or zero R² across all probes — they are not encoding musically-relevant structure at all. Whether that's a limitation of coarse-level receptive fields, the embed_dim=8 bottleneck, or the SIGReg pressure itself is unclear.
+
+**Encoder val loss is a poor proxy for probe quality.** u3s9_lowest achieved the best encoder val loss (0.350, beating even the reference at 0.358), yet its probe scores are middling and its cross-song ratio at L5 exceeds 1.0 — meaning at the finest level, same-song patches are *farther apart* than patches from different songs. Very low lambd lets the encoder minimize loss without building song-discriminative representations.
+
+**Cross-song separation is an exception.** Several high-lambd variants (u3s3_std, u3s1_min, u3s4_steep) beat the reference on cross-song ratio (lower = better), suggesting SIGReg pressure does improve song identity, but this did not translate to better musical content probes.
+
+**u3s7_peak anomaly.** Chroma R² at L5 is -1.381 — a sign of active anti-correlation. All other levels are normal. Likely a training instability specific to this run; not informative about the peak schedule.
+
+**Takeaways for next steps:**
+- The n_skip parameter appears more important than the lambd schedule shape. A controlled sweep varying n_skip (0–4) while holding lambd fixed would be more diagnostic.
+- The coarse levels (L0–L2) may need a fundamentally different treatment — either much weaker SIGReg, a different objective, or more capacity — before they contribute meaningfully.
+- If the goal is fine-level musical structure, the reference configuration (n_skip=2) is still the best known setting.
