@@ -214,7 +214,7 @@ def train(cfg: DictConfig):
                             embed_dim=cfm.embed_dim, depths=cfm.depths, num_heads=cfm.num_heads, window_size=cfm.window_size,
                             mlp_ratio=cfm.mlp_ratio, drop_path_rate=cfm.drop_path_rate).to(device)
         if cfg.training.lambda_mae > 0: mae_decoder = SwinMAEDecoder(patch_size=patch_size, dims=dims).to(device)
-        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims, n_summaries=(1,2,4,8,32,64)).to(device)
+        if cfg.training.lambda_mep > 0: mep_model   = SwinMaskedEmbeddingPredictor(dims=dims, n_summaries=(1,2,4,8,32,64), cross_level_mep=cfg.training.get('cross_level_mep', False)).to(device)
     else:
         encoder = ViTEncoder(cfg.data.in_channels, (cfg.data.image_size, cfg.data.image_size), cfm.patch_size, 
                            cfm.dim, cfm.depth, cfm.heads).to(device)

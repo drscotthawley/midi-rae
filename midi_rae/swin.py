@@ -385,17 +385,20 @@ class SwinMaskedEmbeddingPredictor(nn.Module):
     """
     def __init__(self, dims=(256, 128, 64, 32, 16, 8), summary_dim=128,
                  n_summaries=None, mix_depth=2, heads=4, mask_ratio=0.4, mr_level_fac=1.25,
-                 max_shift=12, delta_hidden_dim=None):
+                 max_shift=12, delta_hidden_dim=None, cross_level_mep=False, n_coarse_levels=3):
         super().__init__()
         n_levels = len(dims)
         self.n_levels, self.mask_ratio, self.mr_level_fac = n_levels, mask_ratio, mr_level_fac
         self.max_shift = max_shift
+        self.cross_level_mep = cross_level_mep
+        self.n_coarse_levels = n_coarse_levels
 
         # Default: 1 summary token at coarsest, doubling each finer level
         if n_summaries is None:
             n_summaries = tuple(2**i for i in range(n_levels))
         self.n_summaries = n_summaries
         total_summaries = sum(n_summaries)
+        self.coarse_summary_end = sum(n_summaries[:n_coarse_levels])
 
         # Per-level learned mask tokens
         self.mask_tokens = nn.ParameterList([nn.Parameter(torch.randn(d) * 0.02) for d in dims])
@@ -506,10 +509,10 @@ class SwinMaskedEmbeddingPredictor(nn.Module):
         for i, lv in enumerate(levels):
             q = self.pos_proj(lv.pos.float())                              # (N_i, summary_dim)
             q = q.unsqueeze(0).expand(B, -1, -1) + self.pred_level_emb[i]
-            p, _ = self.pred_attn[i](q, summaries, summaries)              # (B, N_i, summary_dim)
+            kv = summaries[:, :self.coarse_summary_end, :] if (self.cross_level_mep and i >= self.n_coarse_levels) else summaries
+            p, _ = self.pred_attn[i](q, kv, kv)                           # (B, N_i, summary_dim)
             preds.append(self.out_projs[i](p))                             # (B, N_i, D_i)
         return preds, masks
-
 
 # %% ../nbs/10_swin.ipynb #44dc6ea5
 class ConvBlock(nn.Module):
