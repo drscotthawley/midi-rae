@@ -32,7 +32,7 @@ Machine chains (updated — razer-docker excluded):
 
 | Variant | L0 | L1 | L2 | L3 | L4 | L5 | chance |
 |---|---|---|---|---|---|---|---|
-| d_uniform3 (ref) | 0.553 | 0.556 | 0.561 | 0.556 | 0.549 | 0.554 | 0.542 |
+| d_uniform3 (ref) | 0.521 | 0.528 | 0.551 | 0.530 | 0.518 | 0.547 | 0.508 |
 | u3s1_min | 0.546 | 0.541 | 0.556 | 0.546 | 0.547 | 0.541 | 0.552 |
 | u3s2_gentle | 0.551 | 0.540 | 0.541 | 0.542 | 0.542 | 0.541 | 0.514 |
 | u3s3_std | 0.543 | 0.532 | 0.540 | 0.529 | 0.540 | 0.528 | 0.540 |
@@ -42,13 +42,13 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.522 | 0.532 | 0.523 | 0.546 | 0.521 | 0.544 | 0.536 |
 | u3s8_lowflat | 0.537 | 0.536 | 0.519 | 0.540 | 0.529 | 0.534 | 0.504 |
 | u3s9_lowest | 0.523 | 0.514 | 0.523 | 0.509 | 0.519 | 0.533 | 0.509 |
-| xmep1 | 0.539 | 0.559 | 0.531 | 0.525 | 0.523 | 0.523 | 0.509 |
+| xmep1 | 0.537 | 0.520 | 0.551 | 0.549 | 0.545 | 0.530 | 0.500 |
 
 ## Probe 2 — Root Note (12-class accuracy)
 
 | Variant | L0 | L1 | L2 | L3 | L4 | L5 |
 |---|---|---|---|---|---|---|
-| d_uniform3 (ref) | 0.100 | 0.116 | 0.161 | 0.218 | 0.230 | 0.301 |
+| d_uniform3 (ref) | 0.084 | 0.087 | 0.114 | 0.164 | 0.213 | 0.267 |
 | u3s1_min | 0.103 | 0.113 | 0.136 | 0.164 | 0.169 | 0.226 |
 | u3s2_gentle | 0.101 | 0.097 | 0.126 | 0.148 | 0.154 | 0.213 |
 | u3s3_std | 0.107 | 0.119 | 0.146 | 0.158 | 0.179 | 0.233 |
@@ -58,13 +58,23 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.081 | 0.103 | 0.133 | 0.162 | 0.171 | 0.230 |
 | u3s8_lowflat | 0.088 | 0.095 | 0.111 | 0.137 | 0.149 | 0.216 |
 | u3s9_lowest | 0.107 | 0.119 | 0.123 | 0.146 | 0.163 | 0.240 |
-| xmep1 | 0.086 | 0.087 | 0.109 | 0.171 | 0.253 | 0.282 |
+| xmep1 | 0.075 | 0.092 | 0.123 | 0.182 | **0.272** | 0.267 |
+
+## Probe 3 — Pitch Transposition Equivariance
+
+Reports L0 embedding distance at shift=12 semitones (one octave). Lower = more equivariant.
+Only d_uniform3 and xmep1 have full-probe data; sweep variants used fast-probe (--no_transposition).
+
+| Variant | shift=12 dist (L0) |
+|---|---|
+| d_uniform3 (ref) | 11.439 |
+| xmep1 | 11.299 |
 
 ## Probe 4 — Cross-Song Ratio (lower = better)
 
 | Variant | L0 | L1 | L2 | L3 | L4 | L5 |
 |---|---|---|---|---|---|---|
-| d_uniform3 (ref) | 0.715 | 0.781 | 0.736 | 0.745 | 0.748 | 0.722 |
+| d_uniform3 (ref) | 0.539 | 0.570 | 0.562 | 0.589 | 0.664 | 0.623 |
 | u3s1_min | 0.651 | 0.649 | 0.588 | 0.628 | 0.659 | 0.571 |
 | u3s2_gentle | 0.779 | 0.782 | 0.753 | 0.719 | 0.701 | 0.659 |
 | u3s3_std | 0.597 | 0.510 | 0.498 | 0.558 | 0.595 | 0.619 |
@@ -74,13 +84,13 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.798 | 0.842 | 0.780 | 0.731 | 0.642 | 0.621 |
 | u3s8_lowflat | 0.816 | 0.853 | 0.842 | 0.796 | 0.745 | 0.671 |
 | u3s9_lowest | 0.820 | 0.844 | 0.859 | 0.881 | 0.979 | 1.070 |
-| xmep1 | 0.854 | 0.858 | 0.842 | 0.841 | 0.878 | 0.856 |
+| xmep1 | 0.695 | 0.678 | 0.655 | 0.722 | 0.684 | 0.742 |
 
 ## Probe 5 — Density R²
 
 | Variant | L0 | L1 | L2 | L3 | L4 | L5 |
 |---|---|---|---|---|---|---|
-| d_uniform3 (ref) | 0.267 | 0.347 | 0.558 | 0.624 | 0.735 | 0.907 |
+| d_uniform3 (ref) | 0.297 | 0.348 | 0.512 | 0.560 | 0.695 | 0.790 |
 | u3s1_min | 0.383 | 0.419 | 0.515 | 0.552 | 0.673 | 0.811 |
 | u3s2_gentle | 0.189 | 0.217 | 0.349 | 0.452 | 0.685 | 0.860 |
 | u3s3_std | 0.193 | 0.319 | 0.579 | 0.654 | 0.718 | 0.868 |
@@ -90,13 +100,62 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.155 | 0.222 | 0.335 | 0.597 | 0.787 | 0.901 |
 | u3s8_lowflat | 0.246 | 0.296 | 0.424 | 0.476 | 0.605 | 0.760 |
 | u3s9_lowest | 0.276 | 0.332 | 0.448 | 0.594 | 0.683 | 0.829 |
-| xmep1 | 0.284 | 0.378 | 0.548 | 0.699 | 0.788 | **0.911** |
+| xmep1 | 0.220 | 0.307 | 0.516 | **0.702** | **0.794** | **0.918** |
+
+## Probe 6 — Time Translation Equivariance
+
+Reports L0 embedding distance at shift=64 time steps. Lower = more equivariant.
+Only d_uniform3 and xmep1 have full-probe data; sweep variants used fast-probe (--no_time).
+
+| Variant | shift=64 dist (L0) |
+|---|---|
+| d_uniform3 (ref) | 5.844 |
+| xmep1 | **7.026** |
+
+## Probe 7 — Temporal Distance Regression (R²)
+
+Linear probe predicting temporal distance between patches within a song.
+
+| Variant | L0 | L1 | L2 | L3 | L4 | L5 |
+|---|---|---|---|---|---|---|
+| d_uniform3 (ref) | 0.197 | 0.263 | 0.272 | 0.277 | 0.240 | 0.191 |
+| xmep1 | 0.232 | 0.261 | 0.265 | 0.243 | 0.236 | 0.169 |
+
+## Probe 8 — Melody/Accompaniment Separation (mel↔pia distance)
+
+Distance between melody and accompaniment embeddings from same song.
+Higher mel↔pia relative to mel↔tot and pia↔tot = content-sensitive embedding.
+
+| Variant | L0 mel↔pia | L1 | L2 | L3 | L4 | L5 |
+|---|---|---|---|---|---|---|
+| d_uniform3 (ref) | 16.44 | 10.27 | 6.70 | 4.68 | 3.24 | 1.33 |
+| xmep1 | **20.48** | **12.97** | **8.13** | **5.32** | 2.63 | 0.75 |
+
+## Probe 9 — EMOPIA Emotion (4-class quadrant, chance=0.29)
+
+| Variant | L0 | L1 | L2 | L3 | L4 | L5 |
+|---|---|---|---|---|---|---|
+| d_uniform3 (ref) | 0.476 | 0.473 | 0.472 | 0.487 | 0.457 | 0.409 |
+| xmep1 | 0.479 | 0.485 | 0.479 | 0.475 | 0.452 | 0.423 |
+| Haar baseline | D0=0.411 | D1=0.402 | D2=0.398 | D3=0.401 | D4=0.379 | D5=0.392 |
+
+Arousal (binary, chance=0.50) and Valence (binary, chance=0.50):
+
+| Variant | L0 Ar | L1 | L2 | L3 | L4 | L5 |
+|---|---|---|---|---|---|---|
+| d_uniform3 (ref) | 0.761 | 0.752 | 0.761 | 0.762 | 0.750 | 0.756 |
+| xmep1 | 0.752 | 0.758 | 0.750 | 0.768 | 0.754 | 0.733 |
+
+| Variant | L0 Val | L1 | L2 | L3 | L4 | L5 |
+|---|---|---|---|---|---|---|
+| d_uniform3 (ref) | 0.598 | 0.609 | 0.622 | 0.613 | 0.608 | 0.556 |
+| xmep1 | 0.596 | 0.604 | 0.608 | 0.608 | 0.620 | 0.560 |
 
 ## Probe 10 — Chroma R² (per-time-slice)
 
 | Variant | lambd [L0..L5] | L0 | L1 | L2 | L3 | L4 | L5 |
 |---|---|---|---|---|---|---|---|
-| d_uniform3 (ref) | 0.15 scalar, skip L4-L5 | -0.004 | 0.045 | 0.188 | 0.415 | 0.585 | 0.736 |
+| d_uniform3 (ref) | 0.15 scalar, skip L4-L5 | -0.016 | 0.001 | 0.085 | 0.286 | 0.499 | 0.562 |
 | u3s1_min | [0.15,0.15,0.15,0.15,0.10,0.05] | -0.005 | 0.020 | 0.111 | 0.198 | 0.375 | 0.582 |
 | u3s2_gentle | [0.15,0.13,0.12,0.11,0.10,0.05] | -0.009 | -0.000 | 0.045 | 0.154 | 0.289 | 0.559 |
 | u3s3_std | [0.30,0.25,0.20,0.15,0.10,0.05] | -0.008 | 0.027 | 0.100 | 0.224 | 0.343 | 0.629 |
@@ -106,13 +165,13 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | [0.10,0.15,0.20,0.20,0.10,0.05] | -0.013 | 0.037 | 0.116 | 0.221 | 0.345 | -1.381 |
 | u3s8_lowflat | [0.10,0.10,0.10,0.10,0.08,0.05] | -0.010 | -0.012 | 0.043 | 0.121 | 0.288 | 0.609 |
 | u3s9_lowest | [0.07,0.07,0.07,0.07,0.07,0.05] | 0.010 | 0.036 | 0.113 | 0.244 | 0.333 | 0.578 |
-| xmep1 | 0.15 scalar, n_skip=2, cross_level_mep | -0.012 | 0.002 | 0.095 | 0.365 | 0.510 | **-11.966** |
+| xmep1 | 0.15 scalar, n_skip=2, cross_level_mep | -0.008 | 0.004 | **0.129** | **0.381** | 0.466 | **-3.4e7** |
 
 ## Probe 11 — Key Detection (24-class accuracy)
 
 | Variant | L0 | L1 | L2 | L3 | L4 | L5 |
 |---|---|---|---|---|---|---|
-| d_uniform3 (ref) | 0.050 | 0.054 | 0.092 | 0.119 | 0.159 | 0.234 |
+| d_uniform3 (ref) | 0.050 | 0.060 | 0.079 | 0.108 | 0.145 | 0.208 |
 | u3s1_min | 0.055 | 0.075 | 0.091 | 0.092 | 0.099 | 0.155 |
 | u3s2_gentle | 0.064 | 0.056 | 0.078 | 0.078 | 0.089 | 0.137 |
 | u3s3_std | 0.065 | 0.068 | 0.109 | 0.111 | 0.123 | 0.175 |
@@ -122,13 +181,13 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.054 | 0.068 | 0.081 | 0.098 | 0.104 | 0.166 |
 | u3s8_lowflat | 0.065 | 0.063 | 0.081 | 0.082 | 0.092 | 0.160 |
 | u3s9_lowest | 0.062 | 0.077 | 0.078 | 0.099 | 0.108 | 0.187 |
-| xmep1 | 0.046 | 0.057 | 0.072 | 0.103 | **0.187** | 0.215 |
+| xmep1 | 0.049 | 0.044 | 0.064 | 0.112 | **0.183** | 0.218 |
 
 ## Best metric (encoder val loss)
 
 | Variant | Best metric | Run tag | Host |
 |---|---|---|---|
-| d_uniform3 (ref) | 0.357557 | d_uniform3_fJumfJ | razer-docker |
+| d_uniform3 (ref) | 0.362191 | d_uniform3_E4zFAV | tsrazer-ts-docker |
 | u3s1_min | 0.516957 | u3s1_min_by62tI | lecun |
 | u3s2_gentle | 0.479290 | u3s2_gentle_e4FxGS | tsrazer-ts-docker |
 | u3s3_std | 0.539052 | u3s3_std_gliobo | lecun |
@@ -161,16 +220,26 @@ Machine chains (updated — razer-docker excluded):
 - The coarse levels (L0–L2) may need a fundamentally different treatment — either much weaker SIGReg, a different objective, or more capacity — before they contribute meaningfully.
 - If the goal is fine-level musical structure, the reference configuration (n_skip=2) is still the best known setting.
 
-### xmep1: cross-level MEP results
+### xmep1 vs d_uniform3: full-probe comparison
 
-**Best encoder val loss overall (0.317367)**, beating both the reference (0.357557) and all sweep variants. Cross-level MEP is a genuinely stronger self-supervised objective by the training metric.
+**Best encoder val loss overall (0.317367)**, beating the reference (0.362191) and all sweep variants. Cross-level MEP is a genuinely stronger self-supervised objective by the training metric.
 
-**Density (P5) matches or slightly beats reference at all levels.** L5=0.911 vs ref 0.907; L3=0.699 vs ref 0.624. Noteworthy improvement at intermediate levels.
+**Density (P5) beats reference at all levels.** L5=0.918 vs ref 0.790; L3=0.702 vs ref 0.560. Clear improvement across the board — the biggest margin of any variant.
 
-**Key detection (P11) improves at L4 (0.187 vs ref 0.159), slightly worse at L5 (0.215 vs 0.234).** This is the first variant to show any gain at an intermediate level.
+**Key detection (P11) improves at L4 (0.183 vs ref 0.145) and L5 (0.218 vs ref 0.208).** First variant to show gains at intermediate levels.
 
-**Chroma (P10) at L5 is catastrophically degraded: -11.966.** All other levels also worse than reference. A Ridge R² well below -1 indicates the L5 embeddings are actively anti-predictive of per-slice chroma — not just uninformative. This is the dominant negative result.
+**Root note (P2) improves at L4 (0.272 vs ref 0.213), matches at L5 (0.267).** Harmonic identity better encoded at intermediate levels.
 
-**Cross-song ratio (P4) worse than reference at all levels (0.84–0.88 vs ref 0.72–0.78)**, though all ratios remain below 1 (unlike u3s9_lowest's L5=1.070).
+**Chroma (P10) at L5 is catastrophically degraded: R²=−34,372,131.** All other levels slightly worse than reference (L0–L4 differences are small). A Ridge R² many orders of magnitude below zero indicates the L5 embeddings are actively anti-predictive of per-slice chroma. This is the dominant negative result — cross-level MEP appears to destroy fine pitch-class content at L5.
 
-**Interpretation:** Cross-level MEP forces fine-level embeddings to be reconstructable from coarse summaries only. This appears to damage the fine-level chroma representation (L5) severely while improving density. Density may be capturable from global/coarse structure; chroma requires local pitch content that coarse-only supervision cannot provide. The constraint may be too strong at L5.
+**Cross-song ratio (P4) worse than reference at all levels (0.655–0.742 vs ref 0.539–0.664).** Song identity separation is weaker, though all ratios remain below 1.
+
+**Melody separation (P8) stronger at coarse levels, weaker at fine.** xmep1 L0=20.48 vs ref 16.44 (better); L5=0.75 vs ref 1.33 (worse). Coarse embeddings separate melody/accompaniment more; fine embeddings collapse to near-indistinguishable.
+
+**Temporal distance (P7) comparable overall.** xmep1 slightly better at L0 (0.232 vs 0.197), worse at L3 (0.243 vs 0.277) and L5 (0.169 vs 0.191).
+
+**Emotion (P9) essentially tied.** 4-class accuracy within ±0.01 at all levels for both variants; both well above Haar baseline at coarse levels. Arousal and valence similarly matched.
+
+**Time equivariance (P6) slightly worse for xmep1** (dist=7.026 vs ref 5.844 at L0). Pitch equivariance (P3) similar (11.299 vs 11.439 — marginal improvement).
+
+**Interpretation:** Cross-level MEP creates a trade-off: fine-level embeddings (L5) are forced to be reconstructable from coarse summary tokens only. This constraint improves density (global structure) and intermediate-level harmonic encoding, but catastrophically destroys the fine-grained pitch-class content (chroma) at L5. The L5 embeddings become density-predictable at the cost of pitch content — the coarse supervision signal cannot provide local spectral information. The constraint is too strong at L5, or L5 needs separate supervision from its own local context to preserve chroma.
