@@ -42,6 +42,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | [0.10,0.15,0.20,0.20,0.10,0.05] | -0.013 | 0.037 | 0.116 | 0.221 | 0.345 | -1.381 |
 | u3s8_lowflat | [0.10,0.10,0.10,0.10,0.08,0.05] | -0.010 | -0.012 | 0.043 | 0.121 | 0.288 | 0.609 |
 | u3s9_lowest | [0.07,0.07,0.07,0.07,0.07,0.05] | 0.010 | 0.036 | 0.113 | 0.244 | 0.333 | 0.578 |
+| xmep1 | 0.15 scalar, n_skip=2, cross_level_mep | -0.012 | 0.002 | 0.095 | 0.365 | 0.510 | **-11.966** |
 
 ## Probe 11 — Key Detection (24-class accuracy)
 
@@ -57,6 +58,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.054 | 0.068 | 0.081 | 0.098 | 0.104 | 0.166 |
 | u3s8_lowflat | 0.065 | 0.063 | 0.081 | 0.082 | 0.092 | 0.160 |
 | u3s9_lowest | 0.062 | 0.077 | 0.078 | 0.099 | 0.108 | 0.187 |
+| xmep1 | 0.046 | 0.057 | 0.072 | 0.103 | **0.187** | 0.215 |
 
 ## Probe 5 — Density R²
 
@@ -72,6 +74,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.155 | 0.222 | 0.335 | 0.597 | 0.787 | 0.901 |
 | u3s8_lowflat | 0.246 | 0.296 | 0.424 | 0.476 | 0.605 | 0.760 |
 | u3s9_lowest | 0.276 | 0.332 | 0.448 | 0.594 | 0.683 | 0.829 |
+| xmep1 | 0.284 | 0.378 | 0.548 | 0.699 | 0.788 | **0.911** |
 
 ## Probe 2 — Root Note (12-class accuracy)
 
@@ -87,6 +90,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.081 | 0.103 | 0.133 | 0.162 | 0.171 | 0.230 |
 | u3s8_lowflat | 0.088 | 0.095 | 0.111 | 0.137 | 0.149 | 0.216 |
 | u3s9_lowest | 0.107 | 0.119 | 0.123 | 0.146 | 0.163 | 0.240 |
+| xmep1 | 0.086 | 0.087 | 0.109 | 0.171 | 0.253 | 0.282 |
 
 ## Probe 4 — Cross-Song Ratio (lower = better)
 
@@ -102,6 +106,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.798 | 0.842 | 0.780 | 0.731 | 0.642 | 0.621 |
 | u3s8_lowflat | 0.816 | 0.853 | 0.842 | 0.796 | 0.745 | 0.671 |
 | u3s9_lowest | 0.820 | 0.844 | 0.859 | 0.881 | 0.979 | 1.070 |
+| xmep1 | 0.854 | 0.858 | 0.842 | 0.841 | 0.878 | 0.856 |
 
 ## Probe 1 — Chord Quality (accuracy)
 
@@ -117,6 +122,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.522 | 0.532 | 0.523 | 0.546 | 0.521 | 0.544 | 0.536 |
 | u3s8_lowflat | 0.537 | 0.536 | 0.519 | 0.540 | 0.529 | 0.534 | 0.504 |
 | u3s9_lowest | 0.523 | 0.514 | 0.523 | 0.509 | 0.519 | 0.533 | 0.509 |
+| xmep1 | 0.539 | 0.559 | 0.531 | 0.525 | 0.523 | 0.523 | 0.509 |
 
 ## Best metric (encoder val loss)
 
@@ -132,6 +138,7 @@ Machine chains (updated — razer-docker excluded):
 | u3s7_peak | 0.491808 | u3s7_peak_fQWV1h | lecun |
 | u3s8_lowflat | 0.397094 | u3s8_lowflat_YpgfMD | tsrazer-ts-docker |
 | u3s9_lowest | 0.349890 | u3s9_lowest_ZX0rYk | lecun |
+| xmep1 | **0.317367** | xmep1_sHbv4G | tsrazer-ts-docker |
 
 ## Notes
 
@@ -153,3 +160,17 @@ Machine chains (updated — razer-docker excluded):
 - The n_skip parameter appears more important than the lambd schedule shape. A controlled sweep varying n_skip (0–4) while holding lambd fixed would be more diagnostic.
 - The coarse levels (L0–L2) may need a fundamentally different treatment — either much weaker SIGReg, a different objective, or more capacity — before they contribute meaningfully.
 - If the goal is fine-level musical structure, the reference configuration (n_skip=2) is still the best known setting.
+
+### xmep1: cross-level MEP results
+
+**Best encoder val loss overall (0.317367)**, beating both the reference (0.357557) and all sweep variants. Cross-level MEP is a genuinely stronger self-supervised objective by the training metric.
+
+**Density (P5) matches or slightly beats reference at all levels.** L5=0.911 vs ref 0.907; L3=0.699 vs ref 0.624. Noteworthy improvement at intermediate levels.
+
+**Key detection (P11) improves at L4 (0.187 vs ref 0.159), slightly worse at L5 (0.215 vs 0.234).** This is the first variant to show any gain at an intermediate level.
+
+**Chroma (P10) at L5 is catastrophically degraded: -11.966.** All other levels also worse than reference. A Ridge R² well below -1 indicates the L5 embeddings are actively anti-predictive of per-slice chroma — not just uninformative. This is the dominant negative result.
+
+**Cross-song ratio (P4) worse than reference at all levels (0.84–0.88 vs ref 0.72–0.78)**, though all ratios remain below 1 (unlike u3s9_lowest's L5=1.070).
+
+**Interpretation:** Cross-level MEP forces fine-level embeddings to be reconstructable from coarse summaries only. This appears to damage the fine-level chroma representation (L5) severely while improving density. Density may be capturable from global/coarse structure; chroma requires local pitch content that coarse-only supervision cannot provide. The constraint may be too strong at L5.
