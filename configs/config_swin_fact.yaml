@@ -1,5 +1,5 @@
 data:
-  path: /home/shawley/datasets/POP909_images_basic  # adjust path as needed
+  path: ~/datasets/POP909_images_basic  # adjust path as needed
   image_size: 128
   in_channels: 1
 
@@ -17,9 +17,9 @@ model:
   dec_num_heads: [2, 2, 2, 4, 8, 16]
   
 training:
-  batch_size: 300         # encoder batch size
+  batch_size: 200         # encoder batch size
   lr: 2e-4
-  epochs: 100
+  epochs: 300
   lambd: 0.3              # lejepa attraction-vs-sigreg weight
   max_shift_x: 12         
   max_shift_y: 12
@@ -30,7 +30,7 @@ training:
   empty_mask_ratio: 0.05  # fraction of mask_ratio applied to empty patches
   lambda_visible: 1.0     # for handling unbalanced classes, 1 = no effect
   lambda_anchor: 0.0      # l2 loss on empty patch embeddings
-  lambda_fact: 0.5        # factorization loss scale
+  lambda_fact: 1.0        # factorization loss scale
   ema_eta: 0.96
   ema_update_every: 1 
   dec_batch_size: 256     # decoder-training batch size
@@ -40,7 +40,7 @@ training:
   enc_ft_lr: -1           # lr for fine-tuning enc via end-to-end training w/ decoder
 
 preencode:
-  output_dir: /home/shawley/datasets/POP909_encoded
+  output_dir: ~/datasets/POP909_encoded
   num_passes: 10          # number of passes through the dataset
 
 wandb:

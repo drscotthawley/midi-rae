@@ -4,13 +4,14 @@
 
 # %% auto #0
 __all__ = ['safe_mean', 'SIGReg', 'attraction_loss', 'factorization_loss', 'LeJEPA', 'anchor_loss', 'calc_enc_loss',
-           'calc_enc_loss_multiscale', 'calc_mae_loss', 'calc_dec_loss', 'PatchGANDiscriminator']
+           'calc_enc_loss_multiscale', 'calc_mae_loss', 'calc_dec_loss']
 
 # %% ../nbs/03_losses.ipynb #b96051a7
-import torch
+import torch 
 import torch.nn as nn
 import torch.nn.functional as F 
 import math
+from .utils import to_scalar
 
 # %% ../nbs/03_losses.ipynb #59c62704
 def safe_mean(t, dim=None): 
@@ -71,7 +72,9 @@ def attraction_loss(z1, z2,        # embeddings of two "views" of the same thing
     dist = (z1 - z2).norm(dim=-1)
     delta_diag = (deltas**2).sum(dim=1)
     margin = alpha * delta_diag.sqrt() 
-    return safe_mean( (dist - margin).clamp(min=0).square() )
+    sim = safe_mean( (dist - margin).clamp(min=0).square() )
+    #if not z1.requires_grad: sim = sim*2     # "compensate" for one of the points not moving, to match historical performance.
+    return sim
 
 # %% ../nbs/03_losses.ipynb #3a9a0faf-a370-4410-84df-5e7e63f9ec65
 def factorization_loss(z_anchor, z_crop1, z_crop2, targets):
@@ -84,25 +87,21 @@ def factorization_loss(z_anchor, z_crop1, z_crop2, targets):
     return safe_mean((cos - targets) ** 2)
 
 # %% ../nbs/03_losses.ipynb #624570b6
-def LeJEPA(z1, z2, global_step, z3=None, valids=None, target=None, lambd=0.5, deltas=None, psize=None, sigreg_on_both=True, sigreg_prefac=0.5, lambda_fact=0.5): 
-    "Main LeJEPA loss function"
-    # design decision! z2 is the only thing that will ever explicitly get gradients on it. z1 & z3, no.
-    sigreg = SIGReg(z2, global_step ) * sigreg_prefac  # SIGREG is expensive even with chunking. Leave Z3 out and Z1 out of it.
+def LeJEPA(z1, z2, global_step, z3=None, valids=None, target=None, deltas=None, psize=None, sigreg_on_both=True, sigreg_prefac=0.5, loss_weights=None): 
+    "Main LeJEPA loss function."
+    lw = loss_weights or {}
+    lambd       = lw.get('lambd',       0.5)
+    lambda_fact = lw.get('lambda_fact', 0.5)
+    lambda_sim  = lw.get('lambda_sim',  1.0)
+    sigreg = SIGReg(z2, global_step) * sigreg_prefac
     if z3 is not None:   
-        #sim = attraction_loss(z1[valids[0]], z2[valids[0]], deltas=deltas[valids[0],0], psize=psize)
-        sim = attraction_loss(z1, z2, deltas=deltas[:,0] if deltas is not None else None, psize=psize)
-
-        #sim = 0.5 * (sim + attraction_loss(z1[valids[1]], z3[valids[1]], deltas=deltas[valids[1],1], psize=psize) )
+        sim  = attraction_loss(z1, z2, deltas=deltas[:,0] if deltas is not None else None, psize=psize)
         fact = factorization_loss(z1, z2, z3, target)
-        return {'loss': (1-lambd)*(sim + lambda_fact*fact) + lambd*sigreg, 
-                'sim':sim.detach(), 'sigreg':sigreg.detach(), 'fact':fact.detach()}
+        return {'loss': (1-lambd)*(lambda_sim*sim + lambda_fact*fact) + lambd*sigreg,
+                'sim': sim.detach(), 'sigreg': sigreg.detach(), 'fact': fact.detach()}
     else:
-        if valids is not None:
-            sim = attraction_loss(z1[valids[0]], z2[valids[0]], deltas=deltas[valids[0], 0], psize=psize)
-        else: 
-            sim = attraction_loss(z1, z2, deltas=deltas, psize=psize)            
-        
-    return {'loss': (1-lambd)*sim + lambd*sigreg, 'sim':sim.detach(), 'sigreg':sigreg.detach()}
+        sim = attraction_loss(z1, z2, deltas=deltas, psize=psize)
+    return {'loss': (1-lambd)*lambda_sim*sim + lambd*sigreg, 'sim': sim.detach(), 'sigreg': sigreg.detach()}
 
 # %% ../nbs/03_losses.ipynb #3fa01fc2
 def anchor_loss(z1, z2):
@@ -110,53 +109,60 @@ def anchor_loss(z1, z2):
     return safe_mean( z1.square() ) + safe_mean( z2.square() )
 
 # %% ../nbs/03_losses.ipynb #5a89c2b1
-def calc_enc_loss(z1, z2, global_step, z3=None, deltas=None, target=None, lambd=0.5, non_emptys=(None,None), lambda_anchor=0.05, lambda_fact=0.5, psize=None):
+def calc_enc_loss(z1, z2, global_step, z3=None, deltas=None, target=None, non_emptys=(None,None), psize=None, loss_weights=None):
     "Main loss function for Encoder"
+    lw = loss_weights or {}
     non_empty1, non_empty2, non_empty3 = non_emptys
     joint_ne2 = (non_empty1 & non_empty2).view(-1).bool()
     joint_ne3 = (non_empty1 & non_empty3).view(-1).bool() if non_empty3 is not None else None
-    loss_dict = LeJEPA( z1, z2, global_step, z3=z3, valids=(joint_ne2, joint_ne3), deltas=deltas, target=target, lambd=lambd, lambda_fact=lambda_fact, psize=psize )
+    loss_dict = LeJEPA(z1, z2, global_step, z3=z3, valids=(joint_ne2, joint_ne3), deltas=deltas, target=target, psize=psize, loss_weights=lw)
+    lambda_anchor = lw.get('lambda_anchor', 0.05)
     if lambda_anchor > 0:
         loss_dict['anchor'] = anchor_loss(z1[~non_empty1.view(-1).bool()], z2[~non_empty2.view(-1).bool()])
         loss_dict['loss'] = loss_dict['loss'] + lambda_anchor * loss_dict['anchor'] 
     return loss_dict
 
+
 # %% ../nbs/03_losses.ipynb #3f4e797d-27b0-44de-be77-e68469aff268
 @torch.compiler.disable
 def calc_enc_loss_multiscale(z1, z2, global_step, img_size, z3=None, deltas=None, target=None,
-                             lambd=0.5, non_emptys=None, lambda_anchor=0.05, lambda_fact=0.5, lambda_mep=0.0, mep_model=None, debug=False):
-    """Compute encoder loss at each hierarchy level of the Swin encoder. really really this time"""
+                             non_emptys=None, loss_weights=None, debug=False):
+    """Compute encoder loss at each hierarchy level of the Swin encoder."""
+    lw = loss_weights or {}
     if not isinstance(z1, list):  # regular ViT
         d_exp = deltas.repeat_interleave(z1.shape[0] // deltas.shape[0], dim=0)
         return calc_enc_loss(z1.float(), z2.float(), global_step, deltas=d_exp.float(),
-                             lambd=lambd, non_emptys=non_emptys, lambda_anchor=lambda_anchor)
+                             non_emptys=non_emptys, loss_weights=lw)
     total = {}
     n_levels = len(z1)
-    a_sum = a_count = 0.0
     level_losses = []
     z3_iter = z3 if z3 is not None else [None] * len(z1)
     for lev, (z1_l, z2_l, z3_l, ne) in enumerate(zip(z1, z2, z3_iter, non_emptys)):
-        if debug: print(f"mutliscale loss, Level {lev}:") 
-        B, N, D = z1_l.shape
-        grid = int(N ** 0.5)  # TODO: assumes square images
-        psize = (img_size // grid, img_size // grid)
-        z1_flat, z2_flat, z3_flat  =  z1_l.reshape(-1, D).float(), z2_l.reshape(-1, D).float(), None
-        ne_flat           = list( x.reshape(-1).bool()     for x in (ne[0], ne[1]))  # non-emptys
-        if z3_l is not None: 
-            z3_flat  = z3_l.reshape(-1, D).float() 
-            ne_flat.append(ne[2].reshape(-1).bool()) 
-        else: ne_flat.append(None)
-        d_expanded = deltas.repeat_interleave(N, dim=0).float() if deltas is not None else None
-        t_expanded = target.repeat_interleave(N, dim=0).float() if target is not None else None
-        ld = calc_enc_loss(z1_flat, z2_flat, global_step, z3=z3_flat, deltas=d_expanded, target=t_expanded,
-                           lambd=lambd, non_emptys=ne_flat, lambda_anchor=lambda_anchor, lambda_fact=lambda_fact, psize=psize)
+        if lev < n_levels - 1:  # skip LeJEPA loss on finest level
+            if debug: print(f"mutliscale loss, Level {lev}:")
+            B, N, D = z1_l.shape
+            grid = int(N ** 0.5)
+            psize = (img_size // grid, img_size // grid)
+            z1_flat, z2_flat, z3_flat = z1_l.reshape(-1, D).float(), z2_l.reshape(-1, D).float(), None
+            ne_flat = list(x.reshape(-1).bool() for x in (ne[0], ne[1]))
+            if z3_l is not None:
+                z3_flat = z3_l.reshape(-1, D).float()
+                ne_flat.append(ne[2].reshape(-1).bool())
+            else: ne_flat.append(None)
+            d_expanded = deltas.repeat_interleave(N, dim=0).float() if deltas is not None else None
+            t_expanded = target.repeat_interleave(N, dim=0).float() if target is not None else None
+            ld = calc_enc_loss(z1_flat, z2_flat, global_step, z3=z3_flat, deltas=d_expanded, target=t_expanded,
+                               non_emptys=ne_flat, psize=psize, loss_weights=lw)
+        else:
+            ld = {'loss': torch.tensor(0.0, device=z1_l.device, dtype=z1_l.dtype)}  # dummy for finest level
         level_losses.append({k: v.detach() if hasattr(v, 'item') else v for k, v in ld.items()})
         for k, v in ld.items(): total[k] = total.get(k, 0) + v
-    
+
     if not total: return {'loss': torch.tensor(0.0, device=deltas.device)}
     total = {k: v / n_levels for k, v in total.items()}
     total['levels'] = level_losses
     return total
+
 
 # %% ../nbs/03_losses.ipynb #34ecc897
 def calc_mae_loss(recon_patches, img, enc_out, lambda_visible=0.1, 
@@ -176,28 +182,16 @@ def calc_mae_loss(recon_patches, img, enc_out, lambda_visible=0.1,
 
 # %% ../nbs/03_losses.ipynb #f9ad6db1-0f0e-4e79-82e5-1f171c903561
 def calc_dec_loss(decoder, enc_out, img_real, 
-                  pos_weight=2.0, # weighting positive (white pixels) to negative (black); value tuned experimentally
+                  pos_weight=1.0, # weighting positive (white pixels) to negative (black); value tuned experimentally
+                  note_weights=None,
+                  lambda_mse=0.2,   # tiny bit of MSE to blur and let nearby pixels 'talk to each other' and resolve off-by-one errors
                   ): 
     "decoder loss function)"
     img_recon = decoder(enc_out)
     pos_weight = torch.tensor([pos_weight], device=img_real.device) # white pixels more important than black
-    loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real, pos_weight=pos_weight)
-    loss_dec = loss_bce                                       # +... we used to add other losses in the total
-    img_recon = torch.sigmoid(img_recon)                      # this is only for viz later; needs sigmoid to -> (0,1) (we may even binarize it)
-    return {'dec':loss_dec, 'bce':loss_bce, 'recon':img_recon.detach()}
+    loss_bce = F.binary_cross_entropy_with_logits(img_recon, img_real, pos_weight=pos_weight, weight=note_weights)
+    img_recon = torch.sigmoid(img_recon)                      # needs sigmoid to -> (0,1)
+    loss_mse = F.mse_loss(img_recon, img_real) if lambda_mse > 0 else 0.0             
+    loss_dec = loss_bce  + lambda_mse * loss_mse
+    return {'dec':loss_dec, 'bce':loss_bce.item(), 'recon':img_recon.detach(), 'mse':to_scalar(loss_mse)}
 
-# %% ../nbs/03_losses.ipynb #ade84ead
-class PatchGANDiscriminator(nn.Module):
-    def __init__(self, in_ch=1, base_ch=64, n_layers=3, use_spectral_norm=True):
-        super().__init__()
-        norm = nn.utils.spectral_norm if use_spectral_norm else (lambda x: x)
-        layers = [norm(nn.Conv2d(in_ch, base_ch, kernel_size=4, stride=2, padding=1)), nn.LeakyReLU(0.2, True)]
-        ch = base_ch
-        for i in range(1, n_layers):
-            ch_next = min(ch * 2, 512)  # double channels each layer, but cap at 512 to limit params
-            layers += [norm(nn.Conv2d(ch, ch_next, kernel_size=4, stride=2, padding=1)), nn.LeakyReLU(0.2, True)]
-            ch = ch_next
-        layers.append(norm(nn.Conv2d(ch, 1, kernel_size=4, stride=1, padding=1)))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x): return self.net(x)

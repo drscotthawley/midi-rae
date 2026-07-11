@@ -1,5 +1,5 @@
 data:
-  path: /home/shawley/datasets/imagenette2-320  # adjust path as needed
+  path: ~/datasets/imagenette2-320  # adjust path as needed
   image_size: 256
   in_channels: 3
 
