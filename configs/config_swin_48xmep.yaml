@@ -1,0 +1,18 @@
+# MRJ-48^ (config_swin: depths [2,2,2,6,2,2], max_shift_x 48, lambda_fact 0.5, lambda_mep 1.0)
+# + cross-level MEP turned ON.
+#
+# cross_level_mep=true forces the fine levels (L3-L5) to predict their masked embeddings
+# from the COARSE summaries (L0-L2) only, rather than from the full mixed summaries. The
+# hypothesis: this pushes fine-predictive structure down into the coarse levels.
+#
+# Novel config: xmep1 / d_uniform3 tested cross_level_mep only on the UNIFORM-depth
+# [3,3,3,3,3,3] architecture. This is the first time it's paired with the MRJ-48^ wide
+# depths [2,2,2,6,2,2]. Inherits everything from config_swin so that file stays the clean
+# MRJ-48^ baseline record; only cross_level_mep is overridden here.
+defaults:
+  - config_swin
+
+training:
+  cross_level_mep: true
+
+tag: ???
