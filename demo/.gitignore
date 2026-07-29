@@ -1,0 +1,4 @@
+# Model weights + PCA pickles are large binaries fetched from lecun, not committed.
+checkpoints/
+# Python bytecode
+__pycache__/

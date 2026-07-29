@@ -1,0 +1,7 @@
+# Extra deps for the demo, on top of the midi-rae package itself.
+# Install the package first:  pip install -e .   (from the repo root)
+# Then:                       pip install -r demo/requirements.txt
+gradio
+pretty_midi
+git+https://github.com/drscotthawley/midi-player
+# (torch, numpy, pillow, scikit-learn, timm come with midi-rae's pyproject.toml)
