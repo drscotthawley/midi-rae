@@ -616,7 +616,19 @@ Re-introduce `factorization_loss` but apply it selectively at coarse levels (L0,
 ### Level-specific loss weights (follow-up, implement later)
 Allow `lambda_*` parameters in the config to be lists instead of scalars, e.g. `lambda_fact: [1.0, 0.5, 0.0, 0.0, 0.0, 0.0]`. Each loss function checks `isinstance(lw.get('lambda_fact'), list)` and indexes by level. Scalar values broadcast as before — fully backward compatible. This would let factorization, anchor, and attraction losses be tuned independently per level rather than uniformly applied everywhere. Natural pairing with the factorization-at-coarse-levels idea.
 
-### FPN ablation (follow-up)
+### Rotation equivariance for pitch class invariance (follow-up)
+
+**Motivation**: Pitch class invariance (e.g., C major and D major are "the same key") is not currently imposed, and we don't want to impose it rigidly — but we could encode it as a structured geometric property in the latent space. The PCA finding that coarse levels explain ~95% of variance in a small fraction of the total embedding dimensions means there are many unused dimensions available to encode additional structure like this. Think of it as RoPE for music: just as RoPE injects position geometry into token embeddings without overwriting content, we could inject circle-of-fifths geometry into the spare dimensions.
+
+**Two options**:
+
+1. **Learned rotation operator** (à la the "Operational Latent Spaces" paper, Hawley et al.): train a network to learn a rotation operator sufficient to encode the musical circle of fifths. The rotation matrix is learned end-to-end — the model discovers the right geometric structure from the pitch-shift supervision signal.
+
+2. **Reserved dimension with fixed 1/12-circle rotation**: reserve one complex-valued dimension (or two real dims) and enforce that a semitone shift corresponds to exactly a 30° rotation (2π/12). Analogous to a fixed-frequency RoPE component. No learning needed for the rotation geometry itself.
+
+**Conflict with factorization loss — must resolve before implementing**: The current soft factorization loss enforces parallel/anti-parallel behavior for pitch shifts — i.e., a pitch shift maps to a translation along a fixed direction. Rotation and translation are geometrically incompatible for large shifts. For small shifts they are locally compatible (a small arc ≈ a short chord), but at scale they diverge. Adding a rotation objective while the factorization loss is pushing toward translation would create conflicting gradients. This tension would need to be rethought: either (a) replace pitch factorization with rotation equivariance, (b) apply each in separate subspaces (translation in dims 0..k, rotation in dims k..k+2), or (c) relax factorization at coarse levels where rotation geometry would live.
+
+**Status**: Idea only. Requires resolving the factorization/rotation conflict first.
 Train a Swin encoder with FPN disabled, then run STORMBIRD on it. Key prediction: L5's time translation equivariance curve should go flat beyond ~4px (its local receptive field), while L0 still rises. If confirmed, this is direct causal evidence that the FPN is responsible for global context propagation into fine levels — not just a post-hoc explanation. A clean, low-cost ablation that strengthens the FPN finding considerably.
 
 ### Tomorrow's priority

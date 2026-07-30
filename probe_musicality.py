@@ -303,6 +303,21 @@ def run_key_detection_probe(embeddings_per_level, key_labels, n_levels):
 
 # ── Probe 3: pitch transposition equivariance ────────────────────────────────
 
+def _norm_equivariance_report(name, shifts, all_means, ref_scale):
+    """Scale-normalized equivariance summary. Raw embedding distances are scale-confounded
+    (a regularizer that clusters tighter shrinks ALL distances), so we also report:
+      rel@..  = shift-distance / between-crop spread at that level (scale-invariant), and
+      corr    = Pearson corr(shift, distance) across the sweep (scale-invariant)."""
+    print(f"\n=== {name} (scale-normalized) ===")
+    print(f" Level    rel@max   rel@half   corr(shift,dist)   ref_scale")
+    half = len(shifts) // 2
+    for lev in sorted(all_means):
+        rs = ref_scale.get(lev) or 1e-9
+        rel = [m / rs for m in all_means[lev]]
+        c = float(np.corrcoef(shifts, all_means[lev])[0, 1]) if len(shifts) > 1 else float('nan')
+        print(f" L{lev}     {rel[-1]:8.3f}   {rel[half]:8.3f}   {c:15.3f}   {rs:8.3f}")
+
+
 def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=24, batch_size=32):
     print(f"\n=== Probe 3: Pitch Transposition Equivariance ===")
     shifts = list(range(0, max_shift + 1, 2))
@@ -321,6 +336,7 @@ def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=2
             if n_levels is None:
                 n_levels = enc.patches.num_levels
                 dist_by_shift = {lev: {s: [] for s in shifts} for lev in range(n_levels)}
+                ref_acc = {lev: [] for lev in range(n_levels)}
             B = originals.shape[0]
             for lev in range(n_levels):
                 emb = enc.patches.levels[lev].emb  # (2B, N, D)
@@ -328,6 +344,9 @@ def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=2
                 z2 = emb[B:].cpu().float()
                 patch_dists = (z1 - z2).norm(dim=-1).mean(dim=1)  # (B,)
                 dist_by_shift[lev][shift].extend(patch_dists.tolist())
+                mp = z1.mean(dim=1)  # (B, D) mean-pooled per crop
+                if mp.shape[0] > 1:
+                    ref_acc[lev].append(torch.pdist(mp).mean().item())  # between-crop spread (scale ref)
 
     colors = plt.cm.viridis(np.linspace(0, 1, n_levels))
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -352,6 +371,8 @@ def run_transposition_probe(encoder, dataset, device, n_samples=200, max_shift=2
     print(f"  shift=0  dist(L0)={mean_dists_l0[0]:.3f}  (should be ~0)")
     print(f"  shift=12 dist(L0)={mean_dists_l0[shifts.index(12)]:.3f}  (octave)")
     print(f"  Saved → probe_transposition.png")
+    ref_scale = {lev: (float(np.mean(ref_acc[lev])) if ref_acc[lev] else 1.0) for lev in range(n_levels)}
+    _norm_equivariance_report("Probe 3b: Pitch Transposition Equivariance", shifts, all_means, ref_scale)
     df = pd.DataFrame({ 'shift': shifts,
         **{f'L{l}_mean': all_means[l] for l in sorted(all_means)},
         **{f'L{l}_std':  all_stds[l]  for l in sorted(all_stds)}
@@ -386,12 +407,16 @@ def run_time_translation_probe(encoder, dataset, device, n_samples=200, max_shif
             if n_levels is None:
                 n_levels = enc.patches.num_levels
                 dist_by_shift = {lev: {sh: [] for sh in shifts} for lev in range(n_levels)}
+                ref_acc = {lev: [] for lev in range(n_levels)}
             for lev in range(n_levels):
                 emb = enc.patches.levels[lev].emb  # (2B, N, D)
                 z1 = emb[:B_actual].cpu().float()
                 z2 = emb[B_actual:].cpu().float()
                 patch_dists = (z1 - z2).norm(dim=-1).mean(dim=1)
                 dist_by_shift[lev][shift].extend(patch_dists.tolist())
+                mp = z1.mean(dim=1)  # (B, D) mean-pooled per crop
+                if mp.shape[0] > 1:
+                    ref_acc[lev].append(torch.pdist(mp).mean().item())  # between-crop spread (scale ref)
 
     colors = plt.cm.viridis(np.linspace(0, 1, n_levels))
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -416,6 +441,8 @@ def run_time_translation_probe(encoder, dataset, device, n_samples=200, max_shif
     print(f"  shift=0   dist(L0)={mean_dists_l0[0]:.3f}  (should be ~0)")
     print(f"  shift=64  dist(L0)={mean_dists_l0[-1]:.3f}")
     print(f"  Saved → probe_time_translation.png")
+    ref_scale = {lev: (float(np.mean(ref_acc[lev])) if ref_acc[lev] else 1.0) for lev in range(n_levels)}
+    _norm_equivariance_report("Probe 6b: Time Translation Equivariance", shifts, all_means, ref_scale)
     #df = pd.DataFrame({'shift': shifts, **{f'L{l}': all_means[l] for l in sorted(all_means)}})
     df = pd.DataFrame({ 'shift': shifts,
         **{f'L{l}_mean': all_means[l] for l in sorted(all_means)},

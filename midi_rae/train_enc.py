@@ -109,6 +109,7 @@ def compute_batch_loss(batch, encoder, cfg, global_step, mae_decoder=None, ema_e
         'lambda_sim':   cfg.training.get('lambda_sim',   1.0),
         'lambda_mep':   cfg.training.get('lambda_mep',   1.0),
         'lambda_mae':   cfg.training.get('lambda_mae',   0.0),
+        'reg_type':     cfg.training.get('reg_type', 'sigreg'),
     }
 
     img1, img2, deltas = [batch[x].to(device, non_blocking=True) for x in ['img1','img2','deltas']]
@@ -279,6 +280,7 @@ def train(cfg: DictConfig):
         'lambda_sim':    0.0 if lambda_sim_epochs > 0 else cfg.training.get('lambda_sim', 1.0),
         'lambda_mep':    cfg.training.get('lambda_mep',    1.0),
         'lambda_mae':    cfg.training.get('lambda_mae',    0.0),
+        'reg_type':      cfg.training.get('reg_type', 'sigreg'),
     }
 
     # Training loop
