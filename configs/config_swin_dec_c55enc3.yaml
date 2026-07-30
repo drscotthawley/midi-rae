@@ -12,4 +12,17 @@ defaults:
 
 preencoded: true
 
+training:
+  # config_swin warm-starts the decoder from dec26_2JIbRt, which was fit to embeddings
+  # from an encoder that saw the corrupted piano rolls. Train from scratch instead --
+  # the point of this run is a decoder with no corrupt-data lineage.
+  dec_init_ckpt: null
+
+  # config_swin's pca_dir points at POP909_pca_exp26: a basis fit on a DIFFERENT
+  # encoder's latent space, on corrupt data. The PCA round-trip augmentation would
+  # apply that basis to C55 embeddings for the whole run. Point it at this encoder's
+  # own PCA instead. (Keeping pca_aug on matters: the flow conditions on
+  # PCA-compressed embeddings, so the decoder should be robust to the round-trip.)
+  pca_dir: $HOME/datasets/POP909_pca_c55enc3
+
 tag: ???
