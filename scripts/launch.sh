@@ -129,7 +129,7 @@ if [[ "$TYPE" == "cfm" ]]; then
         "${HOST}:${RUN_DIR}/"
 elif [[ "$TYPE" == "probe" ]]; then
     echo "Copying probe_musicality.py to ${HOST}:${RUN_DIR}/ ..."
-    scp "${REPO_DIR}"/probe_musicality.py "${HOST}:${RUN_DIR}/"
+    scp "${REPO_DIR}"/probe_musicality.py "${REPO_DIR}"/scripts/ckpt_config.py "${HOST}:${RUN_DIR}/"
 elif [[ "$TYPE" != "ssm" ]]; then
     echo "Copying configs/ to ${HOST}:${RUN_DIR}/ ..."
     scp "${REPO_DIR}"/configs/*.yaml "${HOST}:${RUN_DIR}/configs/"
@@ -184,9 +184,13 @@ cd ${RUN_DIR}
 CKPT=\$(ls ${REMOTE_HOME}/runs/midi-rae/${CONFIG}/checkpoints/SwinEncoder_*_best.pt 2>/dev/null | head -1)
 if [[ -z "\$CKPT" ]]; then echo "ERROR: no SwinEncoder checkpoint found in ${REMOTE_HOME}/runs/midi-rae/${CONFIG}/checkpoints/"; exit 1; fi
 echo "Using checkpoint: \$CKPT"
+# Rebuild the architecture from the config embedded IN the checkpoint, not from
+# configs/config_swin.yaml -- runs launched with a variant config (different depths)
+# would otherwise be rebuilt with the base architecture and fail to load.
+python ckpt_config.py \$CKPT ${RUN_DIR}/resolved_config.yaml
 PYTHONPATH=${RUN_DIR} nohup python probe_musicality.py \
     --ckpt \$CKPT \
-    --config ${REMOTE_HOME}/runs/midi-rae/${CONFIG}/configs/config_swin.yaml \
+    --config ${RUN_DIR}/resolved_config.yaml \
     --data ${REMOTE_HOME}/datasets/POP909_images_basic \
     --pop909 ${REMOTE_HOME}/datasets/POP909_images \
     --emopia ${REMOTE_HOME}/datasets/EMOPIA \
