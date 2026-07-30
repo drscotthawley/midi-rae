@@ -1,0 +1,15 @@
+# Decoder for the clean-data C55 encoder (c55enc3_vkrDxf).
+#
+# Trains from the preencoded chunks rather than re-running the encoder, so it inherits
+# encoder_ckpt and preencode.output_dir from the preencode recipe and only flips
+# `preencoded: true`. Decoder hyperparameters (dec_batch_size 360, dec_epochs 100,
+# dec_lr 2e-3) come from config_swin unchanged.
+#
+# Every decoder before this one was trained on embeddings from an encoder that saw the
+# corrupted piano rolls, so none of their reconstructions are trustworthy.
+defaults:
+  - config_swin_C55cUL_preenc
+
+preencoded: true
+
+tag: ???
