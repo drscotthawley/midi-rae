@@ -1,0 +1,24 @@
+# Preencode + PCA for the MRJ-48^ encoder (mrj48enc3_8Rz0cN), the cross_level_mep=OFF arm.
+#
+# Pairs with config_swin_C55cUL_preenc, which does the same for the ON arm (c55enc3).
+# Both encoders were trained on clean data with the uniform on-disk split and differ in
+# exactly one field, so their PCA component counts are directly comparable -- the open
+# question being whether the coarse levels' extra information shows up as higher or
+# lower rank.
+#
+# Inherits config_swin (NOT config_swin_48xmep): MRJ-48^ is the base recipe.
+defaults:
+  - config_swin
+
+encoder_ckpt: $HOME/runs/midi-rae/mrj48enc3_8Rz0cN/checkpoints/SwinEncoder_mrj48enc3_8Rz0cN_best.pt
+
+preencode:
+  output_dir: $HOME/datasets/POP909_encoded_mrj48enc3
+
+fitpca:
+  output_dir: $HOME/datasets/POP909_pca_mrj48enc3
+  # emb1, matching c55enc3. The fit_pca default of emb2 is the encoding of a SHIFTED
+  # crop, which is what left the flow free to transpose its output.
+  key: emb1
+
+tag: ???
