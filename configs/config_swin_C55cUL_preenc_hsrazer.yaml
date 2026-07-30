@@ -1,0 +1,16 @@
+# As config_swin_C55cUL_preenc, but sized for hsrazer's 16 GB card.
+#
+# preencode defaults to batch_size 1024 ("large batch; inference only"), which is fine
+# on tsrazer's 24 GB but risks OOM here. hsrazer has 30 GB of system RAM and 109 GB of
+# free disk, so the constraint is VRAM alone.
+#
+# Why regenerate rather than copy: the encoded set is 38 GB and already exists on
+# tsrazer, but hsrazer holds the same images and the same encoder checkpoint, so
+# recomputing is cheaper than moving it across the network.
+defaults:
+  - config_swin_C55cUL_preenc
+
+preencode:
+  batch_size: 256
+
+tag: ???
