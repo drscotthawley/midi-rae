@@ -1,0 +1,20 @@
+# SMOKE TEST ONLY (not a real run): 1 epoch on a width-filtered Lakh subset, to shake out
+# data-pipeline crashes on Lakh's dense _TOTAL images. Uses the standard VISReg recipe
+# (hyperparameter choice is irrelevant here) — only data.path + epochs differ. no_wandb to
+# avoid a junk tracked run.
+defaults:
+  - config_swin_48xmep_visreg
+
+data:
+  path: $HOME/datasets/Lakh_subset_smoke
+
+training:
+  epochs: 1
+
+no_wandb: true
+
+tag: ???
+
+# Own project so the scaling arms sit together, not mixed in with the POP909 runs.
+wandb:
+  project: ar-mep-lakh

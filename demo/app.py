@@ -111,11 +111,15 @@ def load_window_for_paint(example_name, crop_x):
 
 
 def run_inpaint(editor_value, input_state, method, n_steps, cfg_strength, seed, device,
-                latent_fill=True, dilate=0):
+                latent_fill=True, dilate=0, solver="euler"):
+    # Toast as well as status text: returning None leaves the panes unchanged, which
+    # reads as "the button did nothing" if the status line goes unnoticed.
     if input_state is None:
+        gr.Warning("Load a window into the canvas first (▶ Load window into canvas).")
         return None, "", "Load a window into the canvas first (▶ Load window)."
     hole = extract_hole_mask(editor_value, pcfm_infer.IMAGE_SIZE)          # (128,128) bool True=hole
     if not hole.any():
+        gr.Warning("No mask painted — draw over the region you want redrawn, then Inpaint.")
         return None, "", "Paint over the region you want the model to redraw, then Run."
 
     demo = get_demo(); demo.set_device(device)
@@ -142,12 +146,13 @@ def run_inpaint(editor_value, input_state, method, n_steps, cfg_strength, seed, 
         x0n = torch.randn(1, 1, pcfm_infer.IMAGE_SIZE, pcfm_infer.IMAGE_SIZE, generator=gen_th)
         gen = gs.guided_generate(demo, img_holed, n_steps=int(n_steps), seed=int(seed),
                                  cfg_strength=float(cfg_strength), device=device, mlcond=mlcond,
+                                 solver=solver,
                                  project=gs.make_inpaint_project(x_known, mask_t, x0n))
     elif method == "soft":
         guide = gs.make_soft_inpaint_guidance(x_known, mask_t, eta=1.0, t_min=0.2)
         gen = gs.guided_generate(demo, img_holed, n_steps=int(n_steps), seed=int(seed),
                                  cfg_strength=float(cfg_strength), device=device, mlcond=mlcond,
-                                 guide_fn=guide, init_known=x_known, init_t0=0.2)
+                                 solver=solver, guide_fn=guide, init_known=x_known, init_t0=0.2)
     else:  # pnpflow
         grad = gs.make_inpaint_grad(x_known, mask_t)
         # num_avg=1: averaging over independent draws washes out the hole (nothing pins
@@ -175,8 +180,66 @@ def on_example_change(example_name):
     return gr.update(minimum=0, maximum=max_x, value=flow_infer.best_crop_x(path), step=1)
 
 
+# ------------------------------------------------------- song strip / click-to-crop
+STRIP_H = 128          # strip is the full song at native pitch height
+
+
+def _strip_rgb(arr, crop_x, base=(120, 180, 255), box=(255, 90, 90)):
+    """Full-song roll as RGB, with the current 128-wide crop window outlined."""
+    m = arr > 0.5
+    rgb = np.zeros((*m.shape, 3), np.uint8)
+    for c in range(3):
+        rgb[:, :, c] = m * base[c]
+    w = arr.shape[1]
+    x0 = max(0, min(int(crop_x), max(0, w - pcfm_infer.IMAGE_SIZE)))
+    x1 = min(w - 1, x0 + pcfm_infer.IMAGE_SIZE - 1)
+    for c in range(3):                       # outline, drawn over whatever is there
+        rgb[0, x0:x1 + 1, c] = box[c]
+        rgb[-1, x0:x1 + 1, c] = box[c]
+        rgb[:, x0, c] = box[c]
+        rgb[:, x1, c] = box[c]
+    return rgb
+
+
+def load_song(example_name):
+    """Dropdown changed: show the whole song, default-crop to the CENTRE.
+
+    Not best_crop_x (densest window) -- that lands wherever the busiest passage is,
+    which on some songs is hard right and reads as a bug."""
+    path = EXAMPLES_DIR / example_name
+    arr = flow_infer._load_binary_array(path)
+    cx = max(0, (arr.shape[1] - pcfm_infer.IMAGE_SIZE) // 2)
+    crop = flow_infer.image_to_binary_tensor(path, crop_x=cx)[0, 0].numpy()
+    centre = cx + pcfm_infer.IMAGE_SIZE // 2
+    canvas = np.asarray(roll_to_display(crop, (120, 180, 255)).convert("RGB"))
+    return (_strip_rgb(arr, cx), cx,
+            roll_to_display(crop, (120, 180, 255)),
+            f"Crop centred at t={centre} of {arr.shape[1]} (click the strip to move it).",
+            canvas, flow_infer.image_to_binary_tensor(path, crop_x=cx))
+
+
+def click_strip(example_name, evt: gr.SelectData):
+    """Click on the strip: centre a 128-wide crop on the clicked column."""
+    path = EXAMPLES_DIR / example_name
+    arr = flow_infer._load_binary_array(path)
+    w = arr.shape[1]
+    # SelectData.index is (x, y) for gr.Image; be tolerant of either order.
+    idx = evt.index if isinstance(evt.index, (list, tuple)) else (evt.index, 0)
+    click_x = int(idx[0])
+    if click_x >= w and len(idx) > 1:        # (y, x) ordering instead
+        click_x = int(idx[1])
+    cx = max(0, min(click_x - pcfm_infer.IMAGE_SIZE // 2, max(0, w - pcfm_infer.IMAGE_SIZE)))
+    crop = flow_infer.image_to_binary_tensor(path, crop_x=cx)[0, 0].numpy()
+    centre = cx + pcfm_infer.IMAGE_SIZE // 2
+    canvas = np.asarray(roll_to_display(crop, (120, 180, 255)).convert("RGB"))
+    return (_strip_rgb(arr, cx), cx,
+            roll_to_display(crop, (120, 180, 255)),
+            f"Crop centred at t={centre} of {w} (clicked t={click_x}).",
+            canvas, flow_infer.image_to_binary_tensor(path, crop_x=cx))
+
+
 def run(example_name, crop_x, device, solver, n_steps, cfg_strength, seed,
-        d0, d1, d2, d3, d4, d5):
+        d0, d1, d2, d3, d4, d5, align=True):
     demo = get_demo()
     demo.set_device(device)
     path = EXAMPLES_DIR / example_name
@@ -189,12 +252,20 @@ def run(example_name, crop_x, device, solver, n_steps, cfg_strength, seed,
     dt = time.time() - t0
 
     input_roll = img[0, 0].numpy()
+    shift_note = ""
+    if align:
+        gen, dy, dx = pcfm_infer.align_to_reference(gen, input_roll)
+        shift_note = f" Aligned by ({dy:+d} semitones, {dx:+d} steps)."
+        # Also to the console: the status line lands at the bottom of the page in a
+        # small font, and this is the number worth watching run to run.
+        print(f"[align] {example_name} crop_x={int(crop_x)} seed={int(seed)}: "
+              f"shifted generated output by {dy:+d} semitones, {dx:+d} time steps")
     gen_mid = img2midi.roll_to_midi_file(gen)
     input_mid = img2midi.roll_to_midi_file(input_roll)
     dropped = ", ".join(f"L{i}" for i in drop) if drop else "none (full conditioning)"
     status = (f"Device **{device}** · {solver} · {dt:.1f}s ({n_steps} steps, CFG {cfg_strength}). "
               f"Dropped: {dropped}. Generated {int((gen>0.5).sum())} note-pixels "
-              f"(input {int(input_roll.sum())}).")
+              f"(input {int(input_roll.sum())}).{shift_note}")
     return (roll_to_display(input_roll, (120, 180, 255)),
             roll_to_display(gen, (80, 255, 120)),
             midi_player_html(input_mid, "input"),
@@ -208,7 +279,7 @@ def build_ui():
     if default_example:
         _arr = flow_infer._load_binary_array(EXAMPLES_DIR / default_example)
         _max_x = max(0, _arr.shape[1] - flow_infer.IMAGE_SIZE)
-        _default_x = flow_infer.best_crop_x(EXAMPLES_DIR / default_example)
+        _default_x = max(0, (_arr.shape[1] - flow_infer.IMAGE_SIZE) // 2)  # centre, like load_song
     else:
         _max_x, _default_x = 3000, 0
 
@@ -224,103 +295,135 @@ def build_ui():
             "*Model: `pixel_cfm_Tkn0KT` (full-conditioning run). Dropping levels is somewhat "
             "out-of-distribution for this checkpoint — a dropout-trained variant is a planned swap.*"
         )
-        with gr.Tabs():
-            # ---------------------------------------------------------- Generate
-            with gr.Tab("Generate"):
+        # ------------------------------------------------- shared input selection
+        # One crop feeds BOTH sections below: the generate conditioning source and the
+        # inpaint canvas. The strip is very wide and short, so it spans the full page.
+        with gr.Group():
+            gr.Markdown("### Input selection")
+            with gr.Row():                       # keep the dropdown narrow
+                example = gr.Dropdown(examples, value=default_example,
+                                      label="Example song", scale=0, min_width=260)
+            gr.Markdown("**Click to crop**")
+            # container=False drops Gradio's padded frame; without a fixed height the
+            # wide-and-short roll fills the width with no letterbox.
+            strip = gr.Image(type="numpy", interactive=False, show_label=False,
+                             container=False)
+            crop_note = gr.Markdown()
+        crop_x = gr.State(_default_x)
+        ip_state = gr.State(None)
+
+        # ------------------------------------------------------------- Generate
+        gr.Markdown("## Generate")
+        with gr.Row():
+            with gr.Column(scale=1):
+                device = gr.Radio(devices, value=devices[0], label="Device",
+                                  info="fastest available is default; switch to compare speeds")
+                solver = gr.Dropdown([("Euler", "euler"), ("RK4", "rk4")], value="euler",
+                                     label="Integration method",
+                                     info="RK4 = 4 model evals/step (more accurate, slower)")
+                # Defaults match train_cfm_midi.py's generate_samples(), which is what the
+                # W&B sample grids show: n_ode_steps=100 and cfg_strength=1.0 (it is called
+                # without a CFG argument). CFG >1 extrapolates outside the conditional field
+                # and is only stable once the UNCONDITIONAL branch is well trained.
+                n_steps = gr.Slider(1, 120, value=100, step=1, label="Flow steps",
+                                    info="100 = what training-time sampling uses")
+                cfg = gr.Slider(0.0, 12.0, value=1.0, step=0.1, label="CFG strength",
+                                info="1 = plain conditional (training default) · "
+                                     ">1 amplifies guidance and can add speckle on "
+                                     "under-trained checkpoints · 0 = unconditional")
+                seed = gr.Number(value=0, precision=0, label="Seed")
+                align = gr.Checkbox(value=True, label="Align output to input",
+                                    info="Undo the global pitch/time offset via "
+                                         "cross-correlation. The flow was trained on "
+                                         "conditioning from a shifted copy, so it "
+                                         "reproduces structure with a free offset.")
+                gr.Markdown("**Drop conditioning levels** (zero = mean / no info):")
+                with gr.Row():
+                    d0 = gr.Checkbox(False, label="L0")
+                    d1 = gr.Checkbox(False, label="L1")
+                    d2 = gr.Checkbox(False, label="L2")
+                    d3 = gr.Checkbox(False, label="L3")
+                    d4 = gr.Checkbox(False, label="L4")
+                    d5 = gr.Checkbox(False, label="L5")
+                go = gr.Button("Generate", variant="primary")
+                status = gr.Markdown()
+            with gr.Column(scale=2):
+                with gr.Row():
+                    in_img = gr.Image(label="Input window (conditioning source)", type="pil")
+                    gen_img = gr.Image(label="Generated", type="pil")
+                gr.Markdown("### MIDI players")
                 with gr.Row():
                     with gr.Column(scale=1):
-                        example = gr.Dropdown(examples, value=default_example, label="Example song")
-                        crop_x = gr.Slider(0, _max_x, value=_default_x, step=1, label="Crop position (time)")
-                        device = gr.Radio(devices, value=devices[0], label="Device",
-                                          info="fastest available is default; switch to compare speeds")
-                        solver = gr.Dropdown([("Euler", "euler"), ("RK4", "rk4")], value="euler",
-                                             label="Integration method",
-                                             info="RK4 = 4 model evals/step (more accurate, slower)")
-                        n_steps = gr.Slider(1, 60, value=10, step=1, label="Flow steps")
-                        cfg = gr.Slider(0.0, 12.0, value=4.0, step=0.1, label="CFG strength",
-                                        info="0 = unconditional · 1 = plain conditional · >1 = amplified guidance")
-                        seed = gr.Number(value=0, precision=0, label="Seed")
-                        gr.Markdown("**Drop conditioning levels** (zero = mean / no info):")
-                        with gr.Row():
-                            d0 = gr.Checkbox(False, label="L0")
-                            d1 = gr.Checkbox(False, label="L1")
-                            d2 = gr.Checkbox(False, label="L2")
-                            d3 = gr.Checkbox(False, label="L3")
-                            d4 = gr.Checkbox(False, label="L4")
-                            d5 = gr.Checkbox(False, label="L5")
-                        go = gr.Button("Generate", variant="primary")
-                        status = gr.Markdown()
-                    with gr.Column(scale=2):
-                        with gr.Row():
-                            in_img = gr.Image(label="Input window (conditioning source)", type="pil")
-                            gen_img = gr.Image(label="Generated", type="pil")
-                        gr.Markdown("### MIDI players")
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                gr.Markdown("**Input**")
-                                in_player = gr.HTML()
-                            with gr.Column(scale=1):
-                                gr.Markdown("**Generated**")
-                                gen_player = gr.HTML()
-
-            # ----------------------------------------------------------- Inpaint
-            with gr.Tab("Inpaint — paint the mask"):
-                gr.Markdown(
-                    "Load a window, then **paint over the region you want redrawn**. The brush "
-                    "both *deletes* the notes under it (so the model can't just copy them) and "
-                    "defines the inpainting mask. The flow runs in **pixel space**, so the mask "
-                    "lives directly on the image — no spatially-aligned latent needed."
-                )
-                with gr.Row():
+                        gr.Markdown("**Input**")
+                        in_player = gr.HTML()
                     with gr.Column(scale=1):
-                        ip_example = gr.Dropdown(examples, value=default_example, label="Example song")
-                        ip_crop = gr.Slider(0, _max_x, value=_default_x, step=1, label="Crop position (time)")
-                        ip_load = gr.Button("▶ Load window into canvas")
-                        ip_method = gr.Dropdown(
-                            [("PnP-Flow", "pnpflow"), ("Hard replace", "hard"),
-                             ("Soft guidance ((1−t)/t)", "soft")], value="pnpflow",
-                            label="Inpaint method",
-                            info="PnP-Flow + XMEP fill generates the most content in the hole")
-                        ip_fill = gr.Checkbox(value=True, label="XMEP latent fill",
-                                              info="Repredict the hole's embeddings from context "
-                                                   "instead of conditioning on a blanked region")
-                        ip_dilate = gr.Slider(0, 3, value=0, step=1, label="Token-mask dilation",
-                                              info="Also mask neighbouring tokens. Measured to "
-                                                   "HURT (80%→57%→33% of erased density at 0/1/2) "
-                                                   "— context matters more than contamination")
-                        ip_device = gr.Radio(devices, value=devices[0], label="Device")
-                        ip_steps = gr.Slider(1, 60, value=10, step=1, label="Flow steps",
-                                             info="MORE steps hurts here — the hole empties out")
-                        ip_cfg = gr.Slider(0.0, 12.0, value=0.8, step=0.1, label="CFG strength",
-                                           info="~0.8 is the sweet spot: higher blanks the hole, "
-                                                "near 0 gives noise")
-                        ip_seed = gr.Number(value=0, precision=0, label="Seed")
-                        ip_go = gr.Button("Inpaint", variant="primary")
-                        ip_status = gr.Markdown()
-                    with gr.Column(scale=2):
-                        with gr.Row():
-                            ip_canvas = gr.ImageEditor(
-                                label="Paint the mask (brush = region to redraw)",
-                                type="numpy", image_mode="RGB",
-                                height=DISP, width=DISP,
-                                brush=gr.Brush(colors=["#FF3B30"], default_size=16,
-                                               color_mode="fixed"),
-                                sources=(), interactive=True)
-                            ip_out = gr.Image(label="Inpainted result", type="pil")
-                        ip_player = gr.HTML()
-                ip_state = gr.State(None)
+                        gr.Markdown("**Generated**")
+                        gen_player = gr.HTML()
 
-        example.change(on_example_change, inputs=example, outputs=crop_x)
+        # -------------------------------------------------------------- Inpaint
+        gr.Markdown("---\n## Inpaint — paint the mask")
+        gr.Markdown(
+            "The canvas below holds the same crop selected above. **Paint over the region "
+            "you want redrawn**: the brush both *deletes* the notes under it (so the model "
+            "cannot copy them) and defines the mask. The flow runs in **pixel space**, so "
+            "the mask lives directly on the image."
+        )
+        with gr.Row():
+            with gr.Column(scale=1):
+                ip_method = gr.Dropdown(
+                    [("PnP-Flow", "pnpflow"), ("Hard replace", "hard"),
+                     ("Soft guidance ((1-t)/t)", "soft")], value="pnpflow",
+                    label="Inpaint method",
+                    info="PnP-Flow + XMEP fill generates the most content in the hole")
+                ip_fill = gr.Checkbox(value=True, label="XMEP latent fill",
+                                      info="Repredict the hole's embeddings from context "
+                                           "instead of conditioning on a blanked region")
+                ip_dilate = gr.Slider(0, 3, value=0, step=1, label="Token-mask dilation",
+                                      info="Also mask neighbouring tokens. Measured to HURT "
+                                           "(80%/57%/33% of erased density at 0/1/2)")
+                # Own copies of the sampling controls so you needn't scroll back up.
+                # Defaults differ from Generate on purpose: inpainting wants weaker
+                # guidance and coarser integration, which leave the masked region free
+                # to explore rather than collapsing it toward empty conditioning.
+                ip_solver = gr.Dropdown([("Euler", "euler"), ("RK4", "rk4")], value="euler",
+                                        label="Integration method",
+                                        info="ignored by PnP-Flow, which uses its own loop")
+                ip_steps = gr.Slider(1, 120, value=10, step=1, label="Flow steps",
+                                     info="fewer than Generate: more steps empties the hole")
+                ip_cfg = gr.Slider(0.0, 12.0, value=0.8, step=0.1, label="CFG strength",
+                                   info="~0.8 is the sweet spot: higher blanks the hole")
+                gr.Markdown("*Device and seed are shared with Generate above.*")
+                ip_go = gr.Button("Inpaint", variant="primary")
+                ip_status = gr.Markdown()
+            with gr.Column(scale=2):
+                with gr.Row():
+                    ip_canvas = gr.ImageEditor(
+                        label="Paint the mask (brush = region to redraw)",
+                        type="numpy", image_mode="RGB",
+                        height=DISP, width=DISP,
+                        brush=gr.Brush(colors=["#FF3B30"], default_size=16,
+                                       color_mode="fixed"),
+                        sources=(), interactive=True)
+                    ip_out = gr.Image(label="Inpainted result", type="pil")
+                ip_player = gr.HTML()
+
+        # Song strip: load on dropdown change and at startup, re-crop on click.
+        example.change(load_song, inputs=example,
+                       outputs=[strip, crop_x, in_img, crop_note, ip_canvas, ip_state])
+        strip.select(click_strip, inputs=example,
+                     outputs=[strip, crop_x, in_img, crop_note, ip_canvas, ip_state])
+        ui.load(load_song, inputs=example,
+                outputs=[strip, crop_x, in_img, crop_note, ip_canvas, ip_state])
         go.click(run,
-                 inputs=[example, crop_x, device, solver, n_steps, cfg, seed, d0, d1, d2, d3, d4, d5],
+                 inputs=[example, crop_x, device, solver, n_steps, cfg, seed,
+                         d0, d1, d2, d3, d4, d5, align],
                  outputs=[in_img, gen_img, in_player, gen_player, status])
 
-        ip_example.change(on_example_change, inputs=ip_example, outputs=ip_crop)
-        ip_load.click(load_window_for_paint, inputs=[ip_example, ip_crop],
-                      outputs=[ip_canvas, ip_state])
+        # Inpaint shares device/steps/cfg/seed with Generate; the canvas and the
+        # (1,1,128,128) input tensor are populated by the crop selection above.
         ip_go.click(run_inpaint,
-                    inputs=[ip_canvas, ip_state, ip_method, ip_steps, ip_cfg, ip_seed, ip_device,
-                            ip_fill, ip_dilate],
+                    inputs=[ip_canvas, ip_state, ip_method, ip_steps, ip_cfg, seed, device,
+                            ip_fill, ip_dilate, ip_solver],
                     outputs=[ip_out, ip_player, ip_status])
     return ui
 

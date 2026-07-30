@@ -22,6 +22,7 @@ training:
   lr: 5e-4                # peak lr for CosineAnnealingWarmRestarts; halved to reduce restart spikes
   epochs: 250
   lambd: 0.15              # lejepa attraction-vs-sigreg weight
+  reg_type: sigreg         # anti-collapse regularizer: 'sigreg' (Epps-Pulley) or 'visreg' (sliced-Wasserstein)
   max_shift_x: 48
   max_shift_y: 12
   #init_shift_x: 1        # enable curriculum learning, starting with this value

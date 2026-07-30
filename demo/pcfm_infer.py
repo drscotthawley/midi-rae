@@ -55,8 +55,12 @@ if MODEL_SET == "exp26":
 else:
     PCA_DIR = CKPT_DIR / "pca_c55"
     # c55_cfm_MgB2XF is still training; MIDIRAE_CFM_CKPT picks an earlier step.
+    # From the resumed run (c55_cfm_resume), which continues c55_cfm_MgB2XF past the
+    # tsrazer rebuild. The earlier step_20000-looks-worse-than-step_14000 observation
+    # was an artefact of serving EMA weights on an under-trained checkpoint; see the
+    # weights= selection below.
     CFM_CKPT = CKPT_DIR / "c55" / os.environ.get("MIDIRAE_CFM_CKPT",
-                                                 "otcfm_midi_weights_step_14000.pt")
+                                                 "otcfm_midi_weights_step_44000.pt")
     ENCODER_CKPT = CKPT_DIR / "c55" / "SwinEncoder_wide3_xmep_C55cUL_best.pt"
     MEP_CKPT = CKPT_DIR / "c55" / "SwinMaskedEmbeddingPredictor_wide3_xmep_C55cUL_best.pt"
     DEPTHS = [2, 2, 2, 6, 2, 2]
@@ -111,6 +115,37 @@ def mean_pitch_normalized(binary_2d):
     return (mp / H).item()
 
 
+def align_to_reference(gen, ref, rad=12):
+    """Undo the global pitch/time offset between a generated roll and its conditioning
+    source. Returns (aligned_roll, dy, dx).
+
+    The flow was trained with conditioning from a SHIFTED copy of its target (see
+    fitpca.key in config_swin_C55cUL_preenc.yaml), so it reproduces structure with a
+    free global offset. Estimating that offset by normalised cross-correlation and
+    shifting back recovers it. Shift is non-wrapping: vacated rows/cols are zeroed
+    rather than wrapped, so nothing teleports across the edges."""
+    a = (np.asarray(ref) > 0.5).astype(np.float32)
+    b = (np.asarray(gen) > 0.5).astype(np.float32)
+    a = a - a.mean(); b = b - b.mean()
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na < 1e-9 or nb < 1e-9:
+        return gen, 0, 0
+    best, bdy, bdx = -2.0, 0, 0
+    for dy in range(-rad, rad + 1):
+        rb = np.roll(b, dy, axis=0)
+        for dx in range(-rad, rad + 1):
+            v = float((a * np.roll(rb, dx, axis=1)).sum() / (na * nb))
+            if v > best:
+                best, bdy, bdx = v, dy, dx
+    out = np.zeros_like(gen)
+    ys, yd = (slice(bdy, None), slice(None, gen.shape[0] - bdy)) if bdy >= 0 else \
+             (slice(None, gen.shape[0] + bdy), slice(-bdy, None))
+    xs, xd = (slice(bdx, None), slice(None, gen.shape[1] - bdx)) if bdx >= 0 else \
+             (slice(None, gen.shape[1] + bdx), slice(-bdx, None))
+    out[ys, xs] = gen[yd, xd]
+    return out, bdy, bdx
+
+
 class CFGWrapper(torch.nn.Module):
     """Classifier-free guidance: v = v_uncond + strength*(v_cond - v_uncond)."""
     def __init__(self, model, cond, strength):
@@ -151,12 +186,33 @@ class PixelCFMDemo:
         load_checkpoint(self.encoder, str(ENCODER_CKPT))
         self.encoder.eval()
 
-        # pixel-CFM UNet (num_channels inferred from checkpoint)
+        # pixel-CFM UNet (num_channels inferred from checkpoint).
+        #
+        # Use net_model, NOT ema_model. train_cfm_midi.py's generate_samples() logs the
+        # clean media/normal_{cond,uncond} sample grids from net_model; ema_model feeds
+        # only the separate media/ema panels. With ema_decay=0.9999 the EMA has a
+        # ~10k-step time constant and starts as a copy of the random init, so on an
+        # early checkpoint it still carries near-random weights and generates speckle.
+        # That is why c55 @14-20k speckled here while its own W&B grids looked clean,
+        # and why exp26 @54k (converged EMA) looked fine on the same code.
         ckpt = torch.load(str(CFM_CKPT), map_location="cpu", weights_only=False)
-        state = ckpt["ema_model"] if "ema_model" in ckpt else ckpt["net_model"]
+        which = os.environ.get("MIDIRAE_WEIGHTS", "net").lower()
+        key = "ema_model" if which == "ema" and "ema_model" in ckpt else "net_model"
+        if key not in ckpt:                      # older checkpoints may only have one
+            key = "ema_model" if "ema_model" in ckpt else "net_model"
+        state = ckpt[key]
         num_channels = state["input_blocks.0.0.weight"].shape[0]
-        print(f"[pcfm] {MODEL_SET}: UNet num_channels={num_channels}  step={ckpt.get('step')}  "
-              f"mlcond_shapes={self.mlcond_shapes}")
+        # Print every artifact by full path. Serving a mismatched flow/encoder/PCA set,
+        # or the wrong weight key, is invisible in the output but ruins everything --
+        # so make provenance checkable at a glance.
+        print(f"[pcfm] MODEL_SET={MODEL_SET}")
+        print(f"[pcfm]   encoder : {ENCODER_CKPT}")
+        print(f"[pcfm]   flow    : {CFM_CKPT}")
+        print(f"[pcfm]             weights={key}  step={ckpt.get('step')}  "
+              f"num_channels={num_channels}")
+        print(f"[pcfm]   pca     : {PCA_DIR}  n_comp={[int(n) for n in self.n_comp]}")
+        print(f"[pcfm]   xmep    : {MEP_CKPT if MEP_CKPT else '(none for this model set)'}")
+        print(f"[pcfm]   mlcond_shapes={self.mlcond_shapes}")
         unet_cls = UNetModelWrapperMLC if HAS_MIDDLE_FILM else _UNetNoMiddleFilm
         self.model = unet_cls(
             dim=(1, IMAGE_SIZE, IMAGE_SIZE), num_res_blocks=2, num_channels=num_channels,
@@ -313,8 +369,10 @@ class PixelCFMDemo:
 
         wrapped = CFGWrapper(self.model, mlcond, float(cfg_strength))
         node = NeuralODE(wrapped, solver=solver, sensitivity="adjoint")
-        # n_steps = number of integration *steps* -> n_steps+1 time points (>=2, so n_steps=1 works)
-        t_span = torch.linspace(0, 1, int(n_steps) + 1, device=dev)
+        # n_steps = number of TIME POINTS, matching train_cfm_midi.py's
+        # t_span=torch.linspace(0, 1, FLAGS.n_ode_steps) with n_ode_steps=100. Clamped
+        # to >=2 so the integrator always has an interval.
+        t_span = torch.linspace(0, 1, max(int(n_steps), 2), device=dev)
         traj = node.trajectory(x0, t_span=t_span)
         roll = (traj[-1].clip(-1, 1) / 2 + 0.5)[0, 0]     # (128,128) in [0,1]
         return roll.detach().cpu().numpy().astype(np.float32)

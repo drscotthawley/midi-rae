@@ -121,9 +121,12 @@ scp "${REPO_DIR}"/midi_rae/*.py "${HOST}:${RUN_DIR}/midi_rae/"
 if [[ "$TYPE" == "cfm" ]]; then
     echo "Copying train_cfm_midi.py to ${HOST}:${RUN_DIR}/ ..."
     scp "${REPO_DIR}"/train_cfm_midi.py "${HOST}:${RUN_DIR}/"
-    echo "Copying unet_mlc.py to ${HOST} site-packages ..."
+    echo "Staging custom torchcfm unet files to ${HOST}:${RUN_DIR}/ (deployed into torchcfm at run time, version-agnostic) ..."
     scp "${REPO_DIR}"/conditional-flow-matching/torchcfm/models/unet/unet_mlc.py \
-        "${HOST}:~/envs/midi-rae/lib/python3.10/site-packages/torchcfm/models/unet/unet_mlc.py"
+        "${REPO_DIR}"/conditional-flow-matching/torchcfm/models/unet/unet.py \
+        "${REPO_DIR}"/conditional-flow-matching/torchcfm/models/unet/nn.py \
+        "${REPO_DIR}"/conditional-flow-matching/torchcfm/models/unet/logger.py \
+        "${HOST}:${RUN_DIR}/"
 elif [[ "$TYPE" == "probe" ]]; then
     echo "Copying probe_musicality.py to ${HOST}:${RUN_DIR}/ ..."
     scp "${REPO_DIR}"/probe_musicality.py "${HOST}:${RUN_DIR}/"
@@ -155,6 +158,9 @@ cat > /tmp/midi_rae_run.sh << EOF
 #!/bin/bash
 source ~/envs/midi-rae/bin/activate
 cd ${RUN_DIR}
+# Deploy custom torchcfm UNet files into the installed torchcfm (version-agnostic path)
+UDIR=\$(python -c 'import torchcfm, os; print(os.path.join(os.path.dirname(torchcfm.__file__), "models", "unet"))')
+cp -f ${RUN_DIR}/unet_mlc.py ${RUN_DIR}/unet.py ${RUN_DIR}/nn.py ${RUN_DIR}/logger.py "\$UDIR/"
 PYTHONPATH=${RUN_DIR} nohup python train_cfm_midi.py \
     --run_name ${RUN_TAG} \
     ${EXTRA_OVERRIDES} \

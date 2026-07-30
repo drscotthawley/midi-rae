@@ -1,0 +1,17 @@
+# MRJ-48^ + cross_level_mep + VISReg, with attraction 2x stronger relative to the regularizer.
+#
+# Identical to config_swin_48xmep_visreg except lambd is lowered from 0.15 to 0.081, which
+# doubles the attraction-vs-regularizer ratio in LeJEPA:
+#   loss = (1-lambd)*(lambda_sim*sim + lambda_fact*fact) + lambd*sigreg
+#   baseline ratio (1-lambd)/lambd = 0.85/0.15 = 5.667
+#   new      ratio (1-0.081)/0.081 = 11.35  (= 2.00x baseline)
+# Equivalently: attraction 2x stronger, or the (visreg) regularizer 2x weaker.
+# Hypothesis: VISReg's non-saturating anti-collapse pull should tolerate the heavier
+# attraction without collapsing where SIGReg might. Fits tsrazer's 16GB VRAM (~10GB used).
+defaults:
+  - config_swin_48xmep_visreg
+
+training:
+  lambd: 0.081
+
+tag: ???

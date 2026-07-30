@@ -55,7 +55,7 @@ class PreencodedImageDataset(torch.utils.data.IterableDataset):
             offset = 0
             for rec in enc:
                 n = rec['img1'].shape[0]
-                cond = [pca[k][offset:offset+n] for k in sorted(pca.keys())]
+                cond = [pca[k][offset:offset+n] for k in sorted(pca.keys()) if k.startswith('L')]
                 offset += n
                 for i, img in enumerate(rec['img1'].unbind(0)):
                     img_f = img.float()
@@ -210,10 +210,16 @@ def mlc_dropout(mlcond, p_uncond=0.2, p_full=0.5, p_patch=0.5, mask_val=0.0):
         for i in range(len(mlcond)):
             if i != keep: mlcond[i] *= mask_val 
         return mlcond  
-    # last case: per-level/patch dropout, except on corasest (level 0)
+    # last case: per-PATCH dropout within each level, except the coarsest (level 0).
+    # cond is (B, C, sp, sp); the mask must vary over the two spatial dims to drop
+    # individual patches. A (B,1,1,1) mask broadcasts over space and silently drops
+    # whole levels instead -- which is what this did before, so the model never saw
+    # conditioning that was informative in one region and uninformative in another,
+    # i.e. exactly the situation inpainting creates.
     for i, cond in enumerate(mlcond):
         if i == 0: continue
-        mask = (torch.rand(cond.shape[0], 1, 1, 1, device=cond.device) < p_patch).float()
+        mask = (torch.rand(cond.shape[0], 1, cond.shape[2], cond.shape[3],
+                           device=cond.device) < p_patch).float()
         mlcond[i] = cond * mask + mask_val * (1 - mask)
     return mlcond
 

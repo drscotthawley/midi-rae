@@ -1,0 +1,33 @@
+# Faithful re-run of the exp26 baseline encoder (exp26_z1olvN) on CLEAN data.
+#
+# The original launched `--config-name config_swin_lecun ++training.lambda_fact=0`,
+# but config_swin.yaml has drifted since, so that command no longer reproduces it.
+# Every value below was recovered from exp26_z1olvN's own config snapshot on lecun
+# and is pinned here so the recipe survives further drift.
+#
+# Why re-run at all: POP909_images_basic contained stuck notes (note-offs lost during
+# rendering) -- notes up to 810 px long against a true max of 55 -- which wasted a
+# large share of training on long flat sustains at the start of songs. The data is
+# fixed; every model trained before 2026-07-30 saw the corrupted version.
+#
+# Fits comfortably in 16 GB at batch 300 (hsrazer).
+defaults:
+  - config_swin
+
+model:
+  depths: [2, 2, 2, 6, 2, 1]        # current base is [2,2,2,6,2,2]
+
+training:
+  batch_size: 300                   # current base: 600
+  lr: 1e-3                          # current base: 5e-4
+  epochs: 100                       # current base: 250
+  lambd: 0.2                        # current base: 0.15
+  max_shift_x: 12                   # current base: 48
+  pos_weight: 2.5                   # current base: 2.0
+  lambda_mep: 0.1                   # from config_swin_lecun
+  lambda_fact: 0.0                  # was ++training.lambda_fact=0 on the CLI
+  delta_mep: false
+  # Features that did not exist when exp26 ran -- disabled so the recipe matches.
+  pca_aug: false
+
+tag: ???

@@ -1,0 +1,13 @@
+# MRJ-48^ + cross_level_mep + VISReg, with lambd at the MIDPOINT of the two we ran:
+#   0.15  (matched-weight VISReg / SIGReg baseline)  and  0.081 (attr2, attraction 2x)
+#   -> lambd = (0.15 + 0.081) / 2 = 0.1155
+# Tests the "sweet spot" hypothesis: keep most of attr2's coarse-level content/chroma
+# gains while recovering the cross-song / temporal discrimination that attr2 over-smeared.
+# Everything else identical to config_swin_48xmep_visreg.
+defaults:
+  - config_swin_48xmep_visreg
+
+training:
+  lambd: 0.1155
+
+tag: ???

@@ -1,0 +1,15 @@
+# Lakh data-scaling sweep, 1x arm (909 Lakh _TOTAL images = same size as POP909).
+# Identical recipe to config_swin_48xmep_visreg (VISReg lambd 0.15, cross_level_mep,
+# wide depths, 250 epochs) — ONLY data.path differs. This 1x arm is the direct
+# domain comparison vs the POP909 baseline (same size, same epochs, same everything).
+defaults:
+  - config_swin_48xmep_visreg
+
+data:
+  path: $HOME/datasets/Lakh_subset_1x
+
+tag: ???
+
+# Own project so the scaling arms sit together, not mixed in with the POP909 runs.
+wandb:
+  project: ar-mep-lakh

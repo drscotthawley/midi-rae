@@ -1,0 +1,16 @@
+# Lakh data-scaling sweep, 4x arm (3636 Lakh _TOTAL images = 4x POP909 size).
+# Nested superset of the 1x/2x subsets (same seeded ordering). Identical recipe to
+# config_swin_48xmep_visreg (VISReg lambd 0.15, cross_level_mep, wide depths, 250
+# epochs) — ONLY data.path differs. Fixed-epochs design: each arm trained to the same
+# maturity so the probe curve measures achievable quality vs dataset size.
+defaults:
+  - config_swin_48xmep_visreg
+
+data:
+  path: $HOME/datasets/Lakh_subset_4x
+
+tag: ???
+
+# Own project so the scaling arms sit together, not mixed in with the POP909 runs.
+wandb:
+  project: ar-mep-lakh

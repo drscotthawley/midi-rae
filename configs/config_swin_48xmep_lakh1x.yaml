@@ -1,0 +1,14 @@
+# Lakh data-scaling sweep, 1x arm (909 Lakh _TOTAL images, width>=512) on the CHOSEN
+# encoder recipe = config_swin_48xmep (SIGReg + cross_level_mep ON, wide depths, 250 ep) --
+# identical to C55cUL except data.path. 1x = same size as POP909, the direct domain comparison.
+defaults:
+  - config_swin_48xmep
+
+data:
+  path: $HOME/datasets/Lakh512_1x
+
+tag: ???
+
+# Own project so the scaling arms sit together, not mixed in with the POP909 runs.
+wandb:
+  project: ar-mep-lakh

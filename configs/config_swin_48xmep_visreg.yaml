@@ -1,0 +1,14 @@
+# MRJ-48^ + cross_level_mep + VISReg instead of SIGReg.
+#
+# Identical to config_swin_48xmep in every way; the only change is the anti-collapse
+# regularizer: reg_type=visreg swaps SIGReg's Epps-Pulley test for VISReg's sliced-
+# Wasserstein distance (Wu et al., arXiv:2606.02572). Selecting visreg also triggers the
+# 25x sigreg_prefac compensation inside LeJEPA so the effective regularization strength
+# matches the SIGReg baseline (visreg's raw magnitude is ~25x smaller).
+defaults:
+  - config_swin_48xmep
+
+training:
+  reg_type: visreg
+
+tag: ???

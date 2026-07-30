@@ -1,0 +1,17 @@
+# Lakh data-scaling sweep, 4x arm (3636 Lakh _TOTAL images, width>=512). Nested superset of
+# the 1x/2x subsets (same seeded ordering). Chosen recipe = config_swin_48xmep (SIGReg +
+# cross_level_mep ON, 250 ep); only data.path differs. Fixed-epochs design: each arm trained
+# to the same maturity so the probe curve measures achievable quality vs dataset size.
+defaults:
+  - config_swin_48xmep
+
+data:
+  path: $HOME/datasets/Lakh512_4x
+
+# Own project so the scaling arms sit together instead of being mixed in with the
+# POP909 encoder runs, where only the tag prefix tells them apart. (A wandb group
+# would be tidier, but train_enc's wandb.init doesn't pass one.)
+wandb:
+  project: ar-mep-lakh
+
+tag: ???

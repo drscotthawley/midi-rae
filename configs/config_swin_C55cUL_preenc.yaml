@@ -1,0 +1,27 @@
+# Preencode POP909 with the chosen encoder (C55cUL = SIGReg + cross_level_mep ON) to feed the
+# generative pipeline (preencode -> fit PCA -> pixel-CFM). Arch inherited from config_swin_48xmep
+# (wide depths [2,2,2,6,2,2], matches C55cUL). Only encoder_ckpt + output_dir change.
+defaults:
+  - config_swin_48xmep
+
+# c55enc3_vkrDxf: the C55cUL recipe re-run on CLEAN data (stuck notes fixed) with the
+# uniform on-disk train/val split. Supersedes wide3_xmep_C55cUL, which saw corrupt data.
+encoder_ckpt: $HOME/runs/midi-rae/c55enc3_vkrDxf/checkpoints/SwinEncoder_c55enc3_vkrDxf_best.pt
+
+# New output dirs rather than overwriting the _C55cUL ones: the old encodings are still
+# the only artefacts matching the old flow checkpoints, so keep both sets side by side.
+preencode:
+  output_dir: $HOME/datasets/POP909_encoded_c55enc3
+
+fitpca:
+  output_dir: $HOME/datasets/POP909_pca_c55enc3
+  # emb1, NOT the fit_pca default of emb2. The flow's dataset uses img1 as the target,
+  # but emb2 is the encoding of img2 -- the SAME excerpt shifted by up to +/-12
+  # semitones and +/-48 time steps (ShiftedTripletDataset returns img2 = c1, shifted).
+  # Conditioning on emb2 therefore never told the flow the absolute pitch/time of its
+  # target, so it learned to reproduce structure with a free global offset: generations
+  # come out uniformly transposed, unaffected by CFG, and pixel F1 only reaches ~0.95
+  # after correcting a global shift. Conditioning on emb1 matches the target.
+  key: emb1
+
+tag: ???
