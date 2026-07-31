@@ -38,6 +38,17 @@ fi
 echo ""
 
 LOG="\$RUN_DIR/run.log"
+
+# Progress line for step-based trainers (train_cfm_midi). They print "step N loss X"
+# appended to the tqdm bar, so once \\r becomes \\n the step line matches the
+# it/s filter below and is thrown away with the progress-bar noise -- which left the
+# tail showing nothing but stale header lines. Surface it explicitly instead.
+if [ -f "\$LOG" ]; then
+    STEP=\$(tr '\r' '\n' < "\$LOG" | grep -oE 'step [0-9]+ loss [0-9.]+' | tail -1)
+    RATE=\$(tr '\r' '\n' < "\$LOG" | grep -oE '[0-9.]+it/s' | tail -1)
+    [ -n "\$STEP" ] && echo "Progress: \$STEP\$([ -n "\$RATE" ] && echo "  (\$RATE)")" && echo ""
+fi
+
 if [ ! -f "\$LOG" ]; then
     echo "(no run.log found)"
 elif grep -q "FINISHED" "\$LOG"; then
