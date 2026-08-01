@@ -14,6 +14,7 @@ Metrics, measured inside the hole against the content the mask erased:
 
 Run on hsrazer: ~/envs/midi-rae/bin/python _ablation_paper.py
 """
+import os
 import sys
 from pathlib import Path
 
@@ -29,7 +30,11 @@ import flow_infer
 
 EXAMPLES_DIR = HERE / "examples"
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
-N_STEPS, CFG, DILATE = 20, 4.0, 0
+# Defaults match what the demo ships and what fig:inpaint reports: PnP-Flow at
+# guidance 0.8 with 10 Euler steps. Override to sweep without editing.
+N_STEPS = int(os.environ.get("ABL_STEPS", 10))
+CFG = float(os.environ.get("ABL_CFG", 0.8))
+DILATE = int(os.environ.get("ABL_DILATE", 0))
 SEEDS = (0, 1, 2)
 METHODS = ("pnpflow", "hard", "soft")
 

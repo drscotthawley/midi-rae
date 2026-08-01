@@ -33,8 +33,10 @@ from _recon_note_f1 import notes, note_f1
 from _xcorr_compare import ncc_map, RAD
 
 DEV = "cuda"
-STEPS, CFG, N = 20, 4.0, 30
-POP909 = Path("/home/shawley/datasets/POP909_images_basic")
+STEPS, CFG, N = 10, 4.0, 30   # 10 steps is what the demo ships
+POP909 = Path("/home/shawley/datasets/POP909_images_basic/val")   # held-out split; the
+                                                                  # files moved into train/ and
+                                                                  # val/ when the split was made
 
 
 def pix_f1(pred, real):

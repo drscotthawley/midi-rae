@@ -1,0 +1,121 @@
+[
+ {
+  "label": "cpu/2thr",
+  "device": "cpu",
+  "threads": 2,
+  "solver": "euler",
+  "steps": 20,
+  "cfg": 4.0,
+  "nfe": 20,
+  "forward_passes": 40,
+  "reps": 5,
+  "median_ms": {
+   "encode": 7.789707975462079,
+   "sample": 16244.655500166118,
+   "render": 1.8904590979218483,
+   "end_to_end": 16256.041416199878
+  }
+ },
+ {
+  "label": "cpu/4thr",
+  "device": "cpu",
+  "threads": 4,
+  "solver": "euler",
+  "steps": 20,
+  "cfg": 4.0,
+  "nfe": 20,
+  "forward_passes": 40,
+  "reps": 5,
+  "median_ms": {
+   "encode": 8.746125036850572,
+   "sample": 11926.82654201053,
+   "render": 1.7620830330997705,
+   "end_to_end": 11937.334750080481
+  }
+ },
+ {
+  "label": "cpu",
+  "device": "cpu",
+  "threads": 0,
+  "solver": "euler",
+  "steps": 20,
+  "cfg": 4.0,
+  "nfe": 20,
+  "forward_passes": 40,
+  "reps": 5,
+  "median_ms": {
+   "encode": 8.794458117336035,
+   "sample": 12269.055874086916,
+   "render": 1.7803329974412918,
+   "end_to_end": 12279.49179103598
+  }
+ },
+ {
+  "label": "cpu/2thr",
+  "device": "cpu",
+  "threads": 2,
+  "solver": "euler",
+  "steps": 10,
+  "cfg": 4.0,
+  "nfe": 10,
+  "forward_passes": 20,
+  "reps": 5,
+  "median_ms": {
+   "encode": 8.62024980597198,
+   "sample": 7474.78354210034,
+   "render": 2.685499843209982,
+   "end_to_end": 7486.335793044418
+  }
+ },
+ {
+  "label": "cpu/4thr",
+  "device": "cpu",
+  "threads": 4,
+  "solver": "euler",
+  "steps": 10,
+  "cfg": 4.0,
+  "nfe": 10,
+  "forward_passes": 20,
+  "reps": 5,
+  "median_ms": {
+   "encode": 8.718791883438826,
+   "sample": 6385.204458842054,
+   "render": 2.691500121727586,
+   "end_to_end": 6396.034749923274
+  }
+ },
+ {
+  "label": "cpu",
+  "device": "cpu",
+  "threads": 0,
+  "solver": "euler",
+  "steps": 10,
+  "cfg": 4.0,
+  "nfe": 10,
+  "forward_passes": 20,
+  "reps": 5,
+  "median_ms": {
+   "encode": 8.747874991968274,
+   "sample": 5585.746290860698,
+   "render": 1.740667037665844,
+   "end_to_end": 5596.046583959833
+  }
+ },
+ {
+  "label": "mps",
+  "device": "mps",
+  "threads": 0,
+  "solver": "euler",
+  "steps": 10,
+  "cfg": 4.0,
+  "nfe": 10,
+  "forward_passes": 20,
+  "reps": 5,
+  "median_ms": {
+   "encode": 19.94570787064731,
+   "sample": 1178.2833749894053,
+   "render": 1.8829589243978262,
+   "end_to_end": 1200.127915944904
+  }
+ }
+]

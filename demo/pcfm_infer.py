@@ -45,7 +45,20 @@ CKPT_DIR = _HERE / "checkpoints"
 #   exp26 : the original pair. No XMEP on disk; predates unet_mlc's middle_film layers.
 MODEL_SET = os.environ.get("MIDIRAE_MODELS", "c55").lower()
 
-if MODEL_SET == "exp26":
+if MODEL_SET == "c55v3":
+    # The clean-data rebuild: encoder c55enc3_vkrDxf and flow c55cfm3emb1_W13vfY, both
+    # trained after the stuck-note fix, on the uniform on-disk split, with the PCA basis
+    # fit on emb1 rather than emb2 so the conditioning describes the target rather than a
+    # shifted copy of it. Every paper number measured before 2026-07-31 used the "c55" set
+    # below, which saw corrupted piano rolls; keep that set intact for comparison.
+    PCA_DIR = CKPT_DIR / "pca_c55enc3"
+    CFM_CKPT = CKPT_DIR / "c55v3" / os.environ.get("MIDIRAE_CFM_CKPT",
+                                                   "otcfm_midi_weights_step_50000.pt")
+    ENCODER_CKPT = CKPT_DIR / "c55v3" / "SwinEncoder_c55enc3_vkrDxf_best.pt"
+    MEP_CKPT = CKPT_DIR / "c55v3" / "SwinMaskedEmbeddingPredictor_c55enc3_vkrDxf_best.pt"
+    DEPTHS = [2, 2, 2, 6, 2, 2]
+    HAS_MIDDLE_FILM = True
+elif MODEL_SET == "exp26":
     PCA_DIR = CKPT_DIR / "pca_exp26"
     CFM_CKPT = CKPT_DIR / "otcfm_mlcdrop_ckpt_step54000.pt"
     ENCODER_CKPT = CKPT_DIR / "SwinEncoder_exp26_z1olvN_best.pt"
@@ -349,11 +362,60 @@ class PixelCFMDemo:
         return (mlcond, stats) if return_stats else mlcond
 
     @torch.no_grad()
+    def encode_to_mlcond_masked(self, img_tensor, hole, dilate=0, thresh=0.0, skip_l0=True,
+                                levels=None, p=1.0, seed=0):
+        """Conditioning with the hole's patches ZEROED rather than XMEP-filled.
+
+        The flow is trained with mlc_dropout, which zeroes conditioning patches
+        (mask_val=0.0). It has never seen XMEP-substituted patches, which are neither
+        the real embedding nor the absence of one, and a well-trained flow follows
+        whatever it is given. Zeroing puts the hole in the one out-of-band state the
+        model knows how to interpret: 'no information here'.
+
+        PCA acts per token, so the (sp, sp) grid means the same thing before and after
+        projection and hole_to_token_masks already indexes it.
+
+        skip_l0: mlc_dropout never drops level 0, so zeroing it here would be out of
+        distribution again. Left intact, L0 keeps supplying global register/density.
+
+        levels: which levels the mask is allowed to touch (default: all but L0).
+        Unticking a level lets it keep its encoded value inside the hole, so coarse
+        scales can still describe the region while fine ones are erased.
+
+        p: probability that each masked patch is zeroed. 1.0 obliterates the region;
+        lower values half-erase it, which behaves like a brush strength. The mask says
+        WHERE a patch is eligible, p says HOW LIKELY, levels say AT WHICH SCALE."""
+        mlcond = self.encode_to_mlcond(img_tensor)
+        masks = self.hole_to_token_masks(hole, dilate=dilate, thresh=thresh)
+        allowed = (set(range(N_LEVELS)) if levels is None else {int(i) for i in levels})
+        g = torch.Generator(device="cpu").manual_seed(int(seed) + 4242)
+        n_zeroed = []
+        for i in range(N_LEVELS):
+            if i not in allowed or (skip_l0 and i == 0):
+                n_zeroed.append(0)
+                continue
+            sp = self.sp[i]
+            vis = masks[i].view(sp, sp).to(mlcond[i].device)
+            drop = ~vis
+            if float(p) < 1.0:      # thin the mask: each eligible patch survives w.p. 1-p
+                coin = (torch.rand(sp, sp, generator=g) < float(p)).to(drop.device)
+                drop = drop & coin
+            mlcond[i][:, :, drop] = 0.0
+            n_zeroed.append(int(drop.sum()))
+        return mlcond, n_zeroed
+
+    @torch.no_grad()
     def generate(self, img_tensor, drop_levels=(), n_steps=20, seed=0, cfg_strength=4.0,
-                 device=None, solver="euler"):
+                 device=None, solver="euler", drop_p=1.0):
         """Conditional pixel-CFM generation. Returns (128,128) float roll in [0,1].
 
-        solver: torchdyn ODE solver — 'euler' (1 eval/step) or 'rk4' (4 evals/step)."""
+        solver: torchdyn ODE solver — 'euler' (1 eval/step) or 'rk4' (4 evals/step).
+
+        drop_p: for each level in drop_levels, the probability of zeroing each PATCH
+        rather than the whole level. 1.0 drops the level entirely (the old behaviour);
+        values below that leave a random subset of patches intact, which is what
+        train_cfm_midi's mlc_dropout does during training, so partial drops are in
+        distribution while whole-level drops are not."""
         assert self._loaded, "call .load() first"
         if device is not None:
             self.set_device(device)
@@ -361,8 +423,18 @@ class PixelCFMDemo:
         drop = set(int(x) for x in drop_levels)
 
         mlcond = self.encode_to_mlcond(img_tensor)
+        # Separate generator: drawing the patch masks from the x0 generator would make
+        # the starting noise depend on drop_p, so sweeping the slider would change two
+        # things at once and the comparison would be worthless.
+        dgen = torch.Generator(device="cpu").manual_seed(int(seed) + 7777)
         for i in drop:
-            mlcond[i] = torch.zeros_like(mlcond[i])      # zero = drop this conditioning level
+            c = mlcond[i]
+            if float(drop_p) >= 1.0:
+                mlcond[i] = torch.zeros_like(c)
+            else:
+                keep = (torch.rand(1, 1, c.shape[2], c.shape[3], generator=dgen)
+                        >= float(drop_p)).to(c.dtype).to(c.device)
+                mlcond[i] = c * keep
 
         gen = torch.Generator(device="cpu").manual_seed(int(seed))
         x0 = torch.randn(1, 1, IMAGE_SIZE, IMAGE_SIZE, generator=gen).to(dev)

@@ -159,17 +159,27 @@ def make_inpaint_project(x_known, mask, x0_noise):
     return project
 
 
-def make_inpaint_grad(x_known, mask):
+def make_inpaint_grad(x_known, mask, noise_amp=0.0):
     """Constraint gradient dF/dz1 for PnP-Flow, F = M^2 (z1 - y)^2 (up to a 2).
 
     Pixel-space + no decoder => the constraint is directly on the endpoint image,
-    so this is just the masked residual -- no autograd."""
+    so this is just the masked residual -- no autograd.
+
+    noise_amp > 0 adds a fresh Gaussian kick inside the hole on every step, so
+    structure has something to nucleate around instead of relaxing toward whatever
+    the conditioning says. It is confined to the hole by (1 - m2): in the known
+    region it would only fight the residual term pulling those pixels back to
+    x_known. The caller scales the whole gradient by strength * (1-t)^alpha, so
+    the kick anneals to zero as t -> 1 without extra bookkeeping."""
     m2 = mask * mask
 
     def grad(z1_hat):
         nonlocal m2, x_known
         m2, x_known = _like(z1_hat, m2), _like(z1_hat, x_known)
-        return m2 * (z1_hat - x_known)
+        g = m2 * (z1_hat - x_known)
+        if noise_amp:
+            g = g + noise_amp * torch.randn_like(z1_hat) * (1.0 - m2)
+        return g
 
     return grad
 

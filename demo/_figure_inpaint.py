@@ -88,7 +88,7 @@ CACHE = HERE / "_fig_inpaint_cache.npz"   # generated rolls, so restyling the fi
                                           # needs no model and no GPU
 
 
-def grid_figure(rows, scale=SCALE, pad=110, gap=3, rowgap=16, draw_labels=True):
+def grid_figure(rows, scale=SCALE, pad=58, gap=3, rowgap=4, draw_labels=True):
     """rows = list of (panels, titles). Shorter rows are centred.
 
     Returns (image, positions) where positions is [(text, xfrac, yfrac), ...] with
@@ -127,7 +127,9 @@ def grid_figure(rows, scale=SCALE, pad=110, gap=3, rowgap=16, draw_labels=True):
         out.paste(band, (0, pad * (i + 1) + y * scale))
         for j, t in enumerate(titles):
             x = (x0 + j * (w + gap)) * scale + 3
-            ytop = pad * (i + 1) + y * scale - pad + 6
+            # sit the label just above its own row rather than at the top of the
+            # band, so shrinking `pad` closes the gap instead of stranding the text
+            ytop = pad * (i + 1) + y * scale - pad + 2
             if draw_labels:
                 d.text((x, ytop), t, fill=(20, 20, 20), font=font)
             positions.append((t, x / out.width, 1.0 - ytop / out.height))
@@ -211,21 +213,23 @@ def main():
     def cr(a):                                   # crop to the occupied register
         return a[r0:r1]
 
-    # Setup on top, samples below -- never mix a seed into the setup row, even to
-    # fill space: the grouping is what tells the reader what they are looking at.
+    # One row: original followed by seeds. The blanked "erased" panel is dropped --
+    # the grey box on the original already shows what was removed, so it cost a
+    # column and told the reader nothing new. An earlier version kept setup and
+    # samples on separate rows for grouping; the paper's page budget won.
+    N_SHOWN = 4
     for aname, accent in ACCENTS.items():
-        pan = [colorize(cr(orig), cr(nothing), accent, cr(hole)),
-               colorize(cr(np.where(hole, 0.0, orig)), cr(nothing), accent, cr(hole))]
-        seed_pan = [colorize(cr(g), cr(hole), accent, cr(hole)) for g in gens]
-        top = (pan, ["original", "erased"])
-        bottom = (seed_pan, [f"seed {s}" for s in SEEDS])
+        orig_pan = colorize(cr(orig), cr(nothing), accent, cr(hole))
+        seed_pan = [colorize(cr(g), cr(hole), accent, cr(hole)) for g in gens[:N_SHOWN]]
+        row = ([orig_pan] + seed_pan,
+               ["original"] + [f"seed {s}" for s in SEEDS[:N_SHOWN]])
 
         # (a) labels baked in -- portable: slides, README, anywhere outside the paper
-        img_lab, _ = grid_figure([top, bottom], draw_labels=True)
+        img_lab, _ = grid_figure([row], draw_labels=True)
         img_lab.save(HERE / f"_fig_inpaint_workflow_{aname}.png")
 
         # (b) blank label bands + a TikZ overlay -- typeset in the document font
-        img_raw, pos = grid_figure([top, bottom], draw_labels=False)
+        img_raw, pos = grid_figure([row], draw_labels=False)
         img_raw.save(HERE / f"_fig_inpaint_workflow_{aname}_nolabel.png")
         if aname == "magenta":
             write_tikz(pos, HERE / "_fig_inpaint_labels.tex")

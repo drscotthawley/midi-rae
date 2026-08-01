@@ -133,16 +133,17 @@ def run_inpaint(editor_value, input_state, method, n_steps, cfg_strength, seed, 
     x_known = img_holed * 2 - 1                                           # model space [-1,1]
     mask_t = torch.from_numpy((~hole).astype("float32")).view(1, 1, *hole.shape)  # 1=known,0=hole
 
-    # Conditioning. Blanked pixels read as "silence here" to the encoder, and the flow
-    # renders that faithfully -- so the XMEP repredicts the hole's embeddings from
-    # context instead. mlcond=None falls back to the plain (blanked) encoding.
+    # Conditioning. This build ZEROES the hole's conditioning patches instead of having
+    # the XMEP predict them. Training drops conditioning patches to zero and never
+    # substitutes predicted embeddings, so zeroing is the one out-of-band state the flow
+    # knows how to read; XMEP values are neither the real embedding nor an absence of
+    # one. Level 0 is left intact because mlc_dropout never drops it.
     t0 = time.time()
     mlcond, note = None, "blanked-cond"
     if latent_fill:
-        mlcond, st = demo.encode_to_mlcond_filled(img_holed, hole, dilate=int(dilate),
-                                                  return_stats=True)
-        n_tok = sum(s[1] for s in st)
-        note = f"XMEP fill (dilate={int(dilate)}, {n_tok} tokens repredicted)"
+        mlcond, n_zeroed = demo.encode_to_mlcond_masked(img_holed, hole, dilate=int(dilate))
+        note = (f"mask-dropout (dilate={int(dilate)}, "
+                f"patches zeroed per level {n_zeroed}, L0 kept)")
 
     if method == "hard":
         gen_th = torch.Generator().manual_seed(int(seed))
@@ -299,7 +300,7 @@ def build_ui():
 
     devices = pcfm_infer.available_devices()
 
-    with gr.Blocks(title="midi-rae pixel-CFM test-bed") as ui:
+    with gr.Blocks(title="midi-rae pixel-CFM test-bed [mask-dropout inpainting]") as ui:
         gr.Markdown(
             "# midi-rae pixel-CFM — interactive generative test-bed\n"
             "The exp26 encoder turns an input piano-roll window into per-level PCA "
@@ -393,10 +394,11 @@ def build_ui():
                     [("PnP-Flow", "pnpflow"), ("Hard replace", "hard"),
                      ("Soft guidance ((1-t)/t)", "soft")], value="pnpflow",
                     label="Inpaint method",
-                    info="PnP-Flow + XMEP fill generates the most content in the hole")
-                ip_fill = gr.Checkbox(value=True, label="XMEP latent fill",
-                                      info="Repredict the hole's embeddings from context "
-                                           "instead of conditioning on a blanked region")
+                    info="PnP-Flow generates the most content in the hole")
+                ip_fill = gr.Checkbox(value=True, label="Mask dropout (conditioning)",
+                                      info="Zero the hole's conditioning patches, the way "
+                                           "training drops them. Unticked = plain blanked "
+                                           "encoding. L0 is never zeroed")
                 ip_dilate = gr.Slider(0, 3, value=0, step=1, label="Token-mask dilation",
                                       info="Also mask neighbouring tokens. Measured to HURT "
                                            "(80%/57%/33% of erased density at 0/1/2)")

@@ -22,9 +22,11 @@ import pcfm_infer
 import flow_infer
 
 DEV = "cuda"
-STEPS, CFG, N = 20, 4.0, 30
+STEPS, CFG, N = 10, 4.0, 30   # 10 steps is what the demo ships
 RAD = 12                      # search +/- this many pixels in pitch and time
-POP909 = Path("/home/shawley/datasets/POP909_images_basic")
+POP909 = Path("/home/shawley/datasets/POP909_images_basic/val")   # held-out split; the
+                                                                  # files moved into train/ and
+                                                                  # val/ when the split was made
 
 
 def ncc_map(a, b, rad=RAD):

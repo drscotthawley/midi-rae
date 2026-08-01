@@ -36,7 +36,9 @@ DEV = "cuda" if torch.cuda.is_available() else "cpu"
 # 0.8 is the inpainting sweet spot found empirically.
 CONFIGS = [(20, 0.8), (20, 1.0), (20, 2.0), (20, 4.0), (20, 8.0)]
 N_WINDOWS = 40
-POP909 = Path("/home/shawley/datasets/POP909_images_basic")
+POP909 = Path("/home/shawley/datasets/POP909_images_basic/val")   # held-out split; the
+                                                                  # files moved into train/ and
+                                                                  # val/ when the split was made
 
 
 def cond_vec(mlcond):
